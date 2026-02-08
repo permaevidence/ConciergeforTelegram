@@ -79,8 +79,8 @@ The AI brain runs through [OpenRouter](https://openrouter.ai), a unified API gat
 | Field | Default | Notes |
 |---|---|---|
 | **Model** | `google/gemini-3-flash-preview` | Leave empty to use the default. |
-| **Preferred Providers** | *(all)* | Comma-separated (e.g. `google`). Leave empty to allow all. |
-| **Reasoning Effort** | *Not Specified* | Set to **High** if using the default Gemini 3 Flash model — good balance of quality and cost. |
+| **Preferred Providers** | *(all)* | Leave empty to allow all. |
+| **Reasoning Effort** | *High* | Leave to **High** if using the default Gemini 3 Flash model — good balance of quality and cost. |
 
 ---
 
