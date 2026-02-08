@@ -1,5 +1,6 @@
 import SwiftUI
 import Foundation
+import AppKit
 
 struct ClaudeProjectsBrowserView: View {
     @Environment(\.dismiss) private var dismiss
@@ -9,6 +10,8 @@ struct ClaudeProjectsBrowserView: View {
     @State private var currentRelativePath: String = "."
     @State private var entries: [ClaudeLocalEntry] = []
     @State private var errorMessage: String?
+    @State private var exportStatusMessage: String?
+    @State private var isExportingProjects = false
     @State private var projectPendingDeletion: ClaudeLocalProject?
     @State private var showBulkDeleteConfirmation = false
     
@@ -77,6 +80,15 @@ struct ClaudeProjectsBrowserView: View {
                             .buttonStyle(.borderless)
                             .help("Delete this flagged project")
                         }
+
+                        Button {
+                            downloadProject(project)
+                        } label: {
+                            Image(systemName: "square.and.arrow.down")
+                        }
+                        .buttonStyle(.borderless)
+                        .disabled(isExportingProjects)
+                        .help("Download this project as a ZIP")
                     }
                     .tag(Optional(project.id))
                 }
@@ -136,6 +148,17 @@ struct ClaudeProjectsBrowserView: View {
                             .font(.caption)
                             .foregroundColor(.red)
                     }
+
+                    if isExportingProjects {
+                        ProgressView("Preparing download...")
+                            .font(.caption)
+                    }
+
+                    if let exportStatusMessage {
+                        Text(exportStatusMessage)
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
                     
                     List(entries) { entry in
                         if entry.isDirectory {
@@ -170,6 +193,15 @@ struct ClaudeProjectsBrowserView: View {
                     Button("Refresh") {
                         loadProjects()
                     }
+                    Button("Download Selected") {
+                        guard let selectedProject else { return }
+                        downloadProject(selectedProject)
+                    }
+                    .disabled(selectedProject == nil || isExportingProjects)
+                    Button("Download All (\(projects.count))") {
+                        downloadAllProjects()
+                    }
+                    .disabled(projects.isEmpty || isExportingProjects)
                     Button("Up") {
                         navigateUp()
                     }
@@ -454,6 +486,191 @@ struct ClaudeProjectsBrowserView: View {
         formatter.timeStyle = .short
         return formatter
     }()
+
+    private static let allProjectsFileDateFormatter: DateFormatter = {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd_HHmmss"
+        return formatter
+    }()
+
+    private func downloadProject(_ project: ClaudeLocalProject) {
+        isExportingProjects = true
+        exportStatusMessage = nil
+        errorMessage = nil
+
+        Task {
+            let fileName = "\(sanitizedFileName(project.name)).zip"
+            guard let destinationURL = await promptForDownloadURL(
+                defaultFileName: fileName,
+                title: "Download Project",
+                message: "Choose where to save the project archive."
+            ) else {
+                await MainActor.run { isExportingProjects = false }
+                return
+            }
+
+            do {
+                try await createZipArchive(
+                    from: project.url.deletingLastPathComponent(),
+                    including: [project.url.lastPathComponent],
+                    destination: destinationURL
+                )
+
+                await MainActor.run {
+                    isExportingProjects = false
+                    exportStatusMessage = "Downloaded '\(project.name)' successfully."
+                    clearExportStatusAfterDelay()
+                }
+            } catch {
+                await MainActor.run {
+                    isExportingProjects = false
+                    errorMessage = "Download failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func downloadAllProjects() {
+        guard !projects.isEmpty else {
+            errorMessage = "No projects available to download."
+            return
+        }
+
+        isExportingProjects = true
+        exportStatusMessage = nil
+        errorMessage = nil
+
+        Task {
+            let timestamp = Self.allProjectsFileDateFormatter.string(from: Date())
+            let fileName = "ClaudeProjects_\(timestamp).zip"
+
+            guard let destinationURL = await promptForDownloadURL(
+                defaultFileName: fileName,
+                title: "Download All Projects",
+                message: "Choose where to save all project folders."
+            ) else {
+                await MainActor.run { isExportingProjects = false }
+                return
+            }
+
+            let folderNames = projects.map { $0.url.lastPathComponent }
+
+            do {
+                try await createZipArchive(
+                    from: projectsDirectory,
+                    including: folderNames,
+                    destination: destinationURL
+                )
+
+                await MainActor.run {
+                    isExportingProjects = false
+                    exportStatusMessage = "Downloaded \(folderNames.count) project folder(s) successfully."
+                    clearExportStatusAfterDelay()
+                }
+            } catch {
+                await MainActor.run {
+                    isExportingProjects = false
+                    errorMessage = "Download failed: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    @MainActor
+    private func promptForDownloadURL(defaultFileName: String, title: String, message: String) async -> URL? {
+        let savePanel = NSSavePanel()
+        savePanel.allowedContentTypes = [.data]
+        savePanel.canCreateDirectories = true
+        savePanel.nameFieldStringValue = defaultFileName
+        savePanel.title = title
+        savePanel.message = message
+
+        let response: NSApplication.ModalResponse
+        if let window = NSApp.keyWindow ?? NSApp.mainWindow {
+            response = await savePanel.beginSheetModal(for: window)
+        } else {
+            response = await withCheckedContinuation { continuation in
+                savePanel.begin { modalResponse in
+                    continuation.resume(returning: modalResponse)
+                }
+            }
+        }
+
+        guard response == .OK else { return nil }
+        return savePanel.url
+    }
+
+    private func createZipArchive(from sourceDirectory: URL, including items: [String], destination: URL) async throws {
+        guard !items.isEmpty else { return }
+
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let fileManager = FileManager.default
+                let tempZipURL = fileManager.temporaryDirectory.appendingPathComponent("\(UUID().uuidString).zip")
+
+                defer {
+                    try? fileManager.removeItem(at: tempZipURL)
+                }
+
+                do {
+                    if fileManager.fileExists(atPath: tempZipURL.path) {
+                        try fileManager.removeItem(at: tempZipURL)
+                    }
+
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                    process.currentDirectoryURL = sourceDirectory
+                    process.arguments = ["-r", "-q", tempZipURL.path] + items
+
+                    let errorPipe = Pipe()
+                    process.standardError = errorPipe
+
+                    try process.run()
+                    process.waitUntilExit()
+
+                    if process.terminationStatus != 0 {
+                        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                        let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown zip error."
+                        continuation.resume(throwing: ClaudeProjectsDownloadError.zipFailed(errorMessage))
+                        return
+                    }
+
+                    if fileManager.fileExists(atPath: destination.path) {
+                        try fileManager.removeItem(at: destination)
+                    }
+                    try fileManager.copyItem(at: tempZipURL, to: destination)
+                    continuation.resume(returning: ())
+                } catch {
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func sanitizedFileName(_ name: String) -> String {
+        let invalidCharacters = CharacterSet(charactersIn: "/\\?%*|\"<>:")
+        let components = name.components(separatedBy: invalidCharacters)
+        let sanitized = components.joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines)
+        return sanitized.isEmpty ? "ClaudeProject" : sanitized
+    }
+
+    @MainActor
+    private func clearExportStatusAfterDelay() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
+            exportStatusMessage = nil
+        }
+    }
+}
+
+private enum ClaudeProjectsDownloadError: LocalizedError {
+    case zipFailed(String)
+
+    var errorDescription: String? {
+        switch self {
+        case .zipFailed(let message):
+            return "Failed to create ZIP archive: \(message)"
+        }
+    }
 }
 
 private struct ClaudeLocalProject: Identifiable {

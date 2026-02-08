@@ -3427,6 +3427,8 @@ struct SendProjectResultArguments: Codable {
     let subject: String?
     let body: String?
     let filePaths: [String]?
+    let packageAs: String?
+    let archiveName: String?
     let useLastChangedFiles: Bool?
     let maxFiles: Int?
     let caption: String?
@@ -3438,6 +3440,8 @@ struct SendProjectResultArguments: Codable {
         case subject
         case body
         case filePaths = "file_paths"
+        case packageAs = "package_as"
+        case archiveName = "archive_name"
         case useLastChangedFiles = "use_last_changed_files"
         case maxFiles = "max_files"
         case caption
@@ -3450,6 +3454,8 @@ struct SendProjectResultArguments: Codable {
         to = try container.decodeIfPresent(String.self, forKey: .to)
         subject = try container.decodeIfPresent(String.self, forKey: .subject)
         body = try container.decodeIfPresent(String.self, forKey: .body)
+        packageAs = try container.decodeIfPresent(String.self, forKey: .packageAs)
+        archiveName = try container.decodeIfPresent(String.self, forKey: .archiveName)
         useLastChangedFiles = try container.decodeIfPresent(Bool.self, forKey: .useLastChangedFiles)
         maxFiles = try container.decodeIfPresent(Int.self, forKey: .maxFiles)
         caption = try container.decodeIfPresent(String.self, forKey: .caption)
@@ -3750,12 +3756,16 @@ private struct SendProjectResultOutput: Codable {
     let destination: String
     let fileCount: Int
     let files: [String]
+    let packageAs: String
+    let packagedFileCount: Int?
     let message: String
     
     enum CodingKeys: String, CodingKey {
         case success, destination, files, message
         case projectId = "project_id"
         case fileCount = "file_count"
+        case packageAs = "package_as"
+        case packagedFileCount = "packaged_file_count"
     }
 }
 
@@ -4292,21 +4302,46 @@ extension ToolExecutor {
             return #"{"error":"destination must be either 'chat' or 'email'."}"#
         }
         
+        let packageAs = (args.packageAs?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
+            ? args.packageAs!.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            : "files"
+        let validPackageModes: Set<String> = ["files", "zip_selection", "zip_project"]
+        guard validPackageModes.contains(packageAs) else {
+            return #"{"error":"package_as must be one of: files, zip_selection, zip_project."}"#
+        }
+        
         var relativePaths: [String] = []
         
-        if let requested = args.filePaths, !requested.isEmpty {
-            relativePaths = requested
-        } else if args.useLastChangedFiles ?? true {
-            if let record = loadLastRunRecord(projectURL: projectURL) {
-                relativePaths = Array(Set(record.createdFiles + record.modifiedFiles)).sorted()
+        if packageAs == "zip_project" {
+            relativePaths = snapshotProjectFiles(projectURL: projectURL).keys.sorted()
+        } else {
+            if let requested = args.filePaths, !requested.isEmpty {
+                relativePaths = requested
+            } else if args.useLastChangedFiles ?? true {
+                if let record = loadLastRunRecord(projectURL: projectURL) {
+                    relativePaths = Array(Set(record.createdFiles + record.modifiedFiles)).sorted()
+                }
             }
         }
         
         if relativePaths.isEmpty {
+            if packageAs == "zip_project" {
+                return #"{"error":"Project contains no deliverable files to package."}"#
+            }
             return #"{"error":"No files selected. Provide file_paths or run_claude_code first and use use_last_changed_files=true."}"#
         }
         
-        let maxFiles = min(max(args.maxFiles ?? 10, 1), 50)
+        let maxFiles: Int
+        if packageAs == "zip_project" {
+            if let explicitMax = args.maxFiles {
+                maxFiles = min(max(explicitMax, 1), 5000)
+            } else {
+                maxFiles = Int.max
+            }
+        } else {
+            maxFiles = min(max(args.maxFiles ?? 10, 1), 50)
+        }
+        
         var resolvedFiles: [(url: URL, relativePath: String)] = []
         
         for path in relativePaths {
@@ -4326,21 +4361,75 @@ extension ToolExecutor {
             return #"{"error":"None of the requested files were found."}"#
         }
         
+        var temporaryArtifacts: [URL] = []
+        defer {
+            for url in temporaryArtifacts {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
+        
+        let filesToSend: [(url: URL, relativePath: String, attachmentName: String)]
+        let packagedFileCount: Int?
+        
+        if packageAs == "files" {
+            filesToSend = resolvedFiles.map { file in
+                (
+                    url: file.url,
+                    relativePath: file.relativePath,
+                    attachmentName: projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)
+                )
+            }
+            packagedFileCount = nil
+        } else {
+            let defaultArchiveBase = packageAs == "zip_project"
+                ? "\(args.projectId)-project"
+                : "\(args.projectId)-selection"
+            let archiveBaseName = sanitizeArchiveBaseName(args.archiveName ?? defaultArchiveBase)
+            
+            let archiveURL: URL
+            do {
+                archiveURL = try await createProjectZipArchive(
+                    projectURL: projectURL,
+                    relativePaths: resolvedFiles.map { $0.relativePath },
+                    archiveBaseName: archiveBaseName
+                )
+            } catch {
+                return #"{"error":"Failed to create ZIP archive: \#(error.localizedDescription)"}"#
+            }
+            
+            temporaryArtifacts.append(archiveURL)
+            let archiveRelativePath = archiveURL.lastPathComponent
+            filesToSend = [(
+                url: archiveURL,
+                relativePath: archiveRelativePath,
+                attachmentName: projectAttachmentName(projectId: args.projectId, relativePath: archiveRelativePath)
+            )]
+            packagedFileCount = resolvedFiles.count
+        }
+        
         if destination == "chat" {
             var queuedFiles: [String] = []
             
-            for file in resolvedFiles {
+            for file in filesToSend {
                 do {
                     let data = try Data(contentsOf: file.url)
-                    let outputName = projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)
+                    let outputName = file.attachmentName
                     let outputURL = documentsDirectory.appendingPathComponent(outputName)
                     try data.write(to: outputURL)
+                    
+                    let defaultCaption: String
+                    if packageAs == "files" {
+                        defaultCaption = "Project \(args.projectId): \(file.relativePath)"
+                    } else {
+                        let countText = packagedFileCount.map { " (\($0) file(s))" } ?? ""
+                        defaultCaption = "Project \(args.projectId) archive\(countText): \(file.relativePath)"
+                    }
                     
                     ToolExecutor.pendingDocuments.append((
                         data: data,
                         filename: outputName,
                         mimeType: getMimeType(for: outputName),
-                        caption: args.caption ?? "Project \(args.projectId): \(file.relativePath)"
+                        caption: args.caption ?? defaultCaption
                     ))
                     ToolExecutor.queueFileForDescription(filename: outputName, data: data, mimeType: getMimeType(for: outputName))
                     queuedFiles.append(file.relativePath)
@@ -4359,7 +4448,11 @@ extension ToolExecutor {
                 destination: destination,
                 fileCount: queuedFiles.count,
                 files: queuedFiles,
-                message: "Project files queued for Telegram delivery."
+                packageAs: packageAs,
+                packagedFileCount: packagedFileCount,
+                message: packageAs == "files"
+                    ? "Project files queued for Telegram delivery."
+                    : "Project archive queued for Telegram delivery."
             )
             return encodeJSON(result)
         }
@@ -4378,9 +4471,9 @@ extension ToolExecutor {
         do {
             if await GmailService.shared.isAuthenticated {
                 var attachments: [(data: Data, name: String, mimeType: String)] = []
-                for file in resolvedFiles {
+                for file in filesToSend {
                     let data = try Data(contentsOf: file.url)
-                    let name = projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)
+                    let name = file.attachmentName
                     attachments.append((data: data, name: name, mimeType: getMimeType(for: name)))
                 }
                 
@@ -4402,8 +4495,8 @@ extension ToolExecutor {
                 }
                 
                 var attachmentURLs: [(url: URL, name: String)] = []
-                for file in resolvedFiles {
-                    attachmentURLs.append((url: file.url, name: projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)))
+                for file in filesToSend {
+                    attachmentURLs.append((url: file.url, name: file.attachmentName))
                 }
                 
                 let success = try await EmailService.shared.sendEmailWithAttachments(
@@ -4425,9 +4518,13 @@ extension ToolExecutor {
             success: true,
             projectId: args.projectId,
             destination: destination,
-            fileCount: resolvedFiles.count,
-            files: resolvedFiles.map { $0.relativePath },
-            message: "Project files sent via email."
+            fileCount: filesToSend.count,
+            files: filesToSend.map { $0.relativePath },
+            packageAs: packageAs,
+            packagedFileCount: packagedFileCount,
+            message: packageAs == "files"
+                ? "Project files sent via email."
+                : "Project archive sent via email."
         )
         return encodeJSON(result)
     }
@@ -4509,6 +4606,77 @@ extension ToolExecutor {
             .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
             .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
         return collapsed.isEmpty ? "project" : String(collapsed.prefix(40))
+    }
+    
+    private func sanitizeArchiveBaseName(_ name: String) -> String {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        let withoutExtension = (trimmed as NSString).deletingPathExtension
+        let base = withoutExtension.isEmpty ? trimmed : withoutExtension
+        let cleaned = base
+            .replacingOccurrences(of: #"[^A-Za-z0-9._-]+"#, with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-._"))
+        if cleaned.isEmpty {
+            return "project"
+        }
+        return String(cleaned.prefix(80))
+    }
+    
+    private func createProjectZipArchive(
+        projectURL: URL,
+        relativePaths: [String],
+        archiveBaseName: String
+    ) async throws -> URL {
+        guard !relativePaths.isEmpty else {
+            throw NSError(domain: "ToolExecutor", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "No files available for ZIP packaging."
+            ])
+        }
+        
+        let fileManager = FileManager.default
+        let archiveURL = fileManager.temporaryDirectory
+            .appendingPathComponent("\(archiveBaseName)-\(String(UUID().uuidString.prefix(8))).zip")
+        
+        return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<URL, Error>) in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/zip")
+                process.currentDirectoryURL = projectURL
+                process.arguments = ["-r", "-q", archiveURL.path] + relativePaths
+                
+                let errorPipe = Pipe()
+                process.standardError = errorPipe
+                
+                do {
+                    try process.run()
+                    ToolExecutor.registerRunningProcess(process)
+                    process.waitUntilExit()
+                    ToolExecutor.unregisterRunningProcess(process)
+                    
+                    if process.terminationStatus != 0 {
+                        let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                        let errorOutput = String(data: errorData, encoding: .utf8)?
+                            .trimmingCharacters(in: .whitespacesAndNewlines)
+                        let message = errorOutput?.isEmpty == false ? errorOutput! : "zip exited with code \(process.terminationStatus)."
+                        continuation.resume(throwing: NSError(domain: "ToolExecutor", code: Int(process.terminationStatus), userInfo: [
+                            NSLocalizedDescriptionKey: message
+                        ]))
+                        return
+                    }
+                    
+                    guard fileManager.fileExists(atPath: archiveURL.path) else {
+                        continuation.resume(throwing: NSError(domain: "ToolExecutor", code: 2, userInfo: [
+                            NSLocalizedDescriptionKey: "ZIP file was not created."
+                        ]))
+                        return
+                    }
+                    
+                    continuation.resume(returning: archiveURL)
+                } catch {
+                    ToolExecutor.unregisterRunningProcess(process)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
     }
     
     private func resolveProjectDirectory(projectId: String) -> URL? {

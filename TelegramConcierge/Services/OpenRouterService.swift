@@ -378,6 +378,7 @@ actor OpenRouterService {
                 **Claude Code routing for deliverables**:
                 - For requests that involve generating deliverables such as documents, spreadsheets, presentations, websites, or coding projects, prefer Claude project tools.
                 - Use this flow when needed: list_projects/create_project -> browse_project/read_project_file/add_project_files -> run_claude_code -> send_project_result.
+                - When sending websites/apps or other multi-file outputs, prefer send_project_result with package_as='zip_project' unless the user explicitly asked for individual files.
                 - For project cleanup requests, use flag_projects_for_deletion to mark projects; never assume deletion is complete until the user confirms in Settings.
                 - Do not claim files/code were created unless run_claude_code reports file_changes_detected or returns created_files/modified_files.
                 """

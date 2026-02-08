@@ -1140,7 +1140,7 @@ enum AvailableTools {
     static let sendProjectResult = ToolDefinition(
         function: FunctionDefinition(
             name: "send_project_result",
-            description: "Send project output files either to Telegram chat or via email. Use after run_claude_code when user asks to share deliverables.",
+            description: "Send project output files either to Telegram chat or via email. Use after run_claude_code when user asks to share deliverables. Supports packaging as individual files or as ZIP archives (selected files or whole project). For websites/apps with multiple files, prefer package_as='zip_project'.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1167,13 +1167,21 @@ enum AvailableTools {
                         type: "string",
                         description: "Optional JSON array of relative file paths inside the project to send. Example: [\"dist/app.zip\", \"README.md\"]"
                     ),
+                    "package_as": ParameterProperty(
+                        type: "string",
+                        description: "Packaging mode: 'files' (default, send files directly), 'zip_selection' (zip selected files), or 'zip_project' (zip the full project deliverables)."
+                    ),
+                    "archive_name": ParameterProperty(
+                        type: "string",
+                        description: "Optional archive base name when package_as is zip mode. '.zip' is added automatically."
+                    ),
                     "use_last_changed_files": ParameterProperty(
                         type: "boolean",
                         description: "If true (default), send files changed in the last run_claude_code execution when file_paths is not provided."
                     ),
                     "max_files": ParameterProperty(
                         type: "integer",
-                        description: "Maximum number of files to send (default 10)."
+                        description: "Maximum number of selected files to include (default 10). In zip_project mode, all project deliverables are included unless max_files is explicitly set."
                     ),
                     "caption": ParameterProperty(
                         type: "string",
