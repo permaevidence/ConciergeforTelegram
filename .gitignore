@@ -1,0 +1,14 @@
+# macOS
+.DS_Store
+
+# Xcode user-specific files
+xcuserdata/
+*.xcuserstate
+
+# Xcode / SwiftPM build artifacts
+DerivedData/
+.build/
+
+# Optional local files
+*.swp
+*.tmp
