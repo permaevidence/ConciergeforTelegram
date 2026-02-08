@@ -521,10 +521,14 @@ class ConversationManager: ObservableObject {
     }
 
     private func startActiveProcessing(for userMessage: Message) {
+        guard activeRunId == nil, activeProcessingTask == nil else {
+            print("[ConversationManager] Ignoring startActiveProcessing because a run is already active")
+            return
+        }
+        
         let runId = UUID()
         activeRunId = runId
         
-        activeProcessingTask?.cancel()
         activeProcessingTask = Task { [weak self] in
             await self?.runActiveProcessing(for: userMessage, runId: runId)
         }
@@ -634,12 +638,9 @@ class ConversationManager: ObservableObject {
             .split(whereSeparator: { $0.isWhitespace })
             .first?
             .lowercased() ?? ""
+        let commandToken = firstToken.split(separator: "@", maxSplits: 1).first.map(String.init) ?? ""
         
-        return firstToken.hasPrefix("/stop")
-            || firstToken.hasPrefix("/cancel")
-            || firstToken == "stop"
-            || firstToken == "cancel"
-            || firstToken == "abort"
+        return commandToken == "/stop"
     }
     
     private func stopActiveExecution() async {

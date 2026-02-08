@@ -1076,7 +1076,7 @@ enum AvailableTools {
     static let addProjectFiles = ToolDefinition(
         function: FunctionDefinition(
             name: "add_project_files",
-            description: "Copy files from local app storage into a Claude project workspace. Use this when the user sends files/images and wants Claude Code to use them in the project.",
+            description: "Copy files from local app storage into a Claude project workspace. If any selected file is a .zip archive, it is automatically extracted into the destination folder inside the project. Use this when the user sends files/images and wants Claude Code to use them in the project.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1085,7 +1085,7 @@ enum AvailableTools {
                     ),
                     "document_filenames": ParameterProperty(
                         type: "string",
-                        description: "JSON array of filenames from list_documents (or CSV). Example: [\"brief.pdf\", \"photo.jpg\"]"
+                        description: "JSON array of filenames from list_documents (or CSV). Example: [\"brief.pdf\", \"project.zip\"]. ZIP archives are extracted automatically."
                     ),
                     "source_directory": ParameterProperty(
                         type: "string",

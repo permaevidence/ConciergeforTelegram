@@ -1464,6 +1464,7 @@ extension ToolExecutor {
             case "docx": mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             case "xls": mimeType = "application/vnd.ms-excel"
             case "xlsx": mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            case "zip": mimeType = "application/zip"
             case "mp3": mimeType = "audio/mpeg"
             case "m4a": mimeType = "audio/mp4"
             case "wav": mimeType = "audio/wav"
@@ -1477,8 +1478,16 @@ extension ToolExecutor {
             let attachment = FileAttachment(data: data, mimeType: mimeType, filename: args.documentFilename)
             
             // Result text (no base64 needed - file will be injected as multimodal content)
+            let visibilityMessage: String
+            if isInlineMimeTypeSupportedForLLM(mimeType) {
+                visibilityMessage = "Document loaded and visible. You can now analyze its contents."
+            } else if mimeType == "application/zip" || args.documentFilename.lowercased().hasSuffix(".zip") {
+                visibilityMessage = "Document loaded but not viewable inline. Import it into a project with add_project_files to extract and use its contents."
+            } else {
+                visibilityMessage = "Document loaded but not viewable inline in this model."
+            }
             let result = """
-            {"success": true, "filename": "\(args.documentFilename)", "mimeType": "\(mimeType)", "sizeBytes": \(data.count), "message": "Document loaded and visible. You can now analyze its contents."}
+            {"success": true, "filename": "\(args.documentFilename)", "mimeType": "\(mimeType)", "sizeBytes": \(data.count), "message": "\(visibilityMessage)"}
             """
             
             return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
@@ -1590,27 +1599,23 @@ extension ToolExecutor {
             // Save to documents folder
             let savedFilename = await saveAttachmentToDocuments(data: result.data, filename: result.filename, mimeType: result.mimeType)
             
-            // Determine content type for description
-            let contentType: String
-            if result.mimeType.hasPrefix("image/") {
-                contentType = "image"
-            } else if result.mimeType == "application/pdf" {
-                contentType = "pdf"
-            } else if result.mimeType.hasPrefix("text/") {
-                contentType = "text"
-            } else {
-                contentType = "binary"
-            }
-            
             // Create file attachment for multimodal injection (just like read_document)
-            let attachment = FileAttachment(data: result.data, mimeType: result.mimeType, filename: result.filename)
+            let attachment = FileAttachment(data: result.data, mimeType: result.mimeType, filename: savedFilename)
             
             // Queue for description generation after agentic loop completes
             ToolExecutor.queueFileForDescription(filename: savedFilename, data: result.data, mimeType: result.mimeType)
             
             // Result text (no base64 needed - file will be injected as multimodal content)
+            let visibilityMessage: String
+            if isInlineMimeTypeSupportedForLLM(result.mimeType) {
+                visibilityMessage = "Attachment '\(result.filename)' downloaded and visible. You can now analyze its contents directly."
+            } else if result.mimeType == "application/zip" || result.filename.lowercased().hasSuffix(".zip") {
+                visibilityMessage = "Attachment '\(result.filename)' downloaded. ZIP files are not viewable inline; import with add_project_files to extract into a project."
+            } else {
+                visibilityMessage = "Attachment '\(result.filename)' downloaded but not viewable inline in this model."
+            }
             let resultJson = """
-            {"success": true, "filename": "\(result.filename)", "mimeType": "\(result.mimeType)", "sizeBytes": \(result.data.count), "savedFilename": "\(savedFilename)", "message": "Attachment '\(result.filename)' downloaded and visible. You can now analyze this \(contentType) content directly."}
+            {"success": true, "filename": "\(result.filename)", "mimeType": "\(result.mimeType)", "sizeBytes": \(result.data.count), "savedFilename": "\(savedFilename)", "message": "\(visibilityMessage)"}
             """
             
             return ToolResultMessage(toolCallId: call.id, content: resultJson, fileAttachment: attachment)
@@ -1678,7 +1683,7 @@ extension ToolExecutor {
                 fileAttachments.append(FileAttachment(
                     data: result.data,
                     mimeType: correctMimeType,
-                    filename: correctFilename
+                    filename: savedFilename
                 ))
                 
                 // Queue for description generation after agentic loop completes
@@ -1694,15 +1699,25 @@ extension ToolExecutor {
                 print("[ToolExecutor] Failed to download attachment \(attachment.filename) (partId: \(attachment.partId))")
             }
             
+            let inlineVisibleCount = downloadedFiles.filter { isInlineMimeTypeSupportedForLLM($0.mimeType) }.count
+            let responseMessage: String
+            if downloadedFiles.isEmpty {
+                responseMessage = "Failed to download attachments"
+            } else if inlineVisibleCount == downloadedFiles.count {
+                responseMessage = "Downloaded \(downloadedFiles.count) of \(email.attachments.count) attachments. All files are now visible for analysis."
+            } else if inlineVisibleCount == 0 {
+                responseMessage = "Downloaded \(downloadedFiles.count) of \(email.attachments.count) attachments. Files are saved locally but not viewable inline; use project tools for ZIP/binary workflows."
+            } else {
+                responseMessage = "Downloaded \(downloadedFiles.count) of \(email.attachments.count) attachments. \(inlineVisibleCount) file(s) are visible inline; others are saved locally for project import."
+            }
+            
             let response = BatchDownloadResult(
                 success: !downloadedFiles.isEmpty,
                 totalAttachments: email.attachments.count,
                 downloadedCount: downloadedFiles.count,
                 files: downloadedFiles,
                 errors: errors.isEmpty ? nil : errors,
-                message: downloadedFiles.isEmpty 
-                    ? "Failed to download attachments" 
-                    : "Downloaded \(downloadedFiles.count) of \(email.attachments.count) attachments. All files are now visible for analysis."
+                message: responseMessage
             )
             
             let encoder = JSONEncoder()
@@ -1988,19 +2003,24 @@ extension ToolExecutor {
                 mimeType: mimeType
             )
             
-            // Determine content type for description
-            let contentType = mimeType.hasPrefix("image/") ? "image" : (mimeType == "application/pdf" ? "PDF" : "file")
-            
             // Create file attachment for multimodal injection (just like read_document)
-            let attachment = FileAttachment(data: result.data, mimeType: mimeType, filename: filename)
+            let attachment = FileAttachment(data: result.data, mimeType: mimeType, filename: savedFilename)
             print("[ToolExecutor] Created FileAttachment: \(filename) (\(mimeType), \(result.data.count) bytes)")
             
             // Queue for description generation after agentic loop completes
             ToolExecutor.queueFileForDescription(filename: savedFilename, data: result.data, mimeType: mimeType)
             
             // Result text (no base64 needed - file will be injected as multimodal content)
+            let visibilityMessage: String
+            if isInlineMimeTypeSupportedForLLM(mimeType) {
+                visibilityMessage = "Attachment '\(filename)' downloaded and visible. You can now analyze its contents directly."
+            } else if mimeType == "application/zip" || filename.lowercased().hasSuffix(".zip") {
+                visibilityMessage = "Attachment '\(filename)' downloaded. ZIP files are not viewable inline; import with add_project_files to extract into a project."
+            } else {
+                visibilityMessage = "Attachment '\(filename)' downloaded but not viewable inline in this model."
+            }
             let resultJson = """
-            {"success": true, "filename": "\(filename)", "mimeType": "\(mimeType)", "sizeBytes": \(result.data.count), "savedFilename": "\(savedFilename)", "message": "Attachment '\(filename)' downloaded and visible. You can now analyze this \(contentType) content directly."}
+            {"success": true, "filename": "\(filename)", "mimeType": "\(mimeType)", "sizeBytes": \(result.data.count), "savedFilename": "\(savedFilename)", "message": "\(visibilityMessage)"}
             """
             
             let resultMessage = ToolResultMessage(toolCallId: call.id, content: resultJson, fileAttachment: attachment)
@@ -2029,6 +2049,30 @@ extension ToolExecutor {
         case "zip": return "application/zip"
         default: return "application/octet-stream"
         }
+    }
+    
+    private func isInlineMimeTypeSupportedForLLM(_ mimeType: String) -> Bool {
+        let normalized = mimeType
+            .lowercased()
+            .split(separator: ";")
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? mimeType.lowercased()
+        
+        if normalized.hasPrefix("image/") {
+            return true
+        }
+        
+        let supported: Set<String> = [
+            "application/pdf",
+            "text/plain",
+            "text/markdown",
+            "application/json",
+            "text/csv",
+            "text/html",
+            "application/xml"
+        ]
+        return supported.contains(normalized)
     }
 }
 
@@ -3709,6 +3753,7 @@ private struct ClaudeRunResult: Codable {
     let command: String
     let exitCode: Int32
     let timedOut: Bool
+    let permissionBlocked: Bool
     let durationSeconds: Double
     let createdFiles: [String]
     let modifiedFiles: [String]
@@ -3726,6 +3771,7 @@ private struct ClaudeRunResult: Codable {
         case projectId = "project_id"
         case exitCode = "exit_code"
         case timedOut = "timed_out"
+        case permissionBlocked = "permission_blocked"
         case durationSeconds = "duration_seconds"
         case createdFiles = "created_files"
         case modifiedFiles = "modified_files"
@@ -4058,6 +4104,7 @@ extension ToolExecutor {
         var addedFiles: [ClaudeProjectImportedFile] = []
         var missingDocuments: [String] = []
         var rejectedFilenames: [String] = []
+        var extractedArchiveCount = 0
         
         for rawFilename in args.documentFilenames {
             let filename = rawFilename.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -4070,6 +4117,30 @@ extension ToolExecutor {
             var sourceIsDir: ObjCBool = false
             guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &sourceIsDir), !sourceIsDir.boolValue else {
                 missingDocuments.append(filename)
+                continue
+            }
+            
+            if sourceURL.pathExtension.lowercased() == "zip" {
+                do {
+                    let imported = try await importZipArchive(
+                        sourceArchiveURL: sourceURL,
+                        sourceFilename: filename,
+                        destinationURL: destinationURL,
+                        projectURL: projectURL,
+                        overwriteExisting: shouldOverwrite
+                    )
+                    
+                    if imported.isEmpty {
+                        rejectedFilenames.append(filename)
+                        continue
+                    }
+                    
+                    addedFiles.append(contentsOf: imported)
+                    extractedArchiveCount += 1
+                } catch {
+                    print("[ToolExecutor] Failed to import ZIP archive \(filename): \(error)")
+                    rejectedFilenames.append(filename)
+                }
                 continue
             }
             
@@ -4132,7 +4203,9 @@ extension ToolExecutor {
             projectLastEditedAt: updatedMetadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
             message: addedFiles.isEmpty
                 ? "No files were added. Use list_documents to confirm filenames."
-                : "Added \(addedFiles.count) file(s) to project workspace."
+                : (extractedArchiveCount > 0
+                   ? "Added \(addedFiles.count) file(s) to project workspace (extracted \(extractedArchiveCount) ZIP archive(s))."
+                   : "Added \(addedFiles.count) file(s) to project workspace.")
         )
         
         return encodeJSON(result)
@@ -4152,9 +4225,22 @@ extension ToolExecutor {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let command = (configuredCommand?.isEmpty == false) ? configuredCommand! : "claude"
         
-        let configuredArgs = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey) ?? KeychainHelper.defaultClaudeCodeArgs
+        let configuredArgs: String
+        if let storedArgs = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+           !storedArgs.isEmpty {
+            if isLegacyAcceptEditsArgumentString(storedArgs) {
+                configuredArgs = KeychainHelper.defaultClaudeCodeArgs
+                try? KeychainHelper.save(key: KeychainHelper.claudeCodeArgsKey, value: configuredArgs)
+            } else {
+                configuredArgs = storedArgs
+            }
+        } else {
+            configuredArgs = KeychainHelper.defaultClaudeCodeArgs
+        }
         let rawArgString = args.cliArgs?.trimmingCharacters(in: .whitespacesAndNewlines)
         let argString = (rawArgString?.isEmpty == false) ? rawArgString! : configuredArgs
+        let hasPerCallCliOverride = rawArgString?.isEmpty == false
         let parsedArgs = parseCommandLineArguments(argString)
         
         let configuredTimeout = Int(KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? "") ?? Int(KeychainHelper.defaultClaudeCodeTimeout) ?? 300
@@ -4176,10 +4262,12 @@ extension ToolExecutor {
         
         for invocation in invocations {
             do {
+                var activeInvocation = invocation
+                var activeEnvironment = baseEnvironment
                 var result = try await runClaudeInvocation(
-                    invocation,
+                    activeInvocation,
                     projectURL: projectURL,
-                    environment: baseEnvironment,
+                    environment: activeEnvironment,
                     timeoutSeconds: timeoutSeconds,
                     maxOutputChars: maxOutputChars
                 )
@@ -4192,7 +4280,7 @@ extension ToolExecutor {
                     
                     do {
                         let retryResult = try await runClaudeInvocation(
-                            invocation,
+                            activeInvocation,
                             projectURL: projectURL,
                             environment: retryEnvironment,
                             timeoutSeconds: timeoutSeconds,
@@ -4204,12 +4292,51 @@ extension ToolExecutor {
                             stdout: retryResult.stdout,
                             stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with CLAUDE_CONFIG_DIR=\(claudeConfigDirectory.path)"
                         )
+                        activeEnvironment = retryEnvironment
                     } catch {
                         launchErrors.append("\(invocation.displayCommand) (retry with CLAUDE_CONFIG_DIR): \(error.localizedDescription)")
                     }
                 }
                 
-                selectedInvocation = invocation
+                if !hasPerCallCliOverride,
+                   shouldRetryClaudeWithBypassPermissions(
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    arguments: activeInvocation.arguments
+                   ) {
+                    let bypassArgs = applyBypassPermissionMode(to: activeInvocation.arguments)
+                    if bypassArgs != activeInvocation.arguments {
+                        let bypassInvocation = ClaudeInvocation(
+                            executableURL: activeInvocation.executableURL,
+                            arguments: bypassArgs,
+                            displayCommand: displayClaudeInvocationCommand(
+                                executable: activeInvocation.executableURL.path,
+                                arguments: bypassArgs
+                            )
+                        )
+                        
+                        do {
+                            let retryResult = try await runClaudeInvocation(
+                                bypassInvocation,
+                                projectURL: projectURL,
+                                environment: activeEnvironment,
+                                timeoutSeconds: timeoutSeconds,
+                                maxOutputChars: maxOutputChars
+                            )
+                            result = ClaudeExecutionOutput(
+                                exitCode: retryResult.exitCode,
+                                timedOut: retryResult.timedOut,
+                                stdout: retryResult.stdout,
+                                stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with --permission-mode bypassPermissions after detecting approval deadlock."
+                            )
+                            activeInvocation = bypassInvocation
+                        } catch {
+                            launchErrors.append("\(invocation.displayCommand) (retry with bypassPermissions): \(error.localizedDescription)")
+                        }
+                    }
+                }
+                
+                selectedInvocation = activeInvocation
                 execution = result
                 break
             } catch {
@@ -4260,13 +4387,15 @@ extension ToolExecutor {
         
         let logFile = persistRunRecord(runRecord, projectURL: projectURL)
         
-        let success = finalExecution.exitCode == 0 && !finalExecution.timedOut
+        let permissionBlocked = containsClaudePermissionPromptSignal(text: finalExecution.stdout + "\n" + finalExecution.stderr)
+        let success = finalExecution.exitCode == 0 && !finalExecution.timedOut && !permissionBlocked
         let result = ClaudeRunResult(
             success: success,
             projectId: args.projectId,
             command: finalInvocation.displayCommand,
             exitCode: finalExecution.exitCode,
             timedOut: finalExecution.timedOut,
+            permissionBlocked: permissionBlocked,
             durationSeconds: duration,
             createdFiles: createdFiles,
             modifiedFiles: modifiedFiles,
@@ -4281,7 +4410,9 @@ extension ToolExecutor {
                 ? (fileChangesDetected
                     ? "Claude Code run completed with file changes."
                     : "Claude Code run completed, but no file changes were detected. Verify prompt/permission mode and inspect stdout.")
-                : (finalExecution.timedOut ? "Claude Code run timed out after \(timeoutSeconds)s." : "Claude Code run failed with exit code \(finalExecution.exitCode).")
+                : (permissionBlocked
+                    ? "Claude Code run was blocked by command approval prompts. Retried with bypassPermissions if possible, but execution still could not complete the requested actions."
+                    : (finalExecution.timedOut ? "Claude Code run timed out after \(timeoutSeconds)s." : "Claude Code run failed with exit code \(finalExecution.exitCode)."))
         )
         
         return encodeJSON(result)
@@ -4735,6 +4866,246 @@ extension ToolExecutor {
         }
         
         return candidateURL
+    }
+    
+    private func importZipArchive(
+        sourceArchiveURL: URL,
+        sourceFilename: String,
+        destinationURL: URL,
+        projectURL: URL,
+        overwriteExisting: Bool
+    ) async throws -> [ClaudeProjectImportedFile] {
+        let fileManager = FileManager.default
+        let archiveEntries = try await listZipEntries(archiveURL: sourceArchiveURL)
+        
+        guard !archiveEntries.isEmpty else {
+            throw NSError(domain: "ToolExecutor", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "ZIP archive is empty."
+            ])
+        }
+        
+        guard archiveEntries.allSatisfy({ isSafeArchiveEntryPath($0) }) else {
+            throw NSError(domain: "ToolExecutor", code: 2, userInfo: [
+                NSLocalizedDescriptionKey: "ZIP archive contains unsafe paths."
+            ])
+        }
+        
+        let extractionRoot = fileManager.temporaryDirectory
+            .appendingPathComponent("telegramconcierge-zip-import-\(UUID().uuidString)", isDirectory: true)
+        try fileManager.createDirectory(at: extractionRoot, withIntermediateDirectories: true)
+        defer { try? fileManager.removeItem(at: extractionRoot) }
+        
+        try await unzipArchive(archiveURL: sourceArchiveURL, destinationURL: extractionRoot)
+        
+        guard let enumerator = fileManager.enumerator(
+            at: extractionRoot,
+            includingPropertiesForKeys: [.isRegularFileKey, .isSymbolicLinkKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return []
+        }
+        
+        var extractedFiles: [(url: URL, relativePath: String)] = []
+        for case let fileURL as URL in enumerator {
+            let values = try? fileURL.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values?.isSymbolicLink == true { continue }
+            guard values?.isRegularFile == true else { continue }
+            
+            let relative = relativePath(from: extractionRoot, to: fileURL)
+            guard isSafeArchiveEntryPath(relative) else { continue }
+            if shouldIgnoreArchiveArtifact(relativePath: relative) { continue }
+            
+            extractedFiles.append((fileURL, relative))
+        }
+        
+        guard !extractedFiles.isEmpty else {
+            return []
+        }
+        
+        let stripRoot = commonArchiveRootPrefix(paths: extractedFiles.map { $0.relativePath })
+        let destinationRootPath = destinationURL.standardizedFileURL.path
+        var importedFiles: [ClaudeProjectImportedFile] = []
+        
+        for file in extractedFiles.sorted(by: { $0.relativePath < $1.relativePath }) {
+            var relative = file.relativePath
+            if let root = stripRoot, relative.hasPrefix(root + "/") {
+                relative = String(relative.dropFirst(root.count + 1))
+            }
+            guard !relative.isEmpty else { continue }
+            
+            let candidateURL = destinationURL.appendingPathComponent(relative).standardizedFileURL
+            guard candidateURL.path.hasPrefix(destinationRootPath) else { continue }
+            
+            let parentURL = candidateURL.deletingLastPathComponent()
+            try fileManager.createDirectory(at: parentURL, withIntermediateDirectories: true)
+            
+            let finalURL: URL
+            if overwriteExisting {
+                finalURL = candidateURL
+                if fileManager.fileExists(atPath: finalURL.path) {
+                    try? fileManager.removeItem(at: finalURL)
+                }
+            } else if fileManager.fileExists(atPath: candidateURL.path) {
+                finalURL = nextAvailableFileURL(in: parentURL, preferredFilename: candidateURL.lastPathComponent)
+            } else {
+                finalURL = candidateURL
+            }
+            
+            try fileManager.copyItem(at: file.url, to: finalURL)
+            let attrs = try? fileManager.attributesOfItem(atPath: finalURL.path)
+            let sizeBytes = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+            let destinationRelativePath = relativePath(from: projectURL, to: finalURL)
+            
+            importedFiles.append(ClaudeProjectImportedFile(
+                sourceFilename: sourceFilename,
+                destinationRelativePath: destinationRelativePath,
+                sizeBytes: sizeBytes
+            ))
+        }
+        
+        return importedFiles
+    }
+    
+    private func listZipEntries(archiveURL: URL) async throws -> [String] {
+        let stdout = try await runProcessForZip(
+            executablePath: "/usr/bin/unzip",
+            arguments: ["-Z1", archiveURL.path],
+            context: "Failed to inspect ZIP archive."
+        )
+        
+        return stdout
+            .components(separatedBy: .newlines)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+    
+    private func unzipArchive(archiveURL: URL, destinationURL: URL) async throws {
+        _ = try await runProcessForZip(
+            executablePath: "/usr/bin/unzip",
+            arguments: ["-qq", archiveURL.path, "-d", destinationURL.path],
+            context: "Failed to extract ZIP archive."
+        )
+    }
+    
+    private func runProcessForZip(
+        executablePath: String,
+        arguments: [String],
+        context: String
+    ) async throws -> String {
+        try await withCheckedThrowingContinuation { continuation in
+            DispatchQueue.global(qos: .userInitiated).async {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: executablePath)
+                process.arguments = arguments
+                
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+                
+                var stdoutBuffer = Data()
+                var stderrBuffer = Data()
+                let stdoutLock = NSLock()
+                let stderrLock = NSLock()
+                
+                stdoutPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let chunk = handle.availableData
+                    guard !chunk.isEmpty else { return }
+                    stdoutLock.lock()
+                    stdoutBuffer.append(chunk)
+                    stdoutLock.unlock()
+                }
+                
+                stderrPipe.fileHandleForReading.readabilityHandler = { handle in
+                    let chunk = handle.availableData
+                    guard !chunk.isEmpty else { return }
+                    stderrLock.lock()
+                    stderrBuffer.append(chunk)
+                    stderrLock.unlock()
+                }
+                
+                do {
+                    try process.run()
+                    ToolExecutor.registerRunningProcess(process)
+                    defer { ToolExecutor.unregisterRunningProcess(process) }
+                    
+                    process.waitUntilExit()
+                    
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    
+                    let remainingStdout = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                    if !remainingStdout.isEmpty {
+                        stdoutLock.lock()
+                        stdoutBuffer.append(remainingStdout)
+                        stdoutLock.unlock()
+                    }
+                    
+                    let remainingStderr = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    if !remainingStderr.isEmpty {
+                        stderrLock.lock()
+                        stderrBuffer.append(remainingStderr)
+                        stderrLock.unlock()
+                    }
+                    
+                    let stdout = String(data: stdoutBuffer, encoding: .utf8) ?? ""
+                    let stderr = String(data: stderrBuffer, encoding: .utf8) ?? ""
+                    
+                    guard process.terminationStatus == 0 else {
+                        let message = stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+                        continuation.resume(throwing: NSError(domain: "ToolExecutor", code: Int(process.terminationStatus), userInfo: [
+                            NSLocalizedDescriptionKey: "\(context) \(message.isEmpty ? "Process exited with code \(process.terminationStatus)." : message)"
+                        ]))
+                        return
+                    }
+                    
+                    continuation.resume(returning: stdout)
+                } catch {
+                    stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                    stderrPipe.fileHandleForReading.readabilityHandler = nil
+                    ToolExecutor.unregisterRunningProcess(process)
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+    }
+    
+    private func isSafeArchiveEntryPath(_ path: String) -> Bool {
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        
+        let normalized = trimmed.replacingOccurrences(of: "\\", with: "/")
+        if normalized.hasPrefix("/") || normalized.hasPrefix("~") { return false }
+        
+        let components = normalized.split(separator: "/")
+        guard !components.isEmpty else { return false }
+        
+        for component in components {
+            if component == "." || component == ".." || component.isEmpty {
+                return false
+            }
+        }
+        
+        return true
+    }
+    
+    private func commonArchiveRootPrefix(paths: [String]) -> String? {
+        guard !paths.isEmpty else { return nil }
+        let splitPaths = paths.map { $0.split(separator: "/").map(String.init) }
+        guard splitPaths.allSatisfy({ $0.count >= 2 }) else { return nil }
+        guard let candidate = splitPaths.first?.first else { return nil }
+        guard splitPaths.allSatisfy({ $0.first == candidate }) else { return nil }
+        return candidate
+    }
+    
+    private func shouldIgnoreArchiveArtifact(relativePath: String) -> Bool {
+        let normalized = relativePath.replacingOccurrences(of: "\\", with: "/")
+        if normalized.hasPrefix("__MACOSX/") {
+            return true
+        }
+        
+        let lastComponent = (normalized as NSString).lastPathComponent
+        return lastComponent == ".DS_Store"
     }
     
     private func listProjectEntries(
@@ -5331,6 +5702,124 @@ extension ToolExecutor {
         let permissionSignal = lower.contains("eperm") || lower.contains("operation not permitted") || lower.contains("permission denied")
         let claudeHomeSignal = lower.contains(".claude")
         return permissionSignal && claudeHomeSignal
+    }
+    
+    private func shouldRetryClaudeWithBypassPermissions(
+        stdout: String,
+        stderr: String,
+        arguments: [String]
+    ) -> Bool {
+        guard !claudeArgumentsUseBypassPermissions(arguments) else { return false }
+        return containsClaudePermissionPromptSignal(text: stdout + "\n" + stderr)
+    }
+    
+    private func claudeArgumentsUseBypassPermissions(_ arguments: [String]) -> Bool {
+        let lowerArgs = arguments.map { $0.lowercased() }
+        if lowerArgs.contains("--dangerously-skip-permissions") {
+            return true
+        }
+        
+        for (index, token) in lowerArgs.enumerated() {
+            if token == "--permission-mode", index + 1 < lowerArgs.count {
+                let mode = lowerArgs[index + 1]
+                if mode == "bypasspermissions" || mode == "dontask" {
+                    return true
+                }
+            } else if token.hasPrefix("--permission-mode=") {
+                let mode = token.replacingOccurrences(of: "--permission-mode=", with: "")
+                if mode == "bypasspermissions" || mode == "dontask" {
+                    return true
+                }
+            }
+        }
+        
+        return false
+    }
+    
+    private func applyBypassPermissionMode(to arguments: [String]) -> [String] {
+        guard !arguments.isEmpty else { return ["--permission-mode", "bypassPermissions"] }
+        
+        let prompt = arguments.last!
+        let preArgs = Array(arguments.dropLast())
+        
+        var cleaned: [String] = []
+        var skipNext = false
+        
+        for token in preArgs {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            
+            if token == "--permission-mode" {
+                skipNext = true
+                continue
+            }
+            
+            if token.hasPrefix("--permission-mode=") {
+                continue
+            }
+            
+            cleaned.append(token)
+        }
+        
+        cleaned.append("--permission-mode")
+        cleaned.append("bypassPermissions")
+        cleaned.append(prompt)
+        return cleaned
+    }
+    
+    private func displayClaudeInvocationCommand(executable: String, arguments: [String]) -> String {
+        let displayArgs: [String]
+        if arguments.isEmpty {
+            displayArgs = []
+        } else {
+            displayArgs = Array(arguments.dropLast()) + ["<prompt>"]
+        }
+        return ([executable] + displayArgs).joined(separator: " ")
+    }
+    
+    private func containsClaudePermissionPromptSignal(text: String) -> Bool {
+        let lower = text.lowercased()
+        let signals = [
+            "needs your approval",
+            "please approve",
+            "could you approve",
+            "permission prompt",
+            "blocked by your permission settings",
+            "approval isn't going through",
+            "allow me to run",
+            "approve the command",
+            "requires approval"
+        ]
+        
+        if signals.contains(where: { lower.contains($0) }) {
+            return true
+        }
+        
+        let permissionErrors = lower.contains("permission denied") || lower.contains("operation not permitted")
+        let approvalContext = lower.contains("approval") || lower.contains("permission settings")
+        return permissionErrors && approvalContext
+    }
+    
+    private func isLegacyAcceptEditsArgumentString(_ argString: String) -> Bool {
+        let args = parseCommandLineArguments(argString)
+        let lowerArgs = args.map { $0.lowercased() }
+        
+        for (index, token) in lowerArgs.enumerated() {
+            if token == "--permission-mode", index + 1 < lowerArgs.count {
+                if lowerArgs[index + 1] == "acceptedits" {
+                    return true
+                }
+            } else if token.hasPrefix("--permission-mode=") {
+                let mode = token.replacingOccurrences(of: "--permission-mode=", with: "")
+                if mode == "acceptedits" {
+                    return true
+                }
+            }
+        }
+        
+        return false
     }
     
     private func relativePath(from root: URL, to child: URL) -> String {

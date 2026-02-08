@@ -212,7 +212,7 @@ struct ClaudeProjectsBrowserView: View {
                 }
             }
         }
-        .frame(minWidth: 860, minHeight: 560)
+        .frame(minWidth: 940, minHeight: 560)
         .onAppear {
             loadProjects()
         }

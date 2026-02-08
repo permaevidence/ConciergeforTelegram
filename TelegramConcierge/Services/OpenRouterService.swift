@@ -79,6 +79,48 @@ actor OpenRouterService {
         return ["ogg", "oga"].contains(ext)
     }
     
+    private func normalizeMimeType(_ mimeType: String) -> String {
+        mimeType
+            .lowercased()
+            .split(separator: ";")
+            .first
+            .map(String.init)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? mimeType.lowercased()
+    }
+    
+    private func isInlineMimeTypeSupported(_ mimeType: String) -> Bool {
+        let normalized = normalizeMimeType(mimeType)
+        if normalized.hasPrefix("image/") {
+            return true
+        }
+        
+        let supported: Set<String> = [
+            "application/pdf",
+            "text/plain",
+            "text/markdown",
+            "application/json",
+            "text/csv",
+            "text/html",
+            "application/xml"
+        ]
+        return supported.contains(normalized)
+    }
+    
+    private func fallbackDescriptionForUnsupportedFile(filename: String, mimeType: String) -> String {
+        let normalized = normalizeMimeType(mimeType)
+        if normalized == "application/zip" || filename.lowercased().hasSuffix(".zip") {
+            return "ZIP archive received and saved locally. Import into a project with add_project_files to extract contents."
+        }
+        return "File received and saved locally. This file type is not viewable inline."
+    }
+    
+    private func fallbackDescriptionForFile(filename: String, mimeType: String) -> String {
+        if isInlineMimeTypeSupported(mimeType) {
+            return "File received and saved locally."
+        }
+        return fallbackDescriptionForUnsupportedFile(filename: filename, mimeType: mimeType)
+    }
+    
     /// Estimate token cost for a document file
     /// Since documents are only sent inline for the CURRENT message (one agentic loop),
     /// historical messages just have a filename hint + description. We return minimal tokens.
@@ -365,6 +407,7 @@ actor OpenRouterService {
             - Prices, stock quotes, weather, or availability
             - Specific facts you're uncertain about
             - Any topic where fresh information would improve your answer
+            - Project ZIP imports: if user wants edits to an existing project sent as a ZIP, use project tools to import it into a workspace before coding
             - **Self-orchestration via reminders**: Use set_reminder not just for user requests, but proactively when YOU decide a future action would be valuable. Examples: scheduling a follow-up check, breaking complex tasks into timed steps, verifying results later, or any "I should do X later" thought. When the reminder triggers, you regain full tool access.
             - **Calendar management**: Use the calendar tools to view, add, edit, or delete events on the user's schedule
             - **Learning about the user**: Use add_to_user_context to save facts you learn. Use remove_from_user_context when info becomes outdated. Use rewrite_user_context sparingly for major cleanup. This builds your persistent memory.
@@ -378,6 +421,9 @@ actor OpenRouterService {
                 **Claude Code routing for deliverables**:
                 - For requests that involve generating deliverables such as documents, spreadsheets, presentations, websites, or coding projects, prefer Claude project tools.
                 - Use this flow when needed: list_projects/create_project -> browse_project/read_project_file/add_project_files -> run_claude_code -> send_project_result.
+                - If the user sends a project ZIP archive, import it with add_project_files (ZIPs are auto-extracted into the project workspace) before running run_claude_code.
+                - If a ZIP appears unrelated to current projects and the user did not explicitly choose an existing project, create a new project first (name it from the ZIP/context), then import the ZIP there.
+                - Reuse an existing project only when the user clearly asks to continue that specific project.
                 - When sending websites/apps or other multi-file outputs, prefer send_project_result with package_as='zip_project' unless the user explicitly asked for individual files.
                 - For project cleanup requests, use flag_projects_for_deletion to mark projects; never assume deletion is complete until the user confirms in Settings.
                 - Do not claim files/code were created unless run_claude_code reports file_changes_detected or returns created_files/modified_files.
@@ -506,8 +552,12 @@ actor OpenRouterService {
                         case "csv": mimeType = "text/csv"
                         default: mimeType = "application/octet-stream"
                         }
-                        let dataURL = "data:\(mimeType);base64,\(base64String)"
-                        contentParts.append(.image(ImageURL(url: dataURL)))
+                        if isInlineMimeTypeSupported(mimeType) {
+                            let dataURL = "data:\(mimeType);base64,\(base64String)"
+                            contentParts.append(.image(ImageURL(url: dataURL)))
+                        } else {
+                            print("[OpenRouterService] Skipping inline referenced document \(refDocFileName) due to unsupported MIME type: \(mimeType)")
+                        }
                     }
                 }
                 
@@ -537,8 +587,12 @@ actor OpenRouterService {
                         case "csv": mimeType = "text/csv"
                         default: mimeType = "application/octet-stream"
                         }
-                        let dataURL = "data:\(mimeType);base64,\(base64String)"
-                        contentParts.append(.image(ImageURL(url: dataURL)))
+                        if isInlineMimeTypeSupported(mimeType) {
+                            let dataURL = "data:\(mimeType);base64,\(base64String)"
+                            contentParts.append(.image(ImageURL(url: dataURL)))
+                        } else {
+                            print("[OpenRouterService] Skipping inline document \(documentFileName) due to unsupported MIME type: \(mimeType)")
+                        }
                     }
                 }
                 
@@ -692,17 +746,30 @@ actor OpenRouterService {
                 var contentParts: [ContentPart] = []
                 
                 // Build descriptive text about the files
-                var fileDescriptions: [String] = []
+                var visibleFiles: [String] = []
+                var nonInlineFiles: [String] = []
                 for attachment in pendingFileAttachments {
-                    let base64String = attachment.data.base64EncodedString()
-                    let dataURL = "data:\(attachment.mimeType);base64,\(base64String)"
-                    print("[OpenRouterService] Adding file to user message: \(attachment.filename) (\(attachment.mimeType), \(attachment.data.count) bytes)")
-                    contentParts.append(.image(ImageURL(url: dataURL)))
-                    fileDescriptions.append(attachment.filename)
+                    if isInlineMimeTypeSupported(attachment.mimeType) {
+                        let base64String = attachment.data.base64EncodedString()
+                        let dataURL = "data:\(attachment.mimeType);base64,\(base64String)"
+                        print("[OpenRouterService] Adding file to user message: \(attachment.filename) (\(attachment.mimeType), \(attachment.data.count) bytes)")
+                        contentParts.append(.image(ImageURL(url: dataURL)))
+                        visibleFiles.append(attachment.filename)
+                    } else {
+                        print("[OpenRouterService] Skipping inline tool attachment \(attachment.filename) due to unsupported MIME type: \(attachment.mimeType)")
+                        nonInlineFiles.append(attachment.filename)
+                    }
                 }
                 
                 // Add text explaining what these files are
-                let filesText = "[The tool downloaded the following file(s) which are now visible to you: \(fileDescriptions.joined(separator: ", ")). Analyze the content above to answer the user's question.]"
+                let filesText: String
+                if !visibleFiles.isEmpty && !nonInlineFiles.isEmpty {
+                    filesText = "[The tool downloaded file(s). Visible inline: \(visibleFiles.joined(separator: ", ")). Not inline-viewable: \(nonInlineFiles.joined(separator: ", ")). Analyze visible content and use tool outputs/filenames for the rest.]"
+                } else if !visibleFiles.isEmpty {
+                    filesText = "[The tool downloaded the following file(s) which are now visible to you: \(visibleFiles.joined(separator: ", ")). Analyze the content above to answer the user's question.]"
+                } else {
+                    filesText = "[The tool downloaded file(s) not viewable inline in this model: \(nonInlineFiles.joined(separator: ", ")). Use the filenames and tool outputs to continue (e.g., import ZIPs with project tools).]"
+                }
                 contentParts.append(.text(filesText))
                 
                 apiMessages.append(OpenRouterAPIMessage(
@@ -851,18 +918,31 @@ actor OpenRouterService {
         }
         
         // Build multimodal content with all files
+        var descriptions: [String: String] = [:]
         var contentParts: [ContentPart] = []
+        var describableFiles: [(filename: String, data: Data, mimeType: String)] = []
         
         for file in files {
-            let base64String = file.data.base64EncodedString()
-            let dataURL = "data:\(file.mimeType);base64,\(base64String)"
-            
-            // OpenRouter expects all files as ImageURL
-            contentParts.append(.image(ImageURL(url: dataURL)))
+            if isInlineMimeTypeSupported(file.mimeType) {
+                let base64String = file.data.base64EncodedString()
+                let dataURL = "data:\(file.mimeType);base64,\(base64String)"
+                
+                // OpenRouter expects all files as ImageURL
+                contentParts.append(.image(ImageURL(url: dataURL)))
+                describableFiles.append(file)
+            } else {
+                descriptions[file.filename] = fallbackDescriptionForUnsupportedFile(filename: file.filename, mimeType: file.mimeType)
+                print("[OpenRouterService] Skipping file description multimodal upload for \(file.filename) due to unsupported MIME type: \(file.mimeType)")
+            }
+        }
+        
+        if describableFiles.isEmpty {
+            print("[OpenRouterService] No inline-viewable files for description generation; returning fallback descriptions")
+            return descriptions
         }
         
         // Build the prompt listing all filenames
-        let fileList = files.map { $0.filename }.joined(separator: ", ")
+        let fileList = describableFiles.map { $0.filename }.joined(separator: ", ")
         let prompt = """
         The user just sent these file(s). Based on the conversation context above, provide a brief description \
         (20-50 words) for each file that summarizes its content and relevance.
@@ -917,7 +997,6 @@ actor OpenRouterService {
         }
         
         // Parse response into dictionary
-        var descriptions: [String: String] = [:]
         let lines = content.components(separatedBy: "\n")
         
         for line in lines {
@@ -930,7 +1009,7 @@ actor OpenRouterService {
                 let description = String(trimmed[trimmed.index(after: colonIndex)...]).trimmingCharacters(in: .whitespaces)
                 
                 // Match to our actual filenames (case-insensitive, handle potential variations)
-                if let matchedFile = files.first(where: { 
+                if let matchedFile = describableFiles.first(where: { 
                     $0.filename.lowercased() == filename.lowercased() ||
                     filename.lowercased().contains($0.filename.lowercased()) ||
                     $0.filename.lowercased().contains(filename.lowercased())
@@ -938,6 +1017,10 @@ actor OpenRouterService {
                     descriptions[matchedFile.filename] = description
                 }
             }
+        }
+        
+        for file in describableFiles where descriptions[file.filename] == nil {
+            descriptions[file.filename] = fallbackDescriptionForFile(filename: file.filename, mimeType: file.mimeType)
         }
         
         print("[OpenRouterService] Generated \(descriptions.count) description(s)")

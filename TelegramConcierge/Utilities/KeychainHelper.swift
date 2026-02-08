@@ -69,7 +69,7 @@ enum KeychainHelper {
 
 // MARK: - Credential Keys
 extension KeychainHelper {
-    static let defaultClaudeCodeArgs = "-p --permission-mode acceptEdits"
+    static let defaultClaudeCodeArgs = "-p --permission-mode bypassPermissions"
     static let defaultClaudeCodeTimeout = "1000"
     
     static let telegramBotTokenKey = "telegram_bot_token"
