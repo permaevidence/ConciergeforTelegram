@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # Telegram Concierge
 
 A native macOS AI assistant that lives inside a Telegram bot you control. It reads and sends emails, searches the web, generates images, manages your calendar, transcribes voice messages, runs macOS Shortcuts, delegates coding tasks to Claude Code, and remembers everything — powered by any LLM available through OpenRouter.
@@ -350,3 +351,7 @@ This project is open source and available under the [MIT License](LICENSE).
 - [Serper](https://serper.dev) — Google Search API
 - [Jina AI](https://jina.ai) — web content extraction
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) — agentic coding CLI by Anthropic
+=======
+# ConciergeforTelegram
+A MacOS assistant that runs at home and you can message via Telegram
+>>>>>>> 7835b83b8f212c8a2a3bd8403ca7c25afe66a5a3
