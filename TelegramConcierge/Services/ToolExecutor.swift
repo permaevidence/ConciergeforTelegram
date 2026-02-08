@@ -1,0 +1,5359 @@
+import AppKit
+import Foundation
+
+// MARK: - Tool Executor
+
+/// Central dispatcher that routes tool calls to their implementations
+actor ToolExecutor {
+    private let webOrchestrator = WebOrchestrator()
+    private let archiveService = ConversationArchiveService()
+    
+    private static let runningProcessLock = NSLock()
+    private static var runningProcesses: [ObjectIdentifier: Process] = [:]
+    
+    // MARK: - Configuration
+    
+    func configure(openRouterKey: String, serperKey: String, jinaKey: String) {
+        webOrchestrator.configure(openRouterKey: openRouterKey, serperKey: serperKey, jinaKey: jinaKey)
+        Task { await archiveService.configure(apiKey: openRouterKey) }
+    }
+    
+    func cancelAllRunningProcesses() async {
+        let processes = Self.snapshotRunningProcesses()
+        guard !processes.isEmpty else { return }
+        
+        print("[ToolExecutor] Cancelling \(processes.count) running subprocess(es)")
+        for process in processes where process.isRunning {
+            process.terminate()
+        }
+        
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        
+        for process in processes where process.isRunning {
+            process.interrupt()
+        }
+    }
+    
+    private static func registerRunningProcess(_ process: Process) {
+        runningProcessLock.lock()
+        runningProcesses[ObjectIdentifier(process)] = process
+        runningProcessLock.unlock()
+    }
+    
+    private static func unregisterRunningProcess(_ process: Process) {
+        runningProcessLock.lock()
+        runningProcesses.removeValue(forKey: ObjectIdentifier(process))
+        runningProcessLock.unlock()
+    }
+    
+    private static func snapshotRunningProcesses() -> [Process] {
+        runningProcessLock.lock()
+        let processes = Array(runningProcesses.values)
+        runningProcessLock.unlock()
+        return processes
+    }
+    
+    // MARK: - Execution
+    
+    /// Execute a single tool call and return the result
+    func execute(_ call: ToolCall) async throws -> ToolResultMessage {
+        try Task.checkCancellation()
+        
+        // Special cases for tools that return ToolResultMessage with file attachment for multimodal injection
+        switch call.function.name {
+        case "read_document":
+            return await executeReadDocument(call)
+        case "read_project_file":
+            return await executeReadProjectFile(call)
+        case "download_email_attachment":
+            return await executeDownloadEmailAttachment(call)
+        case "gmail_attachment":
+            return await executeGmailAttachment(call)
+        case "generate_image":
+            return await executeGenerateImage(call)
+        case "view_page_image":
+            return await executeViewPageImage(call)
+        case "run_shortcut":
+            return await executeRunShortcut(call)
+        default:
+            break
+        }
+        
+        let content: String
+        
+        switch call.function.name {
+        case "web_search":
+            content = try await executeWebSearch(call)
+            
+        case "set_reminder":
+            content = try await executeSetReminder(call)
+            
+        case "list_reminders":
+            content = await executeListReminders(call)
+            
+        case "delete_reminder":
+            content = await executeDeleteReminder(call)
+            
+        case "view_calendar":
+            content = await executeViewCalendar(call)
+            
+        case "add_calendar_event":
+            content = await executeAddCalendarEvent(call)
+            
+        case "edit_calendar_event":
+            content = await executeEditCalendarEvent(call)
+            
+        case "delete_calendar_event":
+            content = await executeDeleteCalendarEvent(call)
+            
+        case "view_conversation_chunk":
+            content = await executeViewConversationChunk(call)
+            
+        case "read_emails":
+            content = await executeReadEmails(call)
+            
+        case "search_emails":
+            content = await executeSearchEmails(call)
+            
+        case "send_email":
+            content = await executeSendEmail(call)
+            
+        case "reply_email":
+            content = await executeReplyEmail(call)
+            
+        case "forward_email":
+            content = await executeForwardEmail(call)
+            
+        case "list_documents":
+            content = await executeListDocuments(call)
+            
+        case "send_email_with_attachment":
+            content = await executeSendEmailWithAttachment(call)
+            
+        // download_email_attachment handled above with file attachment
+            
+        case "get_email_thread":
+            content = await executeGetEmailThread(call)
+            
+        case "find_contact":
+            content = await executeFindContact(call)
+            
+        case "add_contact":
+            content = await executeAddContact(call)
+            
+        case "list_contacts":
+            content = await executeListContacts(call)
+            
+        // generate_image is handled in the special multimodal injection switch above
+            
+        case "view_url":
+            content = await executeViewUrl(call)
+            
+        case "download_from_url":
+            content = await executeDownloadFromUrl(call)
+            
+        case "send_document_to_chat":
+            content = await executeSendDocumentToChat(call)
+            
+        case "create_project":
+            content = await executeCreateProject(call)
+            
+        case "list_projects":
+            content = await executeListProjects(call)
+            
+        case "browse_project":
+            content = await executeBrowseProject(call)
+            
+        case "add_project_files":
+            content = await executeAddProjectFiles(call)
+            
+        case "run_claude_code":
+            content = await executeRunClaudeCode(call)
+            
+        case "send_project_result":
+            content = await executeSendProjectResult(call)
+            
+        case "flag_projects_for_deletion":
+            content = await executeFlagProjectsForDeletion(call)
+            
+        case "add_to_user_context":
+            content = await executeAddToUserContext(call)
+            
+        case "remove_from_user_context":
+            content = await executeRemoveFromUserContext(call)
+            
+        case "rewrite_user_context":
+            content = await executeRewriteUserContext(call)
+            
+        case "generate_document":
+            content = await executeGenerateDocument(call)
+            
+        // Shortcuts Tools
+        case "list_shortcuts":
+            content = await executeListShortcuts(call)
+        // run_shortcut is handled above with file attachment for media output
+            
+        // Gmail API Tools
+        case "gmail_query":
+            content = await executeGmailQuery(call)
+            
+        case "gmail_send":
+            content = await executeGmailSend(call)
+            
+        case "gmail_thread":
+            content = await executeGmailThread(call)
+            
+        case "gmail_forward":
+            content = await executeGmailForward(call)
+            
+        // gmail_attachment handled above with file attachment
+            
+        default:
+            content = "{\"error\": \"Unknown tool: \(call.function.name)}\"}"
+        }
+        
+        return ToolResultMessage(toolCallId: call.id, content: content)
+    }
+    
+    /// Execute multiple tool calls in parallel
+    func executeParallel(_ calls: [ToolCall]) async throws -> [ToolResultMessage] {
+        try Task.checkCancellation()
+        return try await withThrowingTaskGroup(of: ToolResultMessage.self) { group in
+            for call in calls {
+                group.addTask {
+                    try Task.checkCancellation()
+                    return try await self.execute(call)
+                }
+            }
+            
+            var results: [ToolResultMessage] = []
+            for try await result in group {
+                results.append(result)
+            }
+            return results
+        }
+    }
+    
+    // MARK: - Tool Implementations
+    
+    private func executeWebSearch(_ call: ToolCall) async throws -> String {
+        // Parse arguments from JSON string
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(WebSearchArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse web_search arguments\"}"
+        }
+        
+        do {
+            let result = try await webOrchestrator.executeForTool(query: args.query)
+            return result.asJSON()
+        } catch {
+            return "{\"error\": \"Web search failed: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func executeSetReminder(_ call: ToolCall) async throws -> String {
+        // Parse arguments
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(SetReminderArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse set_reminder arguments\"}"
+        }
+        
+        // Parse ISO 8601 datetime
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        
+        // Try with fractional seconds first, then without
+        var triggerDate: Date?
+        triggerDate = formatter.date(from: args.triggerDatetime)
+        if triggerDate == nil {
+            formatter.formatOptions = [.withInternetDateTime]
+            triggerDate = formatter.date(from: args.triggerDatetime)
+        }
+        
+        guard let date = triggerDate else {
+            return "{\"error\": \"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T09:00:00+01:00')\"}"
+        }
+        
+        // Validate it's in the future
+        guard date > Date() else {
+            return "{\"error\": \"Reminder datetime must be in the future\"}"
+        }
+        
+        // Parse recurrence if provided
+        var recurrence: RecurrenceType? = nil
+        if let recurrenceStr = args.recurrence?.lowercased() {
+            switch recurrenceStr {
+            case "daily":
+                recurrence = .daily
+            case "weekly":
+                recurrence = .weekly
+            case "monthly":
+                recurrence = .monthly
+            default:
+                // Check for "every_X_minutes" pattern
+                if recurrenceStr.hasPrefix("every_") && recurrenceStr.hasSuffix("_minutes") {
+                    let numberPart = recurrenceStr
+                        .replacingOccurrences(of: "every_", with: "")
+                        .replacingOccurrences(of: "_minutes", with: "")
+                    if let minutes = Int(numberPart), minutes > 0 {
+                        recurrence = .custom(minutes: minutes)
+                    }
+                }
+            }
+        }
+        
+        // Create the reminder
+        let reminder = await ReminderService.shared.addReminder(triggerDate: date, prompt: args.prompt, recurrence: recurrence)
+        
+        // Format response
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .full
+        dateFormatter.timeStyle = .short
+        
+        var message = "Reminder successfully scheduled"
+        if let rec = recurrence {
+            message += " (recurring: \(rec.description))"
+        }
+        
+        let result = SetReminderResult(
+            success: true,
+            reminderId: reminder.id.uuidString,
+            scheduledFor: dateFormatter.string(from: date),
+            message: message
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{\"success\": true, \"message\": \"Reminder scheduled\"}"
+    }
+    
+    private func executeListReminders(_ call: ToolCall) async -> String {
+        let reminders = await ReminderService.shared.getPendingReminders()
+        
+        if reminders.isEmpty {
+            return #"{"success": true, "count": 0, "reminders": [], "message": "No pending reminders"}"#
+        }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+        
+        // Build JSON entries for each reminder directly
+        var jsonEntries: [String] = []
+        for reminder in reminders {
+            let idStr = reminder.id.uuidString
+            let triggerDT = ISO8601DateFormatter().string(from: reminder.triggerDate)
+            let triggerReadable = dateFormatter.string(from: reminder.triggerDate)
+            let promptEscaped = reminder.prompt
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+                .replacingOccurrences(of: "\n", with: "\\n")
+            
+            var entryFields = [
+                "\"id\": \"\(idStr)\"",
+                "\"trigger_datetime\": \"\(triggerDT)\"",
+                "\"trigger_datetime_readable\": \"\(triggerReadable)\"",
+                "\"prompt\": \"\(promptEscaped)\""
+            ]
+            
+            if let rec = reminder.recurrence {
+                entryFields.append("\"recurrence\": \"\(rec.description)\"")
+            }
+            
+            jsonEntries.append("{\(entryFields.joined(separator: ", "))}")
+        }
+        
+        let remindersJson = jsonEntries.joined(separator: ", ")
+        return "{\"success\": true, \"count\": \(reminders.count), \"reminders\": [\(remindersJson)], \"message\": \"Found \(reminders.count) pending reminder(s)\"}"
+    }
+    
+    private func executeDeleteReminder(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(DeleteReminderArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse delete_reminder arguments"}"#
+        }
+        
+        guard let reminderId = UUID(uuidString: args.reminderId) else {
+            return #"{"error": "Invalid reminder_id format. Must be a valid UUID."}"#
+        }
+        
+        let success = await ReminderService.shared.deleteReminder(id: reminderId)
+        
+        if success {
+            return #"{"success": true, "message": "Reminder deleted successfully"}"#
+        } else {
+            return #"{"error": "Reminder not found with the specified ID"}"#
+        }
+    }
+    // MARK: - Calendar Tool Implementations
+    
+    private func executeViewCalendar(_ call: ToolCall) async -> String {
+        // Parse arguments (optional)
+        var includePast = false
+        if let argsData = call.function.arguments.data(using: .utf8),
+           let args = try? JSONDecoder().decode(ViewCalendarArguments.self, from: argsData) {
+            includePast = args.includePast ?? false
+        }
+        
+        let events = await CalendarService.shared.getEvents(includePast: includePast)
+        
+        let formatter = DateFormatter()
+        formatter.dateStyle = .medium
+        formatter.timeStyle = .short
+        
+        let eventList = events.map { event -> CalendarEventResponse in
+            CalendarEventResponse(
+                id: event.id.uuidString,
+                title: event.title,
+                datetime: formatter.string(from: event.datetime),
+                datetimeISO: ISO8601DateFormatter().string(from: event.datetime),
+                notes: event.notes,
+                isPast: event.datetime < Date()
+            )
+        }
+        
+        let result = ViewCalendarResult(
+            success: true,
+            eventCount: eventList.count,
+            events: eventList,
+            message: eventList.isEmpty ? "No events found" : "Found \(eventList.count) event(s)"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{\"success\": true, \"eventCount\": 0, \"events\": []}"
+    }
+    
+    private func executeAddCalendarEvent(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(AddCalendarEventArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse add_calendar_event arguments\"}"
+        }
+        
+        // Parse ISO 8601 datetime
+        guard let eventDate = parseISO8601Date(args.datetime) else {
+            return "{\"error\": \"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')\"}"
+        }
+        
+        let event = await CalendarService.shared.addEvent(
+            title: args.title,
+            datetime: eventDate,
+            notes: args.notes
+        )
+        
+        let formatter = DateFormatter()
+        formatter.dateStyle = .full
+        formatter.timeStyle = .short
+        
+        let result = AddCalendarEventResult(
+            success: true,
+            eventId: event.id.uuidString,
+            scheduledFor: formatter.string(from: eventDate),
+            message: "Event '\(args.title)' successfully added to calendar"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{\"success\": true, \"message\": \"Event added\"}"
+    }
+    
+    private func executeEditCalendarEvent(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(EditCalendarEventArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse edit_calendar_event arguments\"}"
+        }
+        
+        guard let eventId = UUID(uuidString: args.eventId) else {
+            return "{\"error\": \"Invalid event_id format. Must be a valid UUID.\"}"
+        }
+        
+        // Parse datetime if provided
+        var newDatetime: Date? = nil
+        if let datetimeString = args.datetime {
+            guard let parsed = parseISO8601Date(datetimeString) else {
+                return "{\"error\": \"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')\"}"
+            }
+            newDatetime = parsed
+        }
+        
+        let success = await CalendarService.shared.updateEvent(
+            id: eventId,
+            title: args.title,
+            datetime: newDatetime,
+            notes: args.notes
+        )
+        
+        if success {
+            return "{\"success\": true, \"message\": \"Event updated successfully\"}"
+        } else {
+            return "{\"error\": \"Event not found with the specified ID\"}"
+        }
+    }
+    
+    private func executeDeleteCalendarEvent(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(DeleteCalendarEventArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse delete_calendar_event arguments\"}"
+        }
+        
+        guard let eventId = UUID(uuidString: args.eventId) else {
+            return "{\"error\": \"Invalid event_id format. Must be a valid UUID.\"}"
+        }
+        
+        let success = await CalendarService.shared.deleteEvent(id: eventId)
+        
+        if success {
+            return "{\"success\": true, \"message\": \"Event deleted successfully\"}"
+        } else {
+            return "{\"error\": \"Event not found with the specified ID\"}"
+        }
+    }
+    
+    // MARK: - Helpers
+    
+    private func parseISO8601Date(_ string: String) -> Date? {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = formatter.date(from: string) {
+            return date
+        }
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter.date(from: string)
+    }
+    
+    // MARK: - Conversation History Viewing
+    
+    private func executeViewConversationChunk(_ call: ToolCall) async -> String {
+        // Parse arguments (chunk_id is now optional)
+        var chunkIdStr: String? = nil
+        if let argsData = call.function.arguments.data(using: .utf8),
+           let args = try? JSONDecoder().decode(ViewConversationChunkArguments.self, from: argsData) {
+            chunkIdStr = args.chunkId?.trimmingCharacters(in: .whitespaces)
+        }
+        
+        // Get all chunks
+        let allChunks = await archiveService.getAllChunks()
+        
+        // MODE 1: List all chunk summaries (when no chunk_id provided)
+        if chunkIdStr == nil || chunkIdStr?.isEmpty == true {
+            if allChunks.isEmpty {
+                return "{\"success\": true, \"message\": \"No archived conversation chunks yet. Chunks are created as conversations grow.\"}"
+            }
+            
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .short
+            dateFormatter.timeStyle = .short
+            
+            var output = """
+            === ALL ARCHIVED CONVERSATION CHUNKS ===
+            Total: \(allChunks.count) chunk(s)
+            
+            """
+            
+            for chunk in allChunks.sorted(by: { $0.startDate < $1.startDate }) {
+                let shortId = String(chunk.id.uuidString.prefix(8))
+                let dateRange = "\(dateFormatter.string(from: chunk.startDate)) - \(dateFormatter.string(from: chunk.endDate))"
+                let typeLabel = chunk.type == .consolidated ? "CONSOLIDATED" : "TEMPORARY"
+                
+                output += """
+                
+                [\(shortId)] (\(typeLabel), \(chunk.sizeLabel))
+                Period: \(dateRange)
+                Messages: \(chunk.messageCount)
+                Summary: \(chunk.summary)
+                
+                ---
+                """
+            }
+            
+            output += "\n\nTo view full messages from a chunk, call: view_conversation_chunk(chunk_id: \"<8-char ID>\")"
+            
+            return output
+        }
+        
+        // MODE 2: View specific chunk content (when chunk_id is provided)
+        do {
+            guard let chunk = allChunks.first(where: { 
+                $0.id.uuidString == chunkIdStr || 
+                $0.id.uuidString.hasPrefix(chunkIdStr!) ||
+                $0.id.uuidString.lowercased().hasPrefix(chunkIdStr!.lowercased())
+            }) else {
+                return "{\"error\": \"Chunk not found with ID: \(chunkIdStr!). Call view_conversation_chunk() without arguments to see all available chunks.\"}"
+            }
+            
+            // Get the full chunk content
+            let content = try await archiveService.getChunkContent(chunkId: chunk.id)
+            
+            // Format the date range for context
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            dateFormatter.timeStyle = .short
+            
+            let header = """
+            === CHUNK DETAILS ===
+            ID: \(chunk.id.uuidString)
+            Type: \(chunk.sizeLabel) (\(chunk.type == .temporary ? "temporary" : "consolidated"))
+            Period: \(dateFormatter.string(from: chunk.startDate)) to \(dateFormatter.string(from: chunk.endDate))
+            Messages: \(chunk.messageCount)
+            
+            === CHUNK MESSAGES ===
+            
+            """
+            
+            return header + content
+        } catch {
+            return "{\"error\": \"Failed to load chunk: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    // MARK: - User Context Management
+    
+    private let maxContextCharacters = 20000 // ~5000 tokens
+    
+    private func executeAddToUserContext(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(AddToUserContextArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse add_to_user_context arguments"}"#
+        }
+        
+        let newFact = args.fact.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newFact.isEmpty else {
+            return #"{"error": "Fact cannot be empty"}"#
+        }
+        
+        // Load existing context
+        let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+        
+        // Append new fact
+        var updatedContext: String
+        if existingContext.isEmpty {
+            updatedContext = newFact
+        } else {
+            updatedContext = existingContext + "\n" + newFact
+        }
+        
+        // Check length limit
+        if updatedContext.count > maxContextCharacters {
+            return #"{"error": "Cannot add fact: context would exceed 5000 token limit. Use remove_from_user_context to clean up old facts first, or use rewrite_user_context to reorganize."}"#
+        }
+        
+        // Save
+        do {
+            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
+            let tokenEstimate = updatedContext.count / 4
+            let remainingTokens = (maxContextCharacters - updatedContext.count) / 4
+            return """
+            {"success": true, "message": "Fact added to user context", "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
+            """
+        } catch {
+            return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
+        }
+    }
+    
+    private func executeRemoveFromUserContext(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(RemoveFromUserContextArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse remove_from_user_context arguments"}"#
+        }
+        
+        let keywords = args.keywords.lowercased()
+        guard !keywords.isEmpty else {
+            return #"{"error": "Keywords cannot be empty"}"#
+        }
+        
+        // Load existing context
+        guard let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey),
+              !existingContext.isEmpty else {
+            return #"{"error": "User context is empty, nothing to remove"}"#
+        }
+        
+        // Split by lines and filter out lines containing keywords
+        let lines = existingContext.components(separatedBy: "\n")
+        let filteredLines = lines.filter { !$0.lowercased().contains(keywords) }
+        
+        let removedCount = lines.count - filteredLines.count
+        if removedCount == 0 {
+            return #"{"success": true, "message": "No lines matched the keywords, nothing removed", "removed_count": 0}"#
+        }
+        
+        let updatedContext = filteredLines.joined(separator: "\n")
+        
+        // Save
+        do {
+            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
+            let tokenEstimate = updatedContext.count / 4
+            let remainingTokens = (maxContextCharacters - updatedContext.count) / 4
+            return """
+            {"success": true, "message": "Removed \(removedCount) line(s) containing '\\(args.keywords)'", "removed_count": \(removedCount), "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
+            """
+        } catch {
+            return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
+        }
+    }
+    
+    private func executeRewriteUserContext(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(RewriteUserContextArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse rewrite_user_context arguments"}"#
+        }
+        
+        var contextToSave = args.newContext
+        var wasTruncated = false
+        
+        if contextToSave.count > maxContextCharacters {
+            contextToSave = String(contextToSave.prefix(maxContextCharacters))
+            wasTruncated = true
+            print("[ToolExecutor] User context truncated from \(args.newContext.count) to \(maxContextCharacters) characters")
+        }
+        
+        // Save
+        do {
+            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: contextToSave)
+            
+            let tokenEstimate = contextToSave.count / 4
+            let remainingTokens = (maxContextCharacters - contextToSave.count) / 4
+            var message = "User context rewritten successfully"
+            if wasTruncated {
+                message += ". Note: truncated to fit 5000 token limit."
+            }
+            
+            return """
+            {"success": true, "message": "\(message)", "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
+            """
+        } catch {
+            return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
+        }
+    }
+    
+}
+
+// MARK: - Tool Argument Types
+
+private func normalizeRecipientList(_ recipients: [String]) -> [String] {
+    var seen: Set<String> = []
+    var normalized: [String] = []
+    
+    for recipient in recipients {
+        let trimmed = recipient.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { continue }
+        let key = trimmed.lowercased()
+        guard seen.insert(key).inserted else { continue }
+        normalized.append(trimmed)
+    }
+    
+    return normalized
+}
+
+private func parseRecipientsFromString(_ value: String) -> [String] {
+    let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return [] }
+    
+    if let data = trimmed.data(using: .utf8),
+       let parsed = try? JSONDecoder().decode([String].self, from: data) {
+        return normalizeRecipientList(parsed)
+    }
+    
+    let split = trimmed.split(whereSeparator: { $0 == "," || $0 == ";" }).map(String.init)
+    return normalizeRecipientList(split)
+}
+
+private func decodeRecipients<K: CodingKey>(from container: KeyedDecodingContainer<K>, forKey key: K) -> [String] {
+    if let array = try? container.decodeIfPresent([String].self, forKey: key) {
+        return normalizeRecipientList(array ?? [])
+    }
+    
+    if let value = try? container.decode(String.self, forKey: key) {
+        return parseRecipientsFromString(value)
+    }
+    
+    return []
+}
+
+private func isLikelyValidEmailAddress(_ address: String) -> Bool {
+    let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+    return trimmed.contains("@") && trimmed.contains(".")
+}
+
+private func allEmailAddressesAreValid(_ addresses: [String]) -> Bool {
+    addresses.allSatisfy { isLikelyValidEmailAddress($0) }
+}
+
+struct WebSearchArguments: Codable {
+    let query: String
+}
+
+struct SetReminderArguments: Codable {
+    let triggerDatetime: String
+    let prompt: String
+    let recurrence: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case triggerDatetime = "trigger_datetime"
+        case prompt
+        case recurrence
+    }
+}
+
+struct SetReminderResult: Codable {
+    let success: Bool
+    let reminderId: String
+    let scheduledFor: String
+    let message: String
+}
+
+struct DeleteReminderArguments: Codable {
+    let reminderId: String
+    
+    enum CodingKeys: String, CodingKey {
+        case reminderId = "reminder_id"
+    }
+}
+
+struct AddToUserContextArguments: Codable {
+    let fact: String
+}
+
+struct RemoveFromUserContextArguments: Codable {
+    let keywords: String
+}
+
+struct RewriteUserContextArguments: Codable {
+    let newContext: String
+    
+    enum CodingKeys: String, CodingKey {
+        case newContext = "new_context"
+    }
+}
+
+
+
+// MARK: - Calendar Tool Argument Types
+
+struct ViewCalendarArguments: Codable {
+    let includePast: Bool?
+    
+    enum CodingKeys: String, CodingKey {
+        case includePast = "include_past"
+    }
+}
+
+struct AddCalendarEventArguments: Codable {
+    let title: String
+    let datetime: String
+    let notes: String?
+}
+
+struct EditCalendarEventArguments: Codable {
+    let eventId: String
+    let title: String?
+    let datetime: String?
+    let notes: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case eventId = "event_id"
+        case title, datetime, notes
+    }
+}
+
+struct DeleteCalendarEventArguments: Codable {
+    let eventId: String
+    
+    enum CodingKeys: String, CodingKey {
+        case eventId = "event_id"
+    }
+}
+
+// MARK: - Calendar Tool Result Types
+
+struct CalendarEventResponse: Codable {
+    let id: String
+    let title: String
+    let datetime: String
+    let datetimeISO: String
+    let notes: String?
+    let isPast: Bool
+}
+
+struct ViewCalendarResult: Codable {
+    let success: Bool
+    let eventCount: Int
+    let events: [CalendarEventResponse]
+    let message: String
+}
+
+struct AddCalendarEventResult: Codable {
+    let success: Bool
+    let eventId: String
+    let scheduledFor: String
+    let message: String
+}
+
+// MARK: - Conversation History View Types
+
+struct ViewConversationChunkArguments: Codable {
+    let chunkId: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case chunkId = "chunk_id"
+    }
+}
+
+// MARK: - Email Tool Types
+
+struct ReadEmailsArguments: Codable {
+    let count: Int?
+}
+
+struct ReadEmailsResult: Codable {
+    let success: Bool
+    let emailCount: Int
+    let emails: [EmailMessage]
+    let message: String
+}
+
+struct SearchEmailsArguments: Codable {
+    let query: String?
+    let from: String?
+    let since: String?
+    let before: String?
+    let folder: String?
+    let limit: Int?
+}
+
+struct SendEmailArguments: Codable {
+    let to: String
+    let subject: String
+    let body: String
+    let cc: [String]
+    let bcc: [String]
+    
+    enum CodingKeys: String, CodingKey {
+        case to, subject, body, cc, bcc
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        to = try container.decode(String.self, forKey: .to)
+        subject = try container.decode(String.self, forKey: .subject)
+        body = try container.decode(String.self, forKey: .body)
+        cc = decodeRecipients(from: container, forKey: .cc)
+        bcc = decodeRecipients(from: container, forKey: .bcc)
+    }
+}
+
+struct SendEmailResult: Codable {
+    let success: Bool
+    let message: String
+}
+
+struct ReplyEmailArguments: Codable {
+    let messageId: String
+    let to: String
+    let subject: String
+    let body: String
+    
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+        case to, subject, body
+    }
+}
+
+// MARK: - Email Tool Execution Extension
+
+extension ToolExecutor {
+    func executeReadEmails(_ call: ToolCall) async -> String {
+        // Parse arguments (optional count) - default to 10
+        var count = 10
+        if let argsData = call.function.arguments.data(using: .utf8),
+           let args = try? JSONDecoder().decode(ReadEmailsArguments.self, from: argsData),
+           let argCount = args.count {
+            count = min(max(argCount, 1), 20)
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        do {
+            let emails = try await EmailService.shared.fetchEmails(count: count)
+            
+            // Update the cache with fresh data
+            await EmailService.shared.updateCache(with: emails)
+            
+            let result = ReadEmailsResult(
+                success: true,
+                emailCount: emails.count,
+                emails: emails,
+                message: emails.isEmpty ? "No emails found" : "Found \(emails.count) email(s)"
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"emailCount\": \(emails.count)}"
+        } catch {
+            return "{\"error\": \"Failed to read emails: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    func executeSearchEmails(_ call: ToolCall) async -> String {
+        // Parse arguments
+        var query: String? = nil
+        var from: String? = nil
+        var since: Date? = nil
+        var before: Date? = nil
+        var folder: String? = nil
+        var limit = 10
+        
+        if let argsData = call.function.arguments.data(using: .utf8),
+           let args = try? JSONDecoder().decode(SearchEmailsArguments.self, from: argsData) {
+            query = args.query
+            from = args.from
+            folder = args.folder
+            if let argLimit = args.limit {
+                limit = min(max(argLimit, 1), 50)
+            }
+            
+            // Parse date strings (YYYY-MM-DD format)
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateFormat = "yyyy-MM-dd"
+            dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+            
+            if let sinceStr = args.since {
+                since = dateFormatter.date(from: sinceStr)
+            }
+            if let beforeStr = args.before {
+                before = dateFormatter.date(from: beforeStr)
+            }
+        }
+        
+        // Validate at least one search criteria (folder alone is valid for browsing)
+        if query == nil && from == nil && since == nil && before == nil && folder == nil {
+            return "{\"error\": \"At least one search criteria (query, from, since, before, or folder) is required.\"}"
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        do {
+            let emails = try await EmailService.shared.searchEmails(
+                query: query,
+                from: from,
+                since: since,
+                before: before,
+                folder: folder,
+                limit: limit
+            )
+            
+            let result = ReadEmailsResult(
+                success: true,
+                emailCount: emails.count,
+                emails: emails,
+                message: emails.isEmpty ? "No emails found matching the search criteria" : "Found \(emails.count) email(s) matching your search"
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"emailCount\": \(emails.count)}"
+        } catch {
+            return "{\"error\": \"Email search failed: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    func executeSendEmail(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(SendEmailArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse send_email arguments\"}"
+        }
+        
+        // Basic email validation
+        guard isLikelyValidEmailAddress(args.to) else {
+            return "{\"error\": \"Invalid email address format\"}"
+        }
+        
+        guard allEmailAddressesAreValid(args.cc + args.bcc) else {
+            return "{\"error\": \"Invalid cc or bcc email address format\"}"
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        do {
+            let success = try await EmailService.shared.sendEmail(
+                to: args.to,
+                subject: args.subject,
+                body: args.body,
+                cc: args.cc,
+                bcc: args.bcc
+            )
+            
+            if success {
+                let result = SendEmailResult(
+                    success: true,
+                    message: "Email sent successfully to \(args.to)"
+                )
+                
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                    return json
+                }
+                return "{\"success\": true, \"message\": \"Email sent\"}"
+            } else {
+                return "{\"error\": \"Failed to send email\"}"
+            }
+        } catch {
+            return "{\"error\": \"Failed to send email: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    func executeReplyEmail(_ call: ToolCall) async -> String {
+        print("[ToolExecutor] executeReplyEmail called with arguments: \(call.function.arguments)")
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ReplyEmailArguments.self, from: argsData) else {
+            print("[ToolExecutor] Failed to parse reply_email arguments")
+            return "{\"error\": \"Failed to parse reply_email arguments\"}"
+        }
+        
+        print("[ToolExecutor] Parsed args - to: \(args.to), subject: \(args.subject), messageId: \(args.messageId)")
+        
+        // Basic email validation
+        guard args.to.contains("@") && args.to.contains(".") else {
+            print("[ToolExecutor] Invalid email address: \(args.to)")
+            return "{\"error\": \"Invalid email address format\"}"
+        }
+        
+        // Validate message_id format (should be <...>)
+        guard args.messageId.hasPrefix("<") && args.messageId.hasSuffix(">") else {
+            print("[ToolExecutor] Invalid message_id format: \(args.messageId)")
+            return "{\"error\": \"Invalid message_id format. Must be in format <id@domain>\"}"
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            print("[ToolExecutor] Email not configured")
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        print("[ToolExecutor] Calling EmailService.replyToEmail...")
+        
+        do {
+            let success = try await EmailService.shared.replyToEmail(
+                inReplyTo: args.messageId,
+                references: nil,  // For single-level replies, In-Reply-To is sufficient
+                to: args.to,
+                subject: args.subject,
+                body: args.body
+            )
+            
+            print("[ToolExecutor] EmailService.replyToEmail returned: \(success)")
+            
+            if success {
+                let result = SendEmailResult(
+                    success: true,
+                    message: "Reply sent successfully to \(args.to) (threaded with original email)"
+                )
+                
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                    print("[ToolExecutor] Reply email success, returning result")
+                    return json
+                }
+                return "{\"success\": true, \"message\": \"Reply sent\"}"
+            } else {
+                print("[ToolExecutor] EmailService.replyToEmail returned false")
+                return "{\"error\": \"Failed to send reply\"}"
+            }
+        } catch {
+            print("[ToolExecutor] EmailService.replyToEmail threw error: \(error)")
+            return "{\"error\": \"Failed to send reply: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    func executeForwardEmail(_ call: ToolCall) async -> String {
+        print("[ToolExecutor] executeForwardEmail called with arguments: \(call.function.arguments)")
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ForwardEmailArguments.self, from: argsData) else {
+            print("[ToolExecutor] Failed to parse forward_email arguments")
+            return "{\"error\": \"Failed to parse forward_email arguments\"}"
+        }
+        
+        print("[ToolExecutor] Parsed args - to: \(args.to), emailUid: \(args.emailUid), originalSubject: \(args.originalSubject)")
+        
+        // Basic email validation
+        guard args.to.contains("@") && args.to.contains(".") else {
+            print("[ToolExecutor] Invalid email address: \(args.to)")
+            return "{\"error\": \"Invalid email address format\"}"
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            print("[ToolExecutor] Email not configured")
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        // Fetch the original email to get attachments info
+        print("[ToolExecutor] Fetching original email to check for attachments...")
+        var attachments: [EmailService.ForwardAttachment] = []
+        
+        do {
+            let emails = try await EmailService.shared.fetchFullEmailsByUID([args.emailUid])
+            if let email = emails.first, !email.attachments.isEmpty {
+                print("[ToolExecutor] Found \(email.attachments.count) attachment(s) to forward - downloading in batch...")
+                
+                // Create a map from partId to correct filename/mimeType from the original attachment list
+                var attachmentInfo: [String: (filename: String, mimeType: String)] = [:]
+                for attachment in email.attachments {
+                    attachmentInfo[attachment.partId] = (filename: attachment.filename, mimeType: attachment.mimeType)
+                }
+                
+                // Get all part IDs for batch download
+                let partIds = email.attachments.map { $0.partId }
+                
+                // Download ALL attachments in a SINGLE IMAP session (much faster!)
+                let results = try await EmailService.shared.downloadAllAttachments(
+                    emailUid: args.emailUid,
+                    partIds: partIds
+                )
+                
+                // Convert to ForwardAttachment format, using correct filenames
+                for result in results {
+                    let info = attachmentInfo[result.partId]
+                    let correctFilename = info?.filename ?? result.filename
+                    let correctMimeType = info?.mimeType ?? result.mimeType
+                    
+                    attachments.append(EmailService.ForwardAttachment(
+                        data: result.data,
+                        filename: correctFilename,
+                        mimeType: correctMimeType
+                    ))
+                    print("[ToolExecutor] Downloaded attachment: \(correctFilename) (\(correctMimeType), \(result.data.count) bytes)")
+                }
+                
+                print("[ToolExecutor] Successfully downloaded \(attachments.count) of \(email.attachments.count) attachment(s)")
+            } else {
+                print("[ToolExecutor] No attachments found in original email")
+            }
+        } catch {
+            print("[ToolExecutor] Warning: Could not fetch original email for attachments: \(error)")
+            // Continue anyway - we'll forward without attachments
+        }
+        
+        print("[ToolExecutor] Calling EmailService.forwardEmailWithAttachments with \(attachments.count) attachment(s)...")
+        
+        do {
+            let success = try await EmailService.shared.forwardEmailWithAttachments(
+                to: args.to,
+                originalFrom: args.originalFrom,
+                originalDate: args.originalDate,
+                originalSubject: args.originalSubject,
+                originalBody: args.originalBody,
+                comment: args.comment,
+                attachments: attachments
+            )
+            
+            print("[ToolExecutor] EmailService.forwardEmailWithAttachments returned: \(success)")
+            
+            if success {
+                let attachmentInfo = attachments.isEmpty 
+                    ? "" 
+                    : " including \(attachments.count) attachment(s)"
+                let result = SendEmailResult(
+                    success: true,
+                    message: "Email forwarded successfully to \(args.to)\(attachmentInfo)"
+                )
+                
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                    print("[ToolExecutor] Forward email success")
+                    return json
+                }
+                return "{\"success\": true, \"message\": \"Email forwarded with attachments\"}"
+            } else {
+                print("[ToolExecutor] EmailService.forwardEmailWithAttachments returned false")
+                return "{\"error\": \"Failed to forward email\"}"
+            }
+        } catch {
+            print("[ToolExecutor] EmailService.forwardEmailWithAttachments threw error: \(error)")
+            return "{\"error\": \"Failed to forward email: \(error.localizedDescription)\"}"
+        }
+    }
+}
+
+struct ForwardEmailArguments: Codable {
+    let to: String
+    let emailUid: String
+    let originalFrom: String
+    let originalDate: String
+    let originalSubject: String
+    let originalBody: String
+    let comment: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case to
+        case emailUid = "email_uid"
+        case originalFrom = "original_from"
+        case originalDate = "original_date"
+        case originalSubject = "original_subject"
+        case originalBody = "original_body"
+        case comment
+    }
+}
+
+// MARK: - Document Tool Types
+
+struct ListDocumentsResult: Codable {
+    let success: Bool
+    let documentCount: Int
+    let documents: [DocumentInfo]
+    let message: String
+}
+
+struct DocumentInfo: Codable {
+    let filename: String
+    let sizeKB: Int
+    let type: String
+}
+
+struct SendEmailWithAttachmentArguments: Codable {
+    let to: String
+    let subject: String
+    let body: String
+    let cc: [String]
+    let bcc: [String]
+    let documentFilenames: [String]
+    
+    enum CodingKeys: String, CodingKey {
+        case to, subject, body, cc, bcc
+        case documentFilenames = "document_filenames"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        to = try container.decode(String.self, forKey: .to)
+        subject = try container.decode(String.self, forKey: .subject)
+        body = try container.decode(String.self, forKey: .body)
+        cc = decodeRecipients(from: container, forKey: .cc)
+        bcc = decodeRecipients(from: container, forKey: .bcc)
+        
+        // Handle documentFilenames as either an array or a JSON string
+        if let array = try? container.decode([String].self, forKey: .documentFilenames) {
+            documentFilenames = array
+        } else if let jsonString = try? container.decode(String.self, forKey: .documentFilenames),
+                  let data = jsonString.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode([String].self, from: data) {
+            documentFilenames = parsed
+        } else {
+            throw DecodingError.dataCorruptedError(forKey: .documentFilenames, in: container, debugDescription: "document_filenames must be a JSON array of strings")
+        }
+    }
+}
+
+struct ReadDocumentArguments: Codable {
+    let documentFilename: String
+    
+    enum CodingKeys: String, CodingKey {
+        case documentFilename = "document_filename"
+    }
+}
+
+// MARK: - Document Tool Execution Extension
+
+extension ToolExecutor {
+    private var documentsDirectory: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let folder = appSupport.appendingPathComponent("TelegramConcierge/documents", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+    
+    func executeListDocuments(_ call: ToolCall) async -> String {
+        let fileManager = FileManager.default
+        
+        do {
+            let files = try fileManager.contentsOfDirectory(at: documentsDirectory, includingPropertiesForKeys: [.fileSizeKey])
+            
+            var documents: [DocumentInfo] = []
+            for file in files {
+                // Skip hidden files
+                guard !file.lastPathComponent.hasPrefix(".") else { continue }
+                
+                let attrs = try? fileManager.attributesOfItem(atPath: file.path)
+                let size = (attrs?[.size] as? Int) ?? 0
+                let sizeKB = size / 1024
+                let ext = file.pathExtension.lowercased()
+                
+                documents.append(DocumentInfo(
+                    filename: file.lastPathComponent,
+                    sizeKB: sizeKB,
+                    type: ext.isEmpty ? "unknown" : ext
+                ))
+            }
+            
+            let result = ListDocumentsResult(
+                success: true,
+                documentCount: documents.count,
+                documents: documents,
+                message: documents.isEmpty ? "No documents found" : "Found \(documents.count) document(s)"
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"documentCount\": \(documents.count)}"
+        } catch {
+            return "{\"error\": \"Failed to list documents: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    func executeReadDocument(_ call: ToolCall) async -> ToolResultMessage {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ReadDocumentArguments.self, from: argsData) else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse read_document arguments\"}")
+        }
+        
+        let documentURL = documentsDirectory.appendingPathComponent(args.documentFilename)
+        guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Document not found: \(args.documentFilename). Use list_documents to see available files.\"}")
+        }
+        
+        do {
+            let data = try Data(contentsOf: documentURL)
+            
+            // Determine MIME type from extension
+            let ext = documentURL.pathExtension.lowercased()
+            let mimeType: String
+            switch ext {
+            case "pdf": mimeType = "application/pdf"
+            case "jpg", "jpeg": mimeType = "image/jpeg"
+            case "png": mimeType = "image/png"
+            case "gif": mimeType = "image/gif"
+            case "webp": mimeType = "image/webp"
+            case "heic": mimeType = "image/heic"
+            case "txt": mimeType = "text/plain"
+            case "json": mimeType = "application/json"
+            case "html", "htm": mimeType = "text/html"
+            case "md": mimeType = "text/markdown"
+            case "csv": mimeType = "text/csv"
+            case "doc": mimeType = "application/msword"
+            case "docx": mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            case "xls": mimeType = "application/vnd.ms-excel"
+            case "xlsx": mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+            case "mp3": mimeType = "audio/mpeg"
+            case "m4a": mimeType = "audio/mp4"
+            case "wav": mimeType = "audio/wav"
+            case "ogg", "oga": mimeType = "audio/ogg"
+            case "aac": mimeType = "audio/aac"
+            case "flac": mimeType = "audio/flac"
+            default: mimeType = "application/octet-stream"
+            }
+            
+            // Create file attachment for multimodal injection
+            let attachment = FileAttachment(data: data, mimeType: mimeType, filename: args.documentFilename)
+            
+            // Result text (no base64 needed - file will be injected as multimodal content)
+            let result = """
+            {"success": true, "filename": "\(args.documentFilename)", "mimeType": "\(mimeType)", "sizeBytes": \(data.count), "message": "Document loaded and visible. You can now analyze its contents."}
+            """
+            
+            return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
+        } catch {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to read document: \(error.localizedDescription)\"}")
+        }
+    }
+    
+    func executeSendEmailWithAttachment(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(SendEmailWithAttachmentArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse send_email_with_attachment arguments\"}"
+        }
+        
+        // Basic email validation
+        guard isLikelyValidEmailAddress(args.to) else {
+            return "{\"error\": \"Invalid email address format\"}"
+        }
+        
+        guard allEmailAddressesAreValid(args.cc + args.bcc) else {
+            return "{\"error\": \"Invalid cc or bcc email address format\"}"
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        // Load all attachment files
+        var attachments: [(url: URL, name: String)] = []
+        for filename in args.documentFilenames {
+            let documentURL = documentsDirectory.appendingPathComponent(filename)
+            guard FileManager.default.fileExists(atPath: documentURL.path) else {
+                return "{\"error\": \"Document not found: \(filename). Use list_documents to see available files.\"}"
+            }
+            attachments.append((url: documentURL, name: filename))
+        }
+        
+        guard !attachments.isEmpty else {
+            return "{\"error\": \"No documents specified. Use list_documents to see available files.\"}"
+        }
+        
+        do {
+            let success = try await EmailService.shared.sendEmailWithAttachments(
+                to: args.to,
+                subject: args.subject,
+                body: args.body,
+                cc: args.cc,
+                bcc: args.bcc,
+                attachments: attachments
+            )
+            
+            if success {
+                let filenames = args.documentFilenames.joined(separator: ", ")
+                let result = SendEmailResult(
+                    success: true,
+                    message: "Email with \(attachments.count) attachment(s) (\(filenames)) sent successfully to \(args.to)"
+                )
+                
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = .prettyPrinted
+                if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                    return json
+                }
+                return "{\"success\": true, \"message\": \"Email with attachments sent\"}"
+            } else {
+                return "{\"error\": \"Failed to send email with attachments\"}"
+            }
+        } catch {
+            return "{\"error\": \"Failed to send email with attachments: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    func executeDownloadEmailAttachment(_ call: ToolCall) async -> ToolResultMessage {
+        print("[ToolExecutor] executeDownloadEmailAttachment called with arguments: \(call.function.arguments)")
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(DownloadEmailAttachmentArguments.self, from: argsData) else {
+            print("[ToolExecutor] Failed to parse download_email_attachment arguments")
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse download_email_attachment arguments\"}")
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}")
+        }
+        
+        // Handle download_all mode (batch download with multimodal injection)
+        if args.downloadAll == true {
+            print("[ToolExecutor] Batch downloading all attachments for email UID: \(args.emailUid)")
+            return await downloadAllAttachments(emailUid: args.emailUid, toolCallId: call.id)
+        }
+        
+        // Single attachment download
+        guard let partId = args.partId else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Either part_id or download_all=true must be provided\"}")
+        }
+        
+        print("[ToolExecutor] Parsed args - email_uid: \(args.emailUid), part_id: \(partId)")
+        
+        do {
+            let result = try await EmailService.shared.downloadAttachment(
+                emailUid: args.emailUid,
+                partId: partId
+            )
+            
+            print("[ToolExecutor] Downloaded attachment: \(result.filename) (\(result.mimeType), \(result.data.count) bytes)")
+            
+            // Save to documents folder
+            let savedFilename = await saveAttachmentToDocuments(data: result.data, filename: result.filename, mimeType: result.mimeType)
+            
+            // Determine content type for description
+            let contentType: String
+            if result.mimeType.hasPrefix("image/") {
+                contentType = "image"
+            } else if result.mimeType == "application/pdf" {
+                contentType = "pdf"
+            } else if result.mimeType.hasPrefix("text/") {
+                contentType = "text"
+            } else {
+                contentType = "binary"
+            }
+            
+            // Create file attachment for multimodal injection (just like read_document)
+            let attachment = FileAttachment(data: result.data, mimeType: result.mimeType, filename: result.filename)
+            
+            // Queue for description generation after agentic loop completes
+            ToolExecutor.queueFileForDescription(filename: savedFilename, data: result.data, mimeType: result.mimeType)
+            
+            // Result text (no base64 needed - file will be injected as multimodal content)
+            let resultJson = """
+            {"success": true, "filename": "\(result.filename)", "mimeType": "\(result.mimeType)", "sizeBytes": \(result.data.count), "savedFilename": "\(savedFilename)", "message": "Attachment '\(result.filename)' downloaded and visible. You can now analyze this \(contentType) content directly."}
+            """
+            
+            return ToolResultMessage(toolCallId: call.id, content: resultJson, fileAttachment: attachment)
+        } catch {
+            print("[ToolExecutor] Error downloading attachment: \(error)")
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to download attachment: \(error.localizedDescription)\"}")
+        }
+    }
+    
+    /// Download all attachments from an email and return with multimodal injection
+    private func downloadAllAttachments(emailUid: String, toolCallId: String) async -> ToolResultMessage {
+        do {
+            // First, fetch the email to get attachment list
+            let emails = try await EmailService.shared.fetchFullEmailsByUID([emailUid])
+            
+            guard let email = emails.first else {
+                return ToolResultMessage(toolCallId: toolCallId, content: "{\"error\": \"Email not found with UID \(emailUid)\"}")
+            }
+            
+            guard !email.attachments.isEmpty else {
+                return ToolResultMessage(toolCallId: toolCallId, content: "{\"error\": \"No attachments found in this email\"}")
+            }
+            
+            // Create a map from partId to correct filename/mimeType from the original attachment list
+            // This is more reliable than parsing from BODYSTRUCTURE which can be buggy
+            var attachmentInfo: [String: (filename: String, mimeType: String)] = [:]
+            for attachment in email.attachments {
+                attachmentInfo[attachment.partId] = (filename: attachment.filename, mimeType: attachment.mimeType)
+            }
+            
+            // Get all part IDs for batch download
+            let partIds = email.attachments.map { $0.partId }
+            
+            // Download ALL attachments in a SINGLE IMAP session (much faster!)
+            let results = try await EmailService.shared.downloadAllAttachments(
+                emailUid: emailUid,
+                partIds: partIds
+            )
+            
+            var downloadedFiles: [BatchAttachmentResult] = []
+            var fileAttachments: [FileAttachment] = []
+            var errors: [String] = []
+            
+            // Process downloaded attachments
+            for result in results {
+                // Use the original filename from the attachment list, not from the download response
+                let info = attachmentInfo[result.partId]
+                let correctFilename = info?.filename ?? result.filename
+                let correctMimeType = info?.mimeType ?? result.mimeType
+                
+                let savedFilename = await saveAttachmentToDocuments(
+                    data: result.data,
+                    filename: correctFilename,
+                    mimeType: correctMimeType
+                )
+                
+                downloadedFiles.append(BatchAttachmentResult(
+                    filename: correctFilename,
+                    mimeType: correctMimeType,
+                    sizeBytes: result.data.count,
+                    savedFilename: savedFilename
+                ))
+                
+                // Create file attachment for multimodal injection
+                fileAttachments.append(FileAttachment(
+                    data: result.data,
+                    mimeType: correctMimeType,
+                    filename: correctFilename
+                ))
+                
+                // Queue for description generation after agentic loop completes
+                ToolExecutor.queueFileForDescription(filename: savedFilename, data: result.data, mimeType: correctMimeType)
+                
+                print("[ToolExecutor] Downloaded attachment: \(correctFilename) -> \(savedFilename)")
+            }
+            
+            // Track any attachments that failed (weren't in results)
+            let downloadedPartIds = Set(results.map { $0.partId })
+            for attachment in email.attachments where !downloadedPartIds.contains(attachment.partId) {
+                errors.append("\(attachment.filename): Failed to download")
+                print("[ToolExecutor] Failed to download attachment \(attachment.filename) (partId: \(attachment.partId))")
+            }
+            
+            let response = BatchDownloadResult(
+                success: !downloadedFiles.isEmpty,
+                totalAttachments: email.attachments.count,
+                downloadedCount: downloadedFiles.count,
+                files: downloadedFiles,
+                errors: errors.isEmpty ? nil : errors,
+                message: downloadedFiles.isEmpty 
+                    ? "Failed to download attachments" 
+                    : "Downloaded \(downloadedFiles.count) of \(email.attachments.count) attachments. All files are now visible for analysis."
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(response), let json = String(data: data, encoding: .utf8) {
+                return ToolResultMessage(toolCallId: toolCallId, content: json, fileAttachments: fileAttachments)
+            }
+            
+            return ToolResultMessage(toolCallId: toolCallId, content: "{\"success\": true, \"downloadedCount\": \(downloadedFiles.count)}", fileAttachments: fileAttachments)
+        } catch {
+            print("[ToolExecutor] Error in batch download: \(error)")
+            return ToolResultMessage(toolCallId: toolCallId, content: "{\"error\": \"Failed to fetch email attachments: \(error.localizedDescription)\"}")
+        }
+    }
+    
+    /// Save attachment to documents folder
+    private func saveAttachmentToDocuments(data: Data, filename: String, mimeType: String) async -> String {
+        let fileManager = FileManager.default
+        
+        // Sanitize filename
+        var safeFilename = filename.replacingOccurrences(of: "/", with: "_")
+            .replacingOccurrences(of: "\\", with: "_")
+            .replacingOccurrences(of: ":", with: "_")
+        
+        // Ensure unique filename
+        var finalFilename = safeFilename
+        var counter = 1
+        while fileManager.fileExists(atPath: documentsDirectory.appendingPathComponent(finalFilename).path) {
+            let ext = (safeFilename as NSString).pathExtension
+            let name = (safeFilename as NSString).deletingPathExtension
+            finalFilename = "\(name)_\(counter).\(ext)"
+            counter += 1
+        }
+        
+        let fileURL = documentsDirectory.appendingPathComponent(finalFilename)
+        
+        do {
+            try data.write(to: fileURL)
+            print("[ToolExecutor] Saved attachment to: \(fileURL.path)")
+            
+            // Also save to images directory if it's an image
+            if mimeType.hasPrefix("image/") {
+                let imagesURL = imagesDirectory.appendingPathComponent(finalFilename)
+                try? data.write(to: imagesURL)
+            }
+            
+            return finalFilename
+        } catch {
+            print("[ToolExecutor] Failed to save attachment: \(error)")
+            return filename
+        }
+    }
+    
+    // MARK: - Gmail API Tool Implementations
+    
+    private func executeGmailQuery(_ call: ToolCall) async -> String {
+        guard await GmailService.shared.isAuthenticated else {
+            return #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings and complete OAuth authentication."}"#
+        }
+        
+        var query: String? = nil
+        var limit: Int = 10
+        
+        if let argsData = call.function.arguments.data(using: .utf8),
+           let args = try? JSONDecoder().decode(GmailQueryArguments.self, from: argsData) {
+            query = args.query
+            limit = args.limit ?? 10
+        }
+        
+        do {
+            let emails = try await GmailService.shared.queryEmails(query: query, limit: limit)
+            
+            // Format response for LLM
+            var response = "Found \(emails.count) email(s)"
+            if let q = query, !q.isEmpty {
+                response += " matching '\(q)'"
+            }
+            response += ":\n\n"
+            
+            for email in emails {
+                let from = email.getHeader("From") ?? "Unknown"
+                let subject = email.getHeader("Subject") ?? "(No subject)"
+                let date = email.getHeader("Date") ?? ""
+                let snippet = email.snippet ?? ""
+                
+                response += "---\n"
+                response += "Message ID: \(email.id)\n"
+                response += "Thread ID: \(email.threadId)\n"
+                response += "From: \(from)\n"
+                response += "Subject: \(subject)\n"
+                response += "Date: \(date)\n"
+                response += "Preview: \(snippet.prefix(200))...\n"
+                
+                // List attachments with their attachment IDs (required for gmail_attachment tool)
+                let attachments = email.payload?.getAttachmentParts() ?? []
+                if !attachments.isEmpty {
+                    response += "Attachments:\n"
+                    for attachment in attachments {
+                        let filename = attachment.filename ?? "unknown"
+                        let attachmentId = attachment.body?.attachmentId ?? "N/A"
+                        let size = attachment.body?.size ?? 0
+                        response += "  - \(filename) (attachment_id: \(attachmentId), size: \(size) bytes)\n"
+                    }
+                }
+            }
+            
+            return response
+        } catch {
+            return "{\"error\": \"Gmail query failed: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func executeGmailSend(_ call: ToolCall) async -> String {
+        guard await GmailService.shared.isAuthenticated else {
+            return #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings."}"#
+        }
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GmailSendArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse gmail_send arguments"}"#
+        }
+        
+        guard isLikelyValidEmailAddress(args.to) else {
+            return #"{"error": "Invalid email address format"}"#
+        }
+        
+        guard allEmailAddressesAreValid(args.cc + args.bcc) else {
+            return #"{"error": "Invalid cc or bcc email address format"}"#
+        }
+        
+        do {
+            // Load multiple attachments if specified
+            var attachments: [(data: Data, name: String, mimeType: String)] = []
+            
+            if let filenames = args.attachmentFilenames {
+                for filename in filenames {
+                    let fileURL = documentsDirectory.appendingPathComponent(filename)
+                    if FileManager.default.fileExists(atPath: fileURL.path) {
+                        let data = try Data(contentsOf: fileURL)
+                        let mimeType = getMimeType(for: filename)
+                        attachments.append((data: data, name: filename, mimeType: mimeType))
+                    } else {
+                        return "{\"error\": \"Attachment file not found: \(filename). Use list_documents to see available files.\"}"
+                    }
+                }
+            }
+            
+            let success = try await GmailService.shared.sendEmail(
+                to: args.to,
+                subject: args.subject,
+                body: args.body,
+                threadId: args.threadId,
+                inReplyTo: args.inReplyTo,
+                cc: args.cc,
+                bcc: args.bcc,
+                attachments: attachments
+            )
+            
+            if success {
+                var message = "Email sent successfully to \(args.to)"
+                if args.threadId != nil {
+                    message += " (as reply in thread)"
+                }
+                if !attachments.isEmpty {
+                    message += " with \(attachments.count) attachment(s)"
+                }
+                return "{\"success\": true, \"message\": \"\(message)\"}"
+            } else {
+                return #"{"error": "Failed to send email"}"#
+            }
+        } catch {
+            return "{\"error\": \"Gmail send failed: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func executeGmailThread(_ call: ToolCall) async -> String {
+        guard await GmailService.shared.isAuthenticated else {
+            return #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings."}"#
+        }
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GmailThreadArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse gmail_thread arguments"}"#
+        }
+        
+        do {
+            let thread = try await GmailService.shared.getThread(id: args.threadId)
+            
+            var response = "=== EMAIL THREAD ===\n"
+            response += "Thread ID: \(thread.id)\n"
+            response += "Messages: \(thread.messages?.count ?? 0)\n\n"
+            
+            for (index, message) in (thread.messages ?? []).enumerated() {
+                let from = message.getHeader("From") ?? "Unknown"
+                let to = message.getHeader("To") ?? ""
+                let subject = message.getHeader("Subject") ?? "(No subject)"
+                let date = message.getHeader("Date") ?? ""
+                let body = message.getPlainTextBody()
+                
+                response += "--- Message \(index + 1) ---\n"
+                response += "Message ID: \(message.id)\n"
+                response += "From: \(from)\n"
+                response += "To: \(to)\n"
+                response += "Subject: \(subject)\n"
+                response += "Date: \(date)\n"
+                
+                // List attachments with their attachment IDs (required for gmail_attachment tool)
+                let attachments = message.payload?.getAttachmentParts() ?? []
+                if !attachments.isEmpty {
+                    response += "Attachments:\n"
+                    for attachment in attachments {
+                        let filename = attachment.filename ?? "unknown"
+                        let attachmentId = attachment.body?.attachmentId ?? "N/A"
+                        let size = attachment.body?.size ?? 0
+                        response += "  - \(filename) (attachment_id: \(attachmentId), size: \(size) bytes)\n"
+                    }
+                }
+                
+                response += "Body:\n\(body.prefix(2000))\n\n"
+            }
+            
+            return response
+        } catch {
+            return "{\"error\": \"Failed to get thread: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func executeGmailForward(_ call: ToolCall) async -> String {
+        guard await GmailService.shared.isAuthenticated else {
+            return #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings."}"#
+        }
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GmailForwardArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse gmail_forward arguments"}"#
+        }
+        
+        do {
+            let success = try await GmailService.shared.forwardEmail(
+                to: args.to,
+                messageId: args.messageId,
+                comment: args.comment
+            )
+            
+            if success {
+                return "{\"success\": true, \"message\": \"Email forwarded to \(args.to)\"}"
+            } else {
+                return #"{"error": "Failed to forward email"}"#
+            }
+        } catch {
+            return "{\"error\": \"Gmail forward failed: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func executeGmailAttachment(_ call: ToolCall) async -> ToolResultMessage {
+        print("[ToolExecutor] executeGmailAttachment called")
+        guard await GmailService.shared.isAuthenticated else {
+            print("[ToolExecutor] Gmail not authenticated")
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings."}"#)
+        }
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GmailAttachmentArguments.self, from: argsData) else {
+            print("[ToolExecutor] Failed to parse gmail_attachment arguments")
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Failed to parse gmail_attachment arguments. Make sure to include message_id, attachment_id, and filename."}"#)
+        }
+        
+        print("[ToolExecutor] Downloading attachment: messageId=\(args.messageId), attachmentId=\(args.attachmentId), filename=\(args.filename)")
+        do {
+            let result = try await GmailService.shared.downloadAttachment(
+                messageId: args.messageId,
+                attachmentId: args.attachmentId
+            )
+            
+            // Use the filename from the LLM arguments (more reliable than the lookup in GmailService)
+            let filename = args.filename
+            let mimeType = getMimeType(for: filename)
+            
+            // Save to documents folder
+            let savedFilename = await saveAttachmentToDocuments(
+                data: result.data,
+                filename: filename,
+                mimeType: mimeType
+            )
+            
+            // Determine content type for description
+            let contentType = mimeType.hasPrefix("image/") ? "image" : (mimeType == "application/pdf" ? "PDF" : "file")
+            
+            // Create file attachment for multimodal injection (just like read_document)
+            let attachment = FileAttachment(data: result.data, mimeType: mimeType, filename: filename)
+            print("[ToolExecutor] Created FileAttachment: \(filename) (\(mimeType), \(result.data.count) bytes)")
+            
+            // Queue for description generation after agentic loop completes
+            ToolExecutor.queueFileForDescription(filename: savedFilename, data: result.data, mimeType: mimeType)
+            
+            // Result text (no base64 needed - file will be injected as multimodal content)
+            let resultJson = """
+            {"success": true, "filename": "\(filename)", "mimeType": "\(mimeType)", "sizeBytes": \(result.data.count), "savedFilename": "\(savedFilename)", "message": "Attachment '\(filename)' downloaded and visible. You can now analyze this \(contentType) content directly."}
+            """
+            
+            let resultMessage = ToolResultMessage(toolCallId: call.id, content: resultJson, fileAttachment: attachment)
+            print("[ToolExecutor] Created ToolResultMessage with \(resultMessage.fileAttachments.count) attachment(s)")
+            return resultMessage
+        } catch {
+            print("[ToolExecutor] Gmail attachment download ERROR: \(error)")
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Gmail attachment download failed: \(error.localizedDescription)\"}")
+        }
+    }
+    
+    private func getMimeType(for filename: String) -> String {
+        let ext = (filename as NSString).pathExtension.lowercased()
+        switch ext {
+        case "pdf": return "application/pdf"
+        case "jpg", "jpeg": return "image/jpeg"
+        case "png": return "image/png"
+        case "gif": return "image/gif"
+        case "doc": return "application/msword"
+        case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        case "xls": return "application/vnd.ms-excel"
+        case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+        case "txt": return "text/plain"
+        case "html", "htm": return "text/html"
+        case "csv": return "text/csv"
+        case "zip": return "application/zip"
+        default: return "application/octet-stream"
+        }
+    }
+}
+
+// MARK: - Download Email Attachment Types
+
+struct DownloadEmailAttachmentArguments: Codable {
+    let emailUid: String
+    let partId: String?  // Optional when download_all is true
+    let downloadAll: Bool?  // If true, download all attachments from the email
+    
+    enum CodingKeys: String, CodingKey {
+        case emailUid = "email_uid"
+        case partId = "part_id"
+        case downloadAll = "download_all"
+    }
+}
+
+struct DownloadEmailAttachmentResult: Codable {
+    let success: Bool
+    let filename: String
+    let mimeType: String
+    let sizeBytes: Int
+    let contentType: String  // "image", "pdf", "text", "binary"
+    let base64Data: String   // Raw data for Gemini to process natively
+    let savedFilename: String  // Filename saved to documents folder
+    let message: String
+}
+
+// MARK: - Batch Download Types
+
+struct BatchAttachmentResult: Codable {
+    let filename: String
+    let mimeType: String
+    let sizeBytes: Int
+    let savedFilename: String
+}
+
+struct BatchDownloadResult: Codable {
+    let success: Bool
+    let totalAttachments: Int
+    let downloadedCount: Int
+    let files: [BatchAttachmentResult]
+    let errors: [String]?
+    let message: String
+}
+
+// MARK: - Get Email Thread Types
+
+struct GetEmailThreadArguments: Codable {
+    let messageId: String
+    
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+    }
+}
+
+struct GetEmailThreadResult: Codable {
+    let success: Bool
+    let threadEmailCount: Int
+    let emails: [EmailMessage]
+    let message: String
+}
+
+// MARK: - Get Email Thread Execution
+
+extension ToolExecutor {
+    func executeGetEmailThread(_ call: ToolCall) async -> String {
+        print("[ToolExecutor] executeGetEmailThread called with arguments: \(call.function.arguments)")
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GetEmailThreadArguments.self, from: argsData) else {
+            print("[ToolExecutor] Failed to parse get_email_thread arguments")
+            return "{\"error\": \"Failed to parse get_email_thread arguments\"}"
+        }
+        
+        print("[ToolExecutor] Parsed args - message_id: \(args.messageId)")
+        
+        // Validate message_id format (should be <...>)
+        guard args.messageId.hasPrefix("<") && args.messageId.hasSuffix(">") else {
+            print("[ToolExecutor] Invalid message_id format: \(args.messageId)")
+            return "{\"error\": \"Invalid message_id format. Must be in format <id@domain>\"}"
+        }
+        
+        // Check if email is configured
+        guard await EmailService.shared.isConfigured else {
+            return "{\"error\": \"Email is not configured. Please add IMAP/SMTP settings in the app.\"}"
+        }
+        
+        do {
+            let emails = try await EmailService.shared.fetchEmailThread(messageId: args.messageId)
+            
+            print("[ToolExecutor] fetchEmailThread returned \(emails.count) emails")
+            
+            let result = GetEmailThreadResult(
+                success: true,
+                threadEmailCount: emails.count,
+                emails: emails,
+                message: emails.isEmpty ? "No emails found in thread" : "Found \(emails.count) email(s) in thread (sorted oldest first)"
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"threadEmailCount\": \(emails.count)}"
+        } catch {
+            print("[ToolExecutor] Error fetching email thread: \(error)")
+            return "{\"error\": \"Failed to fetch email thread: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    // MARK: - Contact Tool Execution
+    
+    func executeFindContact(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(FindContactArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse find_contact arguments\"}"
+        }
+        
+        let contacts = await ContactsService.shared.searchContacts(query: args.query)
+        
+        let contactResponses = contacts.prefix(20).map { contact in
+            ContactResponse(
+                id: contact.id.uuidString,
+                firstName: contact.firstName,
+                lastName: contact.lastName,
+                fullName: contact.fullName,
+                email: contact.email,
+                phone: contact.phone,
+                organization: contact.organization
+            )
+        }
+        
+        let result = FindContactResult(
+            success: true,
+            contactCount: contactResponses.count,
+            contacts: Array(contactResponses),
+            message: contactResponses.isEmpty ? "No contacts found matching '\(args.query)'" : "Found \(contactResponses.count) contact(s) matching '\(args.query)'"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{\"success\": true, \"contactCount\": \(contactResponses.count)}"
+    }
+    
+    func executeAddContact(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(AddContactArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse add_contact arguments\"}"
+        }
+        
+        let contact = await ContactsService.shared.addContact(
+            firstName: args.firstName,
+            lastName: args.lastName,
+            email: args.email,
+            phone: args.phone,
+            organization: args.organization
+        )
+        
+        let result = AddContactResult(
+            success: true,
+            contactId: contact.id.uuidString,
+            fullName: contact.fullName,
+            message: "Contact '\(contact.fullName)' added successfully"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{\"success\": true, \"message\": \"Contact added\"}"
+    }
+    
+    func executeListContacts(_ call: ToolCall) async -> String {
+        let contacts = await ContactsService.shared.getAllContacts()
+        
+        let contactResponses = contacts.prefix(50).map { contact in
+            ContactResponse(
+                id: contact.id.uuidString,
+                firstName: contact.firstName,
+                lastName: contact.lastName,
+                fullName: contact.fullName,
+                email: contact.email,
+                phone: contact.phone,
+                organization: contact.organization
+            )
+        }
+        
+        let result = ListContactsResult(
+            success: true,
+            totalCount: contacts.count,
+            contacts: Array(contactResponses),
+            message: contacts.isEmpty ? "No contacts found. Import contacts via Settings or use add_contact to create one." : "Showing \(contactResponses.count) of \(contacts.count) contact(s)"
+        )
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+            return json
+        }
+        return "{\"success\": true, \"totalCount\": \(contacts.count)}"
+    }
+}
+
+// MARK: - Contact Tool Argument Types
+
+struct FindContactArguments: Codable {
+    let query: String
+}
+
+struct AddContactArguments: Codable {
+    let firstName: String
+    let lastName: String?
+    let email: String?
+    let phone: String?
+    let organization: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case firstName = "first_name"
+        case lastName = "last_name"
+        case email, phone, organization
+    }
+}
+
+// MARK: - Contact Tool Result Types
+
+struct ContactResponse: Codable {
+    let id: String
+    let firstName: String
+    let lastName: String?
+    let fullName: String
+    let email: String?
+    let phone: String?
+    let organization: String?
+}
+
+struct FindContactResult: Codable {
+    let success: Bool
+    let contactCount: Int
+    let contacts: [ContactResponse]
+    let message: String
+}
+
+struct AddContactResult: Codable {
+    let success: Bool
+    let contactId: String
+    let fullName: String
+    let message: String
+}
+
+struct ListContactsResult: Codable {
+    let success: Bool
+    let totalCount: Int
+    let contacts: [ContactResponse]
+    let message: String
+}
+
+// MARK: - Image Generation Tool
+
+extension ToolExecutor {
+    /// Store for generated images to be sent after tool execution
+    private static var pendingImages: [(data: Data, mimeType: String, prompt: String)] = []
+    
+    /// Store for documents to be sent after tool execution
+    private static var pendingDocuments: [(data: Data, filename: String, mimeType: String, caption: String?)] = []
+    
+    /// Store for downloaded attachments that need description generation
+    private static var pendingFilesForDescription: [(filename: String, data: Data, mimeType: String)] = []
+    
+    /// Store for downloaded filenames to add to Message history
+    private static var pendingDownloadedFilenames: [String] = []
+    
+    /// Get and clear pending images
+    static func getPendingImages() -> [(data: Data, mimeType: String, prompt: String)] {
+        let images = pendingImages
+        pendingImages = []
+        return images
+    }
+    
+    /// Get and clear pending documents
+    static func getPendingDocuments() -> [(data: Data, filename: String, mimeType: String, caption: String?)] {
+        let documents = pendingDocuments
+        pendingDocuments = []
+        return documents
+    }
+    
+    /// Get and clear files that need description generation
+    static func getPendingFilesForDescription() -> [(filename: String, data: Data, mimeType: String)] {
+        let files = pendingFilesForDescription
+        pendingFilesForDescription = []
+        return files
+    }
+    
+    /// Get and clear downloaded filenames to store in Message history
+    static func getPendingDownloadedFilenames() -> [String] {
+        let filenames = pendingDownloadedFilenames
+        pendingDownloadedFilenames = []
+        return filenames
+    }
+    
+    /// Clear all pending tool outputs (used for cancellation / interruption)
+    static func clearPendingToolOutputs() {
+        pendingImages = []
+        pendingDocuments = []
+        pendingFilesForDescription = []
+        pendingDownloadedFilenames = []
+    }
+    
+    /// Queue a file for description generation after the agentic loop completes
+    static func queueFileForDescription(filename: String, data: Data, mimeType: String) {
+        pendingFilesForDescription.append((filename: filename, data: data, mimeType: mimeType))
+        // Also track filename for Message history
+        pendingDownloadedFilenames.append(filename)
+    }
+    
+    /// Images directory for loading source images
+    private var imagesDirectory: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        return appSupport.appendingPathComponent("TelegramConcierge/images", isDirectory: true)
+    }
+    
+    func executeGenerateImage(_ call: ToolCall) async -> ToolResultMessage {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GenerateImageArguments.self, from: argsData) else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse generate_image arguments\"}")
+        }
+        
+        // Check if Gemini API is configured
+        guard await GeminiImageService.shared.isConfigured() else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Gemini API key is not configured. Please add your Google API key in Settings.\"}")
+        }
+        
+        // Load source image if provided
+        var sourceImageData: Data? = nil
+        var sourceMimeType: String? = nil
+        
+        if let sourceImage = args.sourceImage, !sourceImage.isEmpty {
+            let imageURL = imagesDirectory.appendingPathComponent(sourceImage)
+            
+            guard FileManager.default.fileExists(atPath: imageURL.path) else {
+                return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Source image not found: \(sourceImage). Make sure the filename is correct.\"}")
+            }
+            
+            do {
+                sourceImageData = try Data(contentsOf: imageURL)
+                // Determine MIME type from extension
+                let ext = imageURL.pathExtension.lowercased()
+                switch ext {
+                case "jpg", "jpeg":
+                    sourceMimeType = "image/jpeg"
+                case "png":
+                    sourceMimeType = "image/png"
+                case "gif":
+                    sourceMimeType = "image/gif"
+                case "webp":
+                    sourceMimeType = "image/webp"
+                default:
+                    sourceMimeType = "image/jpeg"
+                }
+            } catch {
+                return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to load source image: \(error.localizedDescription)\"}")
+            }
+        }
+        
+        do {
+            let (imageData, mimeType) = try await GeminiImageService.shared.generateImage(
+                prompt: args.prompt,
+                sourceImageData: sourceImageData,
+                sourceMimeType: sourceMimeType
+            )
+            
+            // Save generated image to documents folder so Gemini can reference it later
+            let fileExtension = mimeType.contains("png") ? "png" : "jpg"
+            let fileName = "generated_\(UUID().uuidString).\(fileExtension)"
+            let documentsURL = documentsDirectory.appendingPathComponent(fileName)
+            let imagesURL = imagesDirectory.appendingPathComponent(fileName)
+            
+            do {
+                try imageData.write(to: documentsURL)
+                try imageData.write(to: imagesURL)
+                print("[ToolExecutor] Saved generated image: \(fileName) (\(imageData.count) bytes)")
+            } catch {
+                print("[ToolExecutor] Failed to save generated image: \(error)")
+                // Continue anyway - we can still send to Telegram and inject multimodally
+            }
+            
+            // Store the image for sending to Telegram after the tool response
+            ToolExecutor.pendingImages.append((imageData, mimeType, args.prompt))
+            
+            // Queue file for description generation (like email attachments)
+            ToolExecutor.queueFileForDescription(filename: fileName, data: imageData, mimeType: mimeType)
+            
+            let isEdit = sourceImageData != nil
+            
+            // Create file attachment for multimodal injection (LLM can see the generated image)
+            let attachment = FileAttachment(data: imageData, mimeType: mimeType, filename: fileName)
+            print("[ToolExecutor] Created FileAttachment for generated image: \(fileName) (\(mimeType), \(imageData.count) bytes)")
+            
+            // Result text (image will be injected as multimodal content)
+            let result = """
+            {"success": true, "filename": "\(fileName)", "mimeType": "\(mimeType)", "sizeBytes": \(imageData.count), "message": "\(isEdit ? "Image transformed" : "Image generated") successfully. You can now see and analyze the result."}
+            """
+            
+            return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
+        } catch {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Image generation failed: \(error.localizedDescription)\"}")
+        }
+    }
+    
+    // MARK: - macOS Shortcuts Tool Implementations
+    
+    private func executeListShortcuts(_ call: ToolCall) async -> String {
+        if Task.isCancelled {
+            return #"{"error": "Shortcut listing cancelled"}"#
+        }
+        
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+        process.arguments = ["list"]
+        
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        
+        do {
+            try process.run()
+            ToolExecutor.registerRunningProcess(process)
+            defer { ToolExecutor.unregisterRunningProcess(process) }
+            
+            while process.isRunning {
+                if Task.isCancelled {
+                    process.terminate()
+                    try? await Task.sleep(nanoseconds: 100_000_000)
+                    if process.isRunning {
+                        process.interrupt()
+                    }
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 100_000_000)
+            }
+            
+            process.waitUntilExit()
+            
+            if Task.isCancelled {
+                return #"{"error": "Shortcut listing cancelled"}"#
+            }
+            
+            let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+            let output = String(data: outputData, encoding: .utf8) ?? ""
+            
+            if process.terminationStatus != 0 {
+                let errorData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+                let errorOutput = String(data: errorData, encoding: .utf8) ?? ""
+                return "{\"error\": \"Failed to list shortcuts: \(errorOutput.isEmpty ? "Unknown error" : errorOutput)\"}"
+            }
+            
+            // Parse the output - each line is a shortcut name
+            let shortcuts = output.components(separatedBy: "\n")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            
+            if shortcuts.isEmpty {
+                return "{\"success\": true, \"count\": 0, \"shortcuts\": [], \"message\": \"No shortcuts found. Create shortcuts in the Shortcuts app.\"}"
+            }
+            
+            let shortcutList = shortcuts.map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }.joined(separator: ", ")
+            return "{\"success\": true, \"count\": \(shortcuts.count), \"shortcuts\": [\(shortcutList)], \"message\": \"Found \(shortcuts.count) shortcut(s). Use run_shortcut with the exact name to execute.\"}"
+        } catch {
+            return "{\"error\": \"Failed to execute shortcuts command: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func executeRunShortcut(_ call: ToolCall) async -> ToolResultMessage {
+        if Task.isCancelled {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Shortcut execution cancelled"}"#)
+        }
+        
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(RunShortcutArguments.self, from: argsData) else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse run_shortcut arguments\"}")
+        }
+        
+        let shortcutName = args.name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !shortcutName.isEmpty else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Shortcut name cannot be empty\"}")
+        }
+        
+        let sandboxedTempDir = FileManager.default.temporaryDirectory
+        
+        // If input is provided, write it to the sandboxed temp dir (app owns it, CLI can read it)
+        var inputFile: URL? = nil
+        if let input = args.input, !input.isEmpty {
+            inputFile = sandboxedTempDir.appendingPathComponent("shortcut_input_\(UUID().uuidString).txt")
+            do {
+                try input.write(to: inputFile!, atomically: true, encoding: .utf8)
+                print("[ToolExecutor] Input file written to: \(inputFile!.path)")
+            } catch {
+                print("[ToolExecutor] Failed to write input file: \(error)")
+                return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to write input file: \(error.localizedDescription)\"}")
+            }
+        }
+        
+        let timeoutSeconds: Double = 120
+        
+        var finalOutputData = Data()
+        var exitCode: Int32 = 0
+        var appleEventsPermissionDenied = false
+        var appleScriptErrorText = ""
+        
+        // PRIMARY: Use Shortcuts Events (AppleScript), which is working on this machine.
+        print("[ToolExecutor] Starting shortcut '\(shortcutName)' via AppleScript Shortcuts Events")
+        let appleScriptPrimary = await runShortcutViaAppleScript(name: shortcutName, input: args.input, timeoutSeconds: timeoutSeconds)
+        exitCode = appleScriptPrimary.exitCode
+        
+        if appleScriptPrimary.exitCode == 0, !appleScriptPrimary.outputData.isEmpty {
+            finalOutputData = appleScriptPrimary.outputData
+            print("[ToolExecutor] AppleScript primary captured: \(finalOutputData.count) bytes")
+        } else {
+            appleScriptErrorText = appleScriptPrimary.errorText
+            let normalizedAppleScriptError = appleScriptPrimary.errorText.lowercased()
+            appleEventsPermissionDenied =
+                normalizedAppleScriptError.contains("privilege violation") ||
+                normalizedAppleScriptError.contains("(-10004)") ||
+                normalizedAppleScriptError.contains("error -10004")
+            
+            if !appleScriptPrimary.errorText.isEmpty {
+                print("[ToolExecutor] AppleScript primary error: \(appleScriptPrimary.errorText.prefix(500))")
+                if appleEventsPermissionDenied {
+                    print("[ToolExecutor] AppleScript indicates AppleEvents permission denial (-10004)")
+                }
+            } else {
+                print("[ToolExecutor] AppleScript primary returned empty output; falling back to shortcuts CLI capture...")
+            }
+            
+            // FALLBACK: CLI output capture paths (file, stdout, then pipe).
+            let outputFilename = "shortcut_output_\(UUID().uuidString).txt"
+            let outputFileURL = FileManager.default.temporaryDirectory.appendingPathComponent(outputFilename)
+            let didCreateOutputFile = FileManager.default.createFile(
+                atPath: outputFileURL.path,
+                contents: Data(),
+                attributes: [.posixPermissions: 0o666]
+            )
+            print("[ToolExecutor] Output file precreate at \(outputFileURL.path): \(didCreateOutputFile ? "ok" : "failed")")
+            
+            var processArguments = ["run", shortcutName]
+            if let inputFile = inputFile {
+                processArguments.append(contentsOf: ["--input-path", inputFile.path])
+            }
+            processArguments.append(contentsOf: ["--output-path", outputFileURL.path])
+            
+            print("[ToolExecutor] CLI fallback command: /usr/bin/shortcuts run '<shortcut name>' --output-path '<sandbox temp file>'")
+            
+            let primaryResult: (exitCode: Int32, stdoutData: Data, stderrData: Data) = await withCheckedContinuation { continuation in
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/shortcuts")
+                process.arguments = processArguments
+                
+                let stdoutPipe = Pipe()
+                let stderrPipe = Pipe()
+                process.standardOutput = stdoutPipe
+                process.standardError = stderrPipe
+                
+                process.terminationHandler = { proc in
+                    ToolExecutor.unregisterRunningProcess(proc)
+                    let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                    let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                    continuation.resume(returning: (proc.terminationStatus, outData, errData))
+                }
+                
+                do {
+                    try process.run()
+                    ToolExecutor.registerRunningProcess(process)
+                    DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds) {
+                        if process.isRunning {
+                            process.terminate()
+                            print("[ToolExecutor] Shortcut '\(shortcutName)' TIMED OUT")
+                        }
+                    }
+                } catch {
+                    print("[ToolExecutor] Failed to launch: \(error)")
+                    continuation.resume(returning: (-1, Data(), Data(error.localizedDescription.utf8)))
+                }
+            }
+            
+            exitCode = primaryResult.exitCode
+            print("[ToolExecutor] CLI fallback exit code: \(primaryResult.exitCode)")
+            print("[ToolExecutor] CLI fallback stdout bytes: \(primaryResult.stdoutData.count)")
+            print("[ToolExecutor] CLI fallback stderr bytes: \(primaryResult.stderrData.count)")
+            if let stderrText = String(data: primaryResult.stderrData, encoding: .utf8), !stderrText.isEmpty {
+                print("[ToolExecutor] CLI fallback stderr: \(stderrText.prefix(500))")
+            }
+            
+            var fileOutputData = Data()
+            for _ in 0..<20 {
+                if let data = try? Data(contentsOf: outputFileURL), !data.isEmpty {
+                    fileOutputData = data
+                    break
+                }
+                try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+            }
+            
+            if !fileOutputData.isEmpty {
+                finalOutputData = fileOutputData
+                print("[ToolExecutor] CLI fallback file captured: \(fileOutputData.count) bytes")
+            } else if !primaryResult.stdoutData.isEmpty {
+                finalOutputData = primaryResult.stdoutData
+                print("[ToolExecutor] CLI fallback stdout captured: \(primaryResult.stdoutData.count) bytes")
+            } else {
+                print("[ToolExecutor] CLI fallback returned no output in file or stdout")
+            }
+            
+            // Known CLI quirk fallback: omit --output-path and force a pipe (| cat).
+            if finalOutputData.isEmpty && primaryResult.exitCode == 0 {
+                let escapedName = shortcutName.replacingOccurrences(of: "'", with: "'\\''")
+                var noOutputPathCommand = "/usr/bin/shortcuts run '\(escapedName)'"
+                if let inputFile = inputFile {
+                    let escapedPath = inputFile.path.replacingOccurrences(of: "'", with: "'\\''")
+                    noOutputPathCommand += " --input-path '\(escapedPath)'"
+                }
+                noOutputPathCommand += " | /bin/cat"
+                print("[ToolExecutor] Retrying CLI with no --output-path + pipe fallback...")
+                
+                let pipedFallback = await withCheckedContinuation { (continuation: CheckedContinuation<(exitCode: Int32, stdoutData: Data, stderrData: Data), Never>) in
+                    let process = Process()
+                    process.executableURL = URL(fileURLWithPath: "/bin/sh")
+                    process.arguments = ["-c", noOutputPathCommand]
+                    
+                    let stdoutPipe = Pipe()
+                    let stderrPipe = Pipe()
+                    process.standardOutput = stdoutPipe
+                    process.standardError = stderrPipe
+                    
+                    process.terminationHandler = { proc in
+                        ToolExecutor.unregisterRunningProcess(proc)
+                        let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                        let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                        continuation.resume(returning: (proc.terminationStatus, outData, errData))
+                    }
+                    
+                    do {
+                        try process.run()
+                        ToolExecutor.registerRunningProcess(process)
+                        DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds) {
+                            if process.isRunning {
+                                process.terminate()
+                            }
+                        }
+                    } catch {
+                        continuation.resume(returning: (-1, Data(), Data(error.localizedDescription.utf8)))
+                    }
+                }
+                
+                if !pipedFallback.stdoutData.isEmpty {
+                    finalOutputData = pipedFallback.stdoutData
+                    print("[ToolExecutor] Piped CLI fallback captured: \(finalOutputData.count) bytes")
+                } else {
+                    print("[ToolExecutor] Piped CLI fallback returned empty output")
+                    if let fallbackErr = String(data: pipedFallback.stderrData, encoding: .utf8), !fallbackErr.isEmpty {
+                        print("[ToolExecutor] Piped CLI fallback stderr: \(fallbackErr.prefix(500))")
+                    }
+                }
+            }
+            
+            try? FileManager.default.removeItem(at: outputFileURL)
+        }
+        
+        // Clean up input file
+        if let inputFile = inputFile { try? FileManager.default.removeItem(at: inputFile) }
+        
+        print("[ToolExecutor] Shortcut '\(shortcutName)' finished with exit code: \(exitCode)")
+        print("[ToolExecutor] Final output: \(finalOutputData.count) bytes")
+        
+        // Check if output contains binary media (image) by checking magic bytes
+        var fileAttachment: FileAttachment? = nil
+        var outputInfo = ""
+        
+        if finalOutputData.count > 0 {
+            let mimeType = detectMimeType(from: finalOutputData)
+            
+            if mimeType.hasPrefix("image/") {
+                // Binary image output — save and create attachment for multimodal injection
+                let fileExtension: String
+                switch mimeType {
+                case "image/png": fileExtension = "png"
+                case "image/gif": fileExtension = "gif"
+                case "image/webp": fileExtension = "webp"
+                default: fileExtension = "jpg"
+                }
+                
+                let savedFilename = "shortcut_\(UUID().uuidString).\(fileExtension)"
+                let savedPath = documentsDirectory.appendingPathComponent(savedFilename)
+                let imagePath = imagesDirectory.appendingPathComponent(savedFilename)
+                
+                try? finalOutputData.write(to: savedPath)
+                try? finalOutputData.write(to: imagePath)
+                
+                fileAttachment = FileAttachment(data: finalOutputData, mimeType: mimeType, filename: savedFilename)
+                outputInfo = ", \"output_file\": {\"filename\": \"\(savedFilename)\", \"mimeType\": \"\(mimeType)\", \"sizeBytes\": \(finalOutputData.count), \"message\": \"Image output saved and visible for analysis\"}"
+                
+                print("[ToolExecutor] Shortcut produced image output: \(savedFilename) (\(finalOutputData.count) bytes)")
+            } else {
+                // Text output from stdout
+                let textOutput = String(data: finalOutputData, encoding: .utf8) ?? ""
+                if !textOutput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    let escapedOutput = textOutput.trimmingCharacters(in: .whitespacesAndNewlines)
+                        .replacingOccurrences(of: "\\", with: "\\\\")
+                        .replacingOccurrences(of: "\"", with: "\\\"")
+                        .replacingOccurrences(of: "\n", with: "\\n")
+                        .replacingOccurrences(of: "\r", with: "")
+                    outputInfo = ", \"output\": \"\(escapedOutput)\""
+                    print("[ToolExecutor] Shortcut text output: \(textOutput.prefix(200))")
+                }
+            }
+        }
+        
+        // Build result
+        let permissionDeniedNoOutput = appleEventsPermissionDenied && finalOutputData.isEmpty
+        let success = (exitCode == 0) && !permissionDeniedNoOutput
+        
+        var result = "{\"success\": \(success), \"exit_code\": \(exitCode), \"shortcut\": \"\(shortcutName.replacingOccurrences(of: "\"", with: "\\\""))\""
+        
+        result += outputInfo
+        
+        if permissionDeniedNoOutput {
+            result += ", \"error_code\": \"apple_events_permission_denied\""
+        } else if success && finalOutputData.isEmpty {
+            result += ", \"warning\": \"Shortcut executed but returned no output\""
+        }
+        
+        if permissionDeniedNoOutput {
+            let errorMessage = "AppleEvents permission denied while running Shortcuts Events (-10004). In System Settings > Privacy & Security > Automation, allow this app to control Shortcuts Events, then retry."
+            let escapedMessage = errorMessage
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            result += ", \"message\": \"\(escapedMessage)\""
+            
+            if !appleScriptErrorText.isEmpty {
+                let escapedDetails = appleScriptErrorText
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+                    .replacingOccurrences(of: "\r", with: "")
+                result += ", \"details\": \"\(escapedDetails)\""
+            }
+        } else if success {
+            result += ", \"message\": \"Shortcut '\(shortcutName)' executed successfully\""
+        } else {
+            result += ", \"message\": \"Shortcut '\(shortcutName)' failed with exit code \(exitCode)\""
+        }
+        
+        result += "}"
+        
+        return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: fileAttachment)
+    }
+    
+    /// Detect MIME type from file data by checking magic bytes
+    private func detectMimeType(from data: Data) -> String {
+        guard data.count >= 12 else { return "application/octet-stream" }
+        
+        let bytes = [UInt8](data.prefix(12))
+        
+        // PNG: 89 50 4E 47 0D 0A 1A 0A
+        if bytes.starts(with: [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]) {
+            return "image/png"
+        }
+        
+        // JPEG: FF D8 FF
+        if bytes.starts(with: [0xFF, 0xD8, 0xFF]) {
+            return "image/jpeg"
+        }
+        
+        // GIF: 47 49 46 38
+        if bytes.starts(with: [0x47, 0x49, 0x46, 0x38]) {
+            return "image/gif"
+        }
+        
+        // WebP: 52 49 46 46 ... 57 45 42 50
+        if bytes.starts(with: [0x52, 0x49, 0x46, 0x46]) && data.count >= 12 {
+            let webpBytes = [UInt8](data[8..<12])
+            if webpBytes == [0x57, 0x45, 0x42, 0x50] {
+                return "image/webp"
+            }
+        }
+        
+        // PDF: 25 50 44 46 (%PDF)
+        if bytes.starts(with: [0x25, 0x50, 0x44, 0x46]) {
+            return "application/pdf"
+        }
+        
+        // Check if it looks like text
+        let textBytes = data.prefix(1024)
+        if let _ = String(data: textBytes, encoding: .utf8) {
+            // Appears to be valid UTF-8 text
+            return "text/plain"
+        }
+        
+        return "application/octet-stream"
+    }
+    
+    private func runShortcutViaAppleScript(name: String, input: String?, timeoutSeconds: Double) async -> (exitCode: Int32, outputData: Data, errorText: String) {
+        // Prefer in-process AppleScript so sandbox/TCC permissions apply to this app directly.
+        let inProcessResult = await runShortcutViaInProcessAppleScript(name: name, input: input)
+        if inProcessResult.exitCode == 0 || !inProcessResult.errorText.isEmpty {
+            return inProcessResult
+        }
+        
+        print("[ToolExecutor] In-process AppleScript returned empty output; trying osascript fallback...")
+        let osascriptResult = await runShortcutViaOSAScript(name: name, input: input, timeoutSeconds: timeoutSeconds)
+        if osascriptResult.exitCode == 0, !osascriptResult.outputData.isEmpty {
+            return osascriptResult
+        }
+        if !osascriptResult.errorText.isEmpty {
+            return osascriptResult
+        }
+        
+        return inProcessResult
+    }
+    
+    private func runShortcutViaInProcessAppleScript(name: String, input: String?) async -> (exitCode: Int32, outputData: Data, errorText: String) {
+        await MainActor.run {
+            let escapedName = name
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            
+            let command: String
+            if let input, !input.isEmpty {
+                let escapedInput = input
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                command = "tell application id \"com.apple.shortcuts\" to run shortcut \"\(escapedName)\" with input \"\(escapedInput)\""
+            } else {
+                command = "tell application id \"com.apple.shortcuts\" to run shortcut \"\(escapedName)\""
+            }
+            
+            guard let script = NSAppleScript(source: command) else {
+                return (-1, Data(), "Failed to create AppleScript object")
+            }
+            
+            var errorInfo: NSDictionary?
+            let resultDescriptor = script.executeAndReturnError(&errorInfo)
+            if let errorInfo {
+                let message = (errorInfo[NSAppleScript.errorMessage] as? String)
+                    ?? (errorInfo["NSAppleScriptErrorMessage"] as? String)
+                    ?? "Unknown AppleScript error"
+                let number = (errorInfo[NSAppleScript.errorNumber] as? Int)
+                    ?? (errorInfo["NSAppleScriptErrorNumber"] as? Int)
+                    ?? -1
+                return (Int32(number), Data(), "\(message) (\(number))")
+            }
+            
+            if let text = resultDescriptor.stringValue, !text.isEmpty {
+                return (0, Data(text.utf8), "")
+            }
+            
+            let rawData = resultDescriptor.data
+            if !rawData.isEmpty {
+                return (0, rawData, "")
+            }
+            
+            return (0, Data(), "")
+        }
+    }
+    
+    private func runShortcutViaOSAScript(name: String, input: String?, timeoutSeconds: Double) async -> (exitCode: Int32, outputData: Data, errorText: String) {
+        await withCheckedContinuation { continuation in
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            
+            let escapedName = name
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            let scriptLine: String
+            if let input, !input.isEmpty {
+                let escapedInput = input
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                scriptLine = "tell application id \"com.apple.shortcuts\" to run shortcut \"\(escapedName)\" with input \"\(escapedInput)\""
+            } else {
+                scriptLine = "tell application id \"com.apple.shortcuts\" to run shortcut \"\(escapedName)\""
+            }
+            
+            let arguments = ["-l", "AppleScript", "-e", scriptLine]
+            process.arguments = arguments
+            
+            let stdoutPipe = Pipe()
+            let stderrPipe = Pipe()
+            process.standardOutput = stdoutPipe
+            process.standardError = stderrPipe
+            
+            process.terminationHandler = { proc in
+                ToolExecutor.unregisterRunningProcess(proc)
+                let outData = stdoutPipe.fileHandleForReading.readDataToEndOfFile()
+                let errData = stderrPipe.fileHandleForReading.readDataToEndOfFile()
+                let errText = String(data: errData, encoding: .utf8) ?? ""
+                continuation.resume(returning: (proc.terminationStatus, outData, errText))
+            }
+            
+            do {
+                try process.run()
+                ToolExecutor.registerRunningProcess(process)
+                DispatchQueue.global().asyncAfter(deadline: .now() + timeoutSeconds) {
+                    if process.isRunning {
+                        process.terminate()
+                    }
+                }
+            } catch {
+                continuation.resume(returning: (-1, Data(), error.localizedDescription))
+            }
+        }
+    }
+}
+
+// MARK: - Image Generation Argument Types
+
+struct GenerateImageArguments: Codable {
+    let prompt: String
+    let sourceImage: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case prompt
+        case sourceImage = "source_image"
+    }
+}
+
+struct GenerateImageResult: Codable {
+    let success: Bool
+    let message: String
+    let imageSize: Int
+    let mimeType: String
+    let generatedFilename: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, message, mimeType
+        case imageSize = "image_size"
+        case generatedFilename = "generated_filename"
+    }
+}
+
+// MARK: - Shortcuts Tool Argument Types
+
+struct RunShortcutArguments: Codable {
+    let name: String
+    let input: String?
+}
+
+// MARK: - URL Viewing and Download Tool Implementations
+
+extension ToolExecutor {
+    func executeViewUrl(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ViewUrlArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse view_url arguments\"}"
+        }
+        
+        // Validate URL format
+        guard args.url.hasPrefix("http://") || args.url.hasPrefix("https://") else {
+            return "{\"error\": \"Invalid URL format. URL must start with http:// or https://\"}"
+        }
+        
+        do {
+            let result = try await webOrchestrator.readUrlContent(url: args.url)
+            // Returns page content with image metadata (captions, URLs)
+            // LLM can use view_page_image tool to download specific images it wants to see
+            return result.asJSON()
+        } catch {
+            return "{\"error\": \"Failed to read URL: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    /// Download a specific image from a URL for multimodal injection
+    /// LLM uses this after viewing page metadata to selectively download interesting images
+    func executeViewPageImage(_ call: ToolCall) async -> ToolResultMessage {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ViewPageImageArguments.self, from: argsData) else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse view_page_image arguments\"}")
+        }
+        
+        // Validate URL format
+        guard args.imageUrl.hasPrefix("http://") || args.imageUrl.hasPrefix("https://") else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Invalid URL format. URL must start with http:// or https://\"}")
+        }
+        
+        // Download the image
+        guard let downloadedImage = await webOrchestrator.downloadImage(url: args.imageUrl, caption: args.caption ?? "") else {
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to download image from URL. It may be inaccessible, too large, or not an image.\"}")
+        }
+        
+        // Create file attachment for multimodal injection
+        let filename = "page_image_\(UUID().uuidString.prefix(8)).jpg"
+        let attachment = FileAttachment(data: downloadedImage.data, mimeType: downloadedImage.mimeType, filename: filename)
+        
+        print("[ToolExecutor] Downloaded page image for multimodal injection: \(downloadedImage.data.count) bytes from \(args.imageUrl)")
+        
+        let result = """
+        {"success": true, "mimeType": "\(downloadedImage.mimeType)", "sizeBytes": \(downloadedImage.data.count), "message": "Image downloaded successfully. You can now see and analyze it."}
+        """
+        
+        return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
+    }
+    
+    func executeDownloadFromUrl(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(DownloadFromUrlArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse download_from_url arguments\"}"
+        }
+        
+        // Validate URL format
+        guard let url = URL(string: args.url),
+              let scheme = url.scheme,
+              ["http", "https"].contains(scheme.lowercased()) else {
+            return "{\"error\": \"Invalid URL format. URL must start with http:// or https://\"}"
+        }
+        
+        do {
+            // Download the file
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 120
+            
+            // Add common headers to avoid blocks
+            request.setValue("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36", forHTTPHeaderField: "User-Agent")
+            
+            let (data, response) = try await URLSession.shared.data(for: request)
+            
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode) else {
+                let statusCode = (response as? HTTPURLResponse)?.statusCode ?? 0
+                return "{\"error\": \"Download failed with HTTP status \(statusCode)\"}"
+            }
+            
+            // Determine filename
+            let filename: String
+            if let preferredFilename = args.filename, !preferredFilename.isEmpty {
+                filename = preferredFilename
+            } else {
+                // Try to derive from Content-Disposition header or URL
+                if let contentDisposition = httpResponse.value(forHTTPHeaderField: "Content-Disposition"),
+                   let filenameMatch = contentDisposition.range(of: "filename=\"([^\"]+)\"", options: .regularExpression) {
+                    filename = String(contentDisposition[filenameMatch]).replacingOccurrences(of: "filename=\"", with: "").replacingOccurrences(of: "\"", with: "")
+                } else if let lastComponent = url.pathComponents.last, lastComponent.contains(".") {
+                    filename = lastComponent
+                } else {
+                    // Generate filename based on content type
+                    let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? "application/octet-stream"
+                    let ext = extensionForMimeType(contentType)
+                    filename = "download_\(UUID().uuidString.prefix(8)).\(ext)"
+                }
+            }
+            
+            // Save to the same documents directory used by list_documents and Telegram uploads
+            let fileURL = documentsDirectory.appendingPathComponent(filename)
+            
+            try data.write(to: fileURL)
+            
+            // Also save to images directory if it's an image (for Gemini vision access)
+            let contentType = httpResponse.value(forHTTPHeaderField: "Content-Type") ?? ""
+            if contentType.hasPrefix("image/") {
+                let imageFileURL = imagesDirectory.appendingPathComponent(filename)
+                try? data.write(to: imageFileURL)
+            }
+            
+            print("[ToolExecutor] Downloaded file: \(filename) (\(data.count) bytes)")
+            
+            let result = DownloadFromUrlResult(
+                success: true,
+                filename: filename,
+                fileSize: data.count,
+                contentType: contentType,
+                message: "File downloaded successfully. You can reference it as '\(filename)' or attach it to emails."
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let resultData = try? encoder.encode(result), let json = String(data: resultData, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"filename\": \"\(filename)\", \"message\": \"File downloaded\"}"
+        } catch {
+            return "{\"error\": \"Download failed: \(error.localizedDescription)\"}"
+        }
+    }
+    
+    private func extensionForMimeType(_ mimeType: String) -> String {
+        let type = mimeType.lowercased().components(separatedBy: ";").first ?? mimeType.lowercased()
+        switch type {
+        case "image/jpeg", "image/jpg": return "jpg"
+        case "image/png": return "png"
+        case "image/gif": return "gif"
+        case "image/webp": return "webp"
+        case "application/pdf": return "pdf"
+        case "text/html": return "html"
+        case "text/plain": return "txt"
+        case "application/json": return "json"
+        case "application/xml", "text/xml": return "xml"
+        case "application/zip": return "zip"
+        default: return "bin"
+        }
+    }
+}
+
+// MARK: - URL Tool Argument Types
+
+struct ViewUrlArguments: Codable {
+    let url: String
+}
+
+struct ViewPageImageArguments: Codable {
+    let imageUrl: String
+    let caption: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case imageUrl = "image_url"
+        case caption
+    }
+}
+
+struct DownloadFromUrlArguments: Codable {
+    let url: String
+    let filename: String?
+}
+
+struct DownloadFromUrlResult: Codable {
+    let success: Bool
+    let filename: String
+    let fileSize: Int
+    let contentType: String
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, filename, message, contentType
+        case fileSize = "file_size"
+    }
+}
+
+// MARK: - Send Document to Chat Tool
+
+extension ToolExecutor {
+    func executeSendDocumentToChat(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(SendDocumentToChatArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse send_document_to_chat arguments\"}"
+        }
+        
+        // Find the document file
+        let documentURL = documentsDirectory.appendingPathComponent(args.documentFilename)
+        guard FileManager.default.fileExists(atPath: documentURL.path) else {
+            return "{\"error\": \"Document not found: \(args.documentFilename). Use list_documents to see available files.\"}"
+        }
+        
+        do {
+            let documentData = try Data(contentsOf: documentURL)
+            
+            // Determine MIME type from extension
+            let ext = documentURL.pathExtension.lowercased()
+            let mimeType: String
+            switch ext {
+            case "pdf":
+                mimeType = "application/pdf"
+            case "jpg", "jpeg":
+                mimeType = "image/jpeg"
+            case "png":
+                mimeType = "image/png"
+            case "gif":
+                mimeType = "image/gif"
+            case "webp":
+                mimeType = "image/webp"
+            case "txt":
+                mimeType = "text/plain"
+            case "json":
+                mimeType = "application/json"
+            case "html":
+                mimeType = "text/html"
+            case "xml":
+                mimeType = "application/xml"
+            case "zip":
+                mimeType = "application/zip"
+            case "doc", "docx":
+                mimeType = "application/msword"
+            case "xls", "xlsx":
+                mimeType = "application/vnd.ms-excel"
+            default:
+                mimeType = "application/octet-stream"
+            }
+            
+            // Store the document for sending after the tool response
+            ToolExecutor.pendingDocuments.append((
+                data: documentData,
+                filename: args.documentFilename,
+                mimeType: mimeType,
+                caption: args.caption
+            ))
+            
+            print("[ToolExecutor] Queued document for sending: \(args.documentFilename) (\(documentData.count) bytes)")
+            
+            let result = SendDocumentToChatResult(
+                success: true,
+                documentFilename: args.documentFilename,
+                sizeBytes: documentData.count,
+                message: "Document '\(args.documentFilename)' will be sent to the chat."
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"message\": \"Document queued for sending\"}"
+        } catch {
+            return "{\"error\": \"Failed to read document: \(error.localizedDescription)\"}"
+        }
+    }
+}
+
+// MARK: - Send Document to Chat Types
+
+struct SendDocumentToChatArguments: Codable {
+    let documentFilename: String
+    let caption: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case documentFilename = "document_filename"
+        case caption
+    }
+}
+
+struct SendDocumentToChatResult: Codable {
+    let success: Bool
+    let documentFilename: String
+    let sizeBytes: Int
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, message
+        case documentFilename = "document_filename"
+        case sizeBytes = "size_bytes"
+    }
+}
+
+// MARK: - Document Generation Tool
+
+extension ToolExecutor {
+    func executeGenerateDocument(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GenerateDocumentArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse generate_document arguments"}"#
+        }
+        
+        do {
+            // Generate the document using the document service
+            let (data, filename, mimeType) = try await DocumentGeneratorService.shared.generate(args: args)
+            
+            // Save to documents directory
+            let fileURL = documentsDirectory.appendingPathComponent(filename)
+            try data.write(to: fileURL)
+            
+            print("[ToolExecutor] Generated document: \(filename) (\(data.count) bytes)")
+            
+            // Queue for sending via Telegram (like generate_image does)
+            ToolExecutor.pendingDocuments.append((
+                data: data,
+                filename: filename,
+                mimeType: mimeType,
+                caption: "📄 \(args.title ?? "Document")"
+            ))
+            
+            let result = GenerateDocumentResult(
+                success: true,
+                message: "Document '\(filename)' generated successfully and will be sent to the chat.",
+                filename: filename,
+                fileSize: data.count,
+                documentType: args.documentType
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let resultData = try? encoder.encode(result), let json = String(data: resultData, encoding: .utf8) {
+                return json
+            }
+            return #"{"success": true, "message": "Document generated", "filename": "\#(filename)"}"#
+        } catch {
+            return #"{"error": "Document generation failed: \#(error.localizedDescription)"}"#
+        }
+    }
+}
+
+// MARK: - Claude Code Project Workspace Tools
+
+struct CreateProjectArguments: Codable {
+    let projectName: String
+    let initialNotes: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectName = "project_name"
+        case initialNotes = "initial_notes"
+    }
+}
+
+struct BrowseProjectArguments: Codable {
+    let projectId: String
+    let relativePath: String?
+    let recursive: Bool?
+    let maxEntries: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case recursive
+        case maxEntries = "max_entries"
+    }
+}
+
+struct ReadProjectFileArguments: Codable {
+    let projectId: String
+    let relativePath: String
+    let maxChars: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case maxChars = "max_chars"
+    }
+}
+
+struct RunClaudeCodeArguments: Codable {
+    let projectId: String
+    let prompt: String
+    let timeoutSeconds: Int?
+    let maxOutputChars: Int?
+    let cliArgs: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case prompt
+        case timeoutSeconds = "timeout_seconds"
+        case maxOutputChars = "max_output_chars"
+        case cliArgs = "cli_args"
+    }
+}
+
+struct AddProjectFilesArguments: Codable {
+    let projectId: String
+    let documentFilenames: [String]
+    let relativePath: String?
+    let overwrite: Bool?
+    let sourceDirectory: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case documentFilenames = "document_filenames"
+        case relativePath = "relative_path"
+        case overwrite
+        case sourceDirectory = "source_directory"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        relativePath = try container.decodeIfPresent(String.self, forKey: .relativePath)
+        overwrite = try container.decodeIfPresent(Bool.self, forKey: .overwrite)
+        sourceDirectory = try container.decodeIfPresent(String.self, forKey: .sourceDirectory)
+        
+        if let array = try? container.decode([String].self, forKey: .documentFilenames) {
+            documentFilenames = array
+        } else if let raw = (try? container.decode(String.self, forKey: .documentFilenames))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                documentFilenames = parsed
+            } else {
+                let csv = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                documentFilenames = csv
+            }
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .documentFilenames,
+                in: container,
+                debugDescription: "document_filenames must be an array, JSON array string, or CSV string"
+            )
+        }
+    }
+}
+
+struct SendProjectResultArguments: Codable {
+    let projectId: String
+    let destination: String
+    let to: String?
+    let subject: String?
+    let body: String?
+    let filePaths: [String]?
+    let useLastChangedFiles: Bool?
+    let maxFiles: Int?
+    let caption: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case destination
+        case to
+        case subject
+        case body
+        case filePaths = "file_paths"
+        case useLastChangedFiles = "use_last_changed_files"
+        case maxFiles = "max_files"
+        case caption
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        destination = try container.decode(String.self, forKey: .destination)
+        to = try container.decodeIfPresent(String.self, forKey: .to)
+        subject = try container.decodeIfPresent(String.self, forKey: .subject)
+        body = try container.decodeIfPresent(String.self, forKey: .body)
+        useLastChangedFiles = try container.decodeIfPresent(Bool.self, forKey: .useLastChangedFiles)
+        maxFiles = try container.decodeIfPresent(Int.self, forKey: .maxFiles)
+        caption = try container.decodeIfPresent(String.self, forKey: .caption)
+        
+        if let array = try? container.decodeIfPresent([String].self, forKey: .filePaths) {
+            filePaths = array
+        } else if let raw = (try? container.decodeIfPresent(String.self, forKey: .filePaths))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                filePaths = parsed
+            } else {
+                let csv = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                filePaths = csv.isEmpty ? nil : csv
+            }
+        } else {
+            filePaths = nil
+        }
+    }
+}
+
+struct FlagProjectsForDeletionArguments: Codable {
+    let projectIds: [String]
+    let reason: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectIds = "project_ids"
+        case reason
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+        
+        if let array = try? container.decode([String].self, forKey: .projectIds) {
+            projectIds = array
+        } else if let raw = (try? container.decode(String.self, forKey: .projectIds))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                projectIds = parsed
+            } else {
+                let csv = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                projectIds = csv
+            }
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .projectIds,
+                in: container,
+                debugDescription: "project_ids must be an array, JSON array string, CSV string, or single ID"
+            )
+        }
+    }
+}
+
+private struct ClaudeProjectMetadata: Codable {
+    let id: String
+    let name: String
+    let createdAt: Date
+    let initialNotes: String?
+    var projectDescription: String?
+    var lastEditedAt: Date?
+    var flaggedForDeletion: Bool?
+    var deletionFlaggedAt: Date?
+    var deletionFlagReason: String?
+}
+
+private struct ClaudeRunRecord: Codable {
+    let timestamp: Date
+    let prompt: String
+    let command: String
+    let arguments: [String]
+    let exitCode: Int32
+    let timedOut: Bool
+    let durationSeconds: Double
+    let createdFiles: [String]
+    let modifiedFiles: [String]
+    let deletedFiles: [String]
+    let stdoutPreview: String
+    let stderrPreview: String
+}
+
+private struct ProjectSnapshotEntry {
+    let size: UInt64
+    let modifiedAt: Date
+}
+
+private struct ClaudeProjectListItem: Codable {
+    let id: String
+    let name: String
+    let description: String?
+    let createdAt: String
+    let fileCount: Int
+    let lastRunAt: String?
+    let lastEditedAt: String?
+    let flaggedForDeletion: Bool
+    let deletionFlaggedAt: String?
+    let deletionFlagReason: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, description
+        case createdAt = "created_at"
+        case fileCount = "file_count"
+        case lastRunAt = "last_run_at"
+        case lastEditedAt = "last_edited_at"
+        case flaggedForDeletion = "flagged_for_deletion"
+        case deletionFlaggedAt = "deletion_flagged_at"
+        case deletionFlagReason = "deletion_flag_reason"
+    }
+}
+
+private struct ClaudeProjectListResult: Codable {
+    let success: Bool
+    let projectCount: Int
+    let projects: [ClaudeProjectListItem]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, projects, message
+        case projectCount = "project_count"
+    }
+}
+
+private struct FlaggedProjectResultItem: Codable {
+    let id: String
+    let name: String
+    let alreadyFlagged: Bool
+    let deletionFlaggedAt: String
+    let reason: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case id, name, reason
+        case alreadyFlagged = "already_flagged"
+        case deletionFlaggedAt = "deletion_flagged_at"
+    }
+}
+
+private struct FlagProjectsForDeletionResult: Codable {
+    let success: Bool
+    let requestedCount: Int
+    let flaggedCount: Int
+    let missingProjectIds: [String]
+    let flaggedProjects: [FlaggedProjectResultItem]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, message
+        case requestedCount = "requested_count"
+        case flaggedCount = "flagged_count"
+        case missingProjectIds = "missing_project_ids"
+        case flaggedProjects = "flagged_projects"
+    }
+}
+
+private struct ClaudeProjectBrowseEntry: Codable {
+    let relativePath: String
+    let type: String
+    let sizeBytes: Int?
+    let modifiedAt: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case type
+        case relativePath = "relative_path"
+        case sizeBytes = "size_bytes"
+        case modifiedAt = "modified_at"
+    }
+}
+
+private struct ClaudeProjectBrowseResult: Codable {
+    let success: Bool
+    let projectId: String
+    let basePath: String
+    let recursive: Bool
+    let entryCount: Int
+    let entries: [ClaudeProjectBrowseEntry]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, recursive, entries, message
+        case projectId = "project_id"
+        case basePath = "base_path"
+        case entryCount = "entry_count"
+    }
+}
+
+private struct ClaudeReadProjectTextResult: Codable {
+    let success: Bool
+    let projectId: String
+    let relativePath: String
+    let content: String
+    let truncated: Bool
+    let totalCharacters: Int
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, content, truncated, message
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case totalCharacters = "total_characters"
+    }
+}
+
+private struct ClaudeProjectImportedFile: Codable {
+    let sourceFilename: String
+    let destinationRelativePath: String
+    let sizeBytes: Int
+    
+    enum CodingKeys: String, CodingKey {
+        case sourceFilename = "source_filename"
+        case destinationRelativePath = "destination_relative_path"
+        case sizeBytes = "size_bytes"
+    }
+}
+
+private struct ClaudeAddProjectFilesResult: Codable {
+    let success: Bool
+    let projectId: String
+    let destinationPath: String
+    let requestedCount: Int
+    let addedCount: Int
+    let addedFiles: [ClaudeProjectImportedFile]
+    let missingDocuments: [String]
+    let rejectedFilenames: [String]
+    let projectDescription: String?
+    let projectLastEditedAt: String?
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, message
+        case projectId = "project_id"
+        case destinationPath = "destination_path"
+        case requestedCount = "requested_count"
+        case addedCount = "added_count"
+        case addedFiles = "added_files"
+        case missingDocuments = "missing_documents"
+        case rejectedFilenames = "rejected_filenames"
+        case projectDescription = "project_description"
+        case projectLastEditedAt = "project_last_edited_at"
+    }
+}
+
+private struct ClaudeRunResult: Codable {
+    let success: Bool
+    let projectId: String
+    let command: String
+    let exitCode: Int32
+    let timedOut: Bool
+    let durationSeconds: Double
+    let createdFiles: [String]
+    let modifiedFiles: [String]
+    let deletedFiles: [String]
+    let fileChangesDetected: Bool
+    let projectDescription: String?
+    let projectLastEditedAt: String?
+    let stdout: String
+    let stderr: String
+    let logFile: String
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, command, stdout, stderr, message
+        case projectId = "project_id"
+        case exitCode = "exit_code"
+        case timedOut = "timed_out"
+        case durationSeconds = "duration_seconds"
+        case createdFiles = "created_files"
+        case modifiedFiles = "modified_files"
+        case deletedFiles = "deleted_files"
+        case fileChangesDetected = "file_changes_detected"
+        case projectDescription = "project_description"
+        case projectLastEditedAt = "project_last_edited_at"
+        case logFile = "log_file"
+    }
+}
+
+private struct ClaudeInvocation {
+    let executableURL: URL
+    let arguments: [String]
+    let displayCommand: String
+}
+
+private struct ClaudeExecutionOutput {
+    let exitCode: Int32
+    let timedOut: Bool
+    let stdout: String
+    let stderr: String
+}
+
+private struct SendProjectResultOutput: Codable {
+    let success: Bool
+    let projectId: String
+    let destination: String
+    let fileCount: Int
+    let files: [String]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, destination, files, message
+        case projectId = "project_id"
+        case fileCount = "file_count"
+    }
+}
+
+extension ToolExecutor {
+    private var projectsDirectory: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let folder = appSupport.appendingPathComponent("TelegramConcierge/projects", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }
+    
+    private var isoFormatter: ISO8601DateFormatter {
+        let formatter = ISO8601DateFormatter()
+        formatter.formatOptions = [.withInternetDateTime]
+        return formatter
+    }
+    
+    private func encodeJSON<T: Encodable>(_ value: T) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        encoder.dateEncodingStrategy = .iso8601
+        guard let data = try? encoder.encode(value),
+              let json = String(data: data, encoding: .utf8) else {
+            return #"{"error":"Failed to encode result"}"#
+        }
+        return json
+    }
+    
+    private func executeCreateProject(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(CreateProjectArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse create_project arguments"}"#
+        }
+        
+        let baseName = sanitizeProjectName(args.projectName)
+        let projectId = "\(baseName)-\(String(UUID().uuidString.prefix(8)).lowercased())"
+        let projectURL = projectsDirectory.appendingPathComponent(projectId, isDirectory: true)
+        
+        do {
+            try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+            
+            var metadata = ClaudeProjectMetadata(
+                id: projectId,
+                name: args.projectName.trimmingCharacters(in: .whitespacesAndNewlines),
+                createdAt: Date(),
+                initialNotes: args.initialNotes,
+                projectDescription: nil,
+                lastEditedAt: nil,
+                flaggedForDeletion: nil,
+                deletionFlaggedAt: nil,
+                deletionFlagReason: nil
+            )
+            
+            metadata.projectDescription = await generateProjectDescriptionOnCreate(
+                projectName: metadata.name,
+                initialNotes: metadata.initialNotes
+            )
+            let metadataURL = projectURL.appendingPathComponent(".project.json")
+            let metadataData = try JSONEncoder().encode(metadata)
+            try metadataData.write(to: metadataURL)
+            
+            let notes = args.initialNotes?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let readmeContent = """
+            # \(args.projectName)
+            
+            Project ID: \(projectId)
+            Created: \(isoFormatter.string(from: Date()))
+            
+            \(notes?.isEmpty == false ? "## Initial Notes\n\n\(notes!)\n" : "")
+            """
+            try readmeContent.write(
+                to: projectURL.appendingPathComponent("README.md"),
+                atomically: true,
+                encoding: .utf8
+            )
+            
+            return """
+            {
+              "success": true,
+              "project_id": "\(projectId)",
+              "project_name": "\(args.projectName.replacingOccurrences(of: "\"", with: "\\\""))",
+              "path": "\(projectURL.path.replacingOccurrences(of: "\"", with: "\\\""))",
+              "message": "Project created. Use run_claude_code with this project_id."
+            }
+            """
+        } catch {
+            return #"{"error":"Failed to create project: \#(error.localizedDescription)"}"#
+        }
+    }
+    
+    private func executeListProjects(_ call: ToolCall) async -> String {
+        let fileManager = FileManager.default
+        
+        do {
+            let urls = try fileManager.contentsOfDirectory(
+                at: projectsDirectory,
+                includingPropertiesForKeys: [.isDirectoryKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+            
+            var projects: [ClaudeProjectListItem] = []
+            for url in urls {
+                var isDir: ObjCBool = false
+                guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
+                    continue
+                }
+                
+                let metadata = loadProjectMetadata(projectURL: url)
+                let runRecord = loadLastRunRecord(projectURL: url)
+                let attrs = try? fileManager.attributesOfItem(atPath: url.path)
+                let createdAt = metadata?.createdAt ?? (attrs?[.creationDate] as? Date) ?? Date()
+                let item = ClaudeProjectListItem(
+                    id: metadata?.id ?? url.lastPathComponent,
+                    name: metadata?.name ?? url.lastPathComponent,
+                    description: metadata?.projectDescription,
+                    createdAt: isoFormatter.string(from: createdAt),
+                    fileCount: countProjectFiles(projectURL: url),
+                    lastRunAt: runRecord.map { isoFormatter.string(from: $0.timestamp) },
+                    lastEditedAt: metadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
+                    flaggedForDeletion: metadata?.flaggedForDeletion ?? false,
+                    deletionFlaggedAt: metadata?.deletionFlaggedAt.map { isoFormatter.string(from: $0) },
+                    deletionFlagReason: metadata?.deletionFlagReason
+                )
+                projects.append(item)
+            }
+            
+            projects.sort { $0.createdAt > $1.createdAt }
+            
+            let result = ClaudeProjectListResult(
+                success: true,
+                projectCount: projects.count,
+                projects: projects,
+                message: projects.isEmpty
+                    ? "No projects found. Use create_project to create a workspace."
+                    : "Found \(projects.count) project(s)."
+            )
+            return encodeJSON(result)
+        } catch {
+            return #"{"error":"Failed to list projects: \#(error.localizedDescription)"}"#
+        }
+    }
+    
+    private func executeBrowseProject(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(BrowseProjectArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse browse_project arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let relativeBase = (args.relativePath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let baseURL = resolvePath(in: projectURL, relativePath: relativeBase.isEmpty ? "." : relativeBase) else {
+            return #"{"error":"Invalid relative_path. Path must stay inside the project."}"#
+        }
+        
+        let recursive = args.recursive ?? false
+        let maxEntries = min(max(args.maxEntries ?? 200, 1), 1000)
+        
+        do {
+            let entries = try listProjectEntries(
+                projectURL: projectURL,
+                baseURL: baseURL,
+                recursive: recursive,
+                maxEntries: maxEntries
+            )
+            
+            let result = ClaudeProjectBrowseResult(
+                success: true,
+                projectId: args.projectId,
+                basePath: relativeBase.isEmpty ? "." : relativeBase,
+                recursive: recursive,
+                entryCount: entries.count,
+                entries: entries,
+                message: entries.isEmpty ? "No files found in the selected path." : "Listed \(entries.count) entr\(entries.count == 1 ? "y" : "ies")."
+            )
+            return encodeJSON(result)
+        } catch {
+            return #"{"error":"Failed to browse project: \#(error.localizedDescription)"}"#
+        }
+    }
+    
+    private func executeReadProjectFile(_ call: ToolCall) async -> ToolResultMessage {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ReadProjectFileArguments.self, from: argsData) else {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Failed to parse read_project_file arguments"}"#)
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Project not found. Use list_projects first."}"#)
+        }
+        
+        guard let fileURL = resolvePath(in: projectURL, relativePath: args.relativePath) else {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Invalid relative_path. Path must stay inside the project."}"#)
+        }
+        
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir), !isDir.boolValue else {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"File not found at relative_path."}"#)
+        }
+        
+        do {
+            let data = try Data(contentsOf: fileURL)
+            if data.count > 8_000_000 {
+                return ToolResultMessage(toolCallId: call.id, content: #"{"error":"File is too large to load (>8MB)."}"#)
+            }
+            
+            let maxChars = min(max(args.maxChars ?? 12_000, 500), 200_000)
+            let relativePath = relativePath(from: projectURL, to: fileURL)
+            
+            if let text = String(data: data, encoding: .utf8) {
+                let truncated = text.count > maxChars
+                let content = truncated ? String(text.prefix(maxChars)) : text
+                let result = ClaudeReadProjectTextResult(
+                    success: true,
+                    projectId: args.projectId,
+                    relativePath: relativePath,
+                    content: content,
+                    truncated: truncated,
+                    totalCharacters: text.count,
+                    message: truncated ? "Text file loaded (truncated)." : "Text file loaded."
+                )
+                return ToolResultMessage(toolCallId: call.id, content: encodeJSON(result))
+            }
+            
+            let mimeType = getMimeType(for: fileURL.lastPathComponent)
+            let attachment = FileAttachment(
+                data: data,
+                mimeType: mimeType,
+                filename: "\(args.projectId)_\(fileURL.lastPathComponent)"
+            )
+            
+            let result = """
+            {"success": true, "project_id": "\(args.projectId)", "relative_path": "\(relativePath.replacingOccurrences(of: "\"", with: "\\\""))", "mime_type": "\(mimeType)", "size_bytes": \(data.count), "message": "Binary file loaded and visible for analysis."}
+            """
+            return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
+        } catch {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Failed to read project file: \#(error.localizedDescription)"}"#)
+        }
+    }
+    
+    private func executeAddProjectFiles(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(AddProjectFilesArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse add_project_files arguments"}"#
+        }
+        
+        guard !args.documentFilenames.isEmpty else {
+            return #"{"error":"No document_filenames provided. Use list_documents first."}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let sourceDirectoryName = (args.sourceDirectory ?? "documents")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let sourceRootURL: URL
+        switch sourceDirectoryName {
+        case "documents":
+            sourceRootURL = documentsDirectory
+        case "images":
+            sourceRootURL = imagesDirectory
+        default:
+            return #"{"error":"source_directory must be 'documents' or 'images'."}"#
+        }
+        
+        let destinationRelative = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let destinationURL = resolvePath(in: projectURL, relativePath: destinationRelative.isEmpty ? "." : destinationRelative) else {
+            return #"{"error":"Invalid relative_path. Path must stay inside the project."}"#
+        }
+        
+        let fileManager = FileManager.default
+        do {
+            if fileManager.fileExists(atPath: destinationURL.path) {
+                var isDir: ObjCBool = false
+                guard fileManager.fileExists(atPath: destinationURL.path, isDirectory: &isDir), isDir.boolValue else {
+                    return #"{"error":"relative_path exists but is not a directory."}"#
+                }
+            } else {
+                try fileManager.createDirectory(at: destinationURL, withIntermediateDirectories: true)
+            }
+        } catch {
+            return #"{"error":"Failed to prepare destination folder: \#(error.localizedDescription)"}"#
+        }
+        
+        let shouldOverwrite = args.overwrite ?? false
+        var addedFiles: [ClaudeProjectImportedFile] = []
+        var missingDocuments: [String] = []
+        var rejectedFilenames: [String] = []
+        
+        for rawFilename in args.documentFilenames {
+            let filename = rawFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard isSafeDocumentFilename(filename) else {
+                rejectedFilenames.append(rawFilename)
+                continue
+            }
+            
+            let sourceURL = sourceRootURL.appendingPathComponent(filename)
+            var sourceIsDir: ObjCBool = false
+            guard fileManager.fileExists(atPath: sourceURL.path, isDirectory: &sourceIsDir), !sourceIsDir.boolValue else {
+                missingDocuments.append(filename)
+                continue
+            }
+            
+            let destinationFileURL: URL
+            if shouldOverwrite {
+                destinationFileURL = destinationURL.appendingPathComponent(sourceURL.lastPathComponent)
+                if fileManager.fileExists(atPath: destinationFileURL.path) {
+                    try? fileManager.removeItem(at: destinationFileURL)
+                }
+            } else {
+                destinationFileURL = nextAvailableFileURL(
+                    in: destinationURL,
+                    preferredFilename: sourceURL.lastPathComponent
+                )
+            }
+            
+            do {
+                try fileManager.copyItem(at: sourceURL, to: destinationFileURL)
+                let attrs = try? fileManager.attributesOfItem(atPath: destinationFileURL.path)
+                let sizeBytes = (attrs?[.size] as? NSNumber)?.intValue ?? 0
+                let destinationRelativePath = relativePath(from: projectURL, to: destinationFileURL)
+                addedFiles.append(ClaudeProjectImportedFile(
+                    sourceFilename: filename,
+                    destinationRelativePath: destinationRelativePath,
+                    sizeBytes: sizeBytes
+                ))
+            } catch {
+                rejectedFilenames.append(filename)
+            }
+        }
+        
+        let updatedMetadata: ClaudeProjectMetadata?
+        if !addedFiles.isEmpty {
+            let changePrompt = "Imported user-provided files into project folder at \(destinationRelative.isEmpty ? "." : destinationRelative)."
+            updatedMetadata = await updateProjectMetadataAfterRun(
+                projectURL: projectURL,
+                projectId: args.projectId,
+                prompt: changePrompt,
+                createdFiles: addedFiles.map { $0.destinationRelativePath },
+                modifiedFiles: [],
+                deletedFiles: [],
+                stdout: "",
+                stderr: "",
+                fileChangesDetected: true
+            )
+        } else {
+            updatedMetadata = loadProjectMetadata(projectURL: projectURL)
+        }
+        
+        let result = ClaudeAddProjectFilesResult(
+            success: !addedFiles.isEmpty,
+            projectId: args.projectId,
+            destinationPath: destinationRelative.isEmpty ? "." : destinationRelative,
+            requestedCount: args.documentFilenames.count,
+            addedCount: addedFiles.count,
+            addedFiles: addedFiles,
+            missingDocuments: missingDocuments,
+            rejectedFilenames: rejectedFilenames,
+            projectDescription: updatedMetadata?.projectDescription,
+            projectLastEditedAt: updatedMetadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
+            message: addedFiles.isEmpty
+                ? "No files were added. Use list_documents to confirm filenames."
+                : "Added \(addedFiles.count) file(s) to project workspace."
+        )
+        
+        return encodeJSON(result)
+    }
+    
+    private func executeRunClaudeCode(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(RunClaudeCodeArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse run_claude_code arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let configuredCommand = KeychainHelper.load(key: KeychainHelper.claudeCodeCommandKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = (configuredCommand?.isEmpty == false) ? configuredCommand! : "claude"
+        
+        let configuredArgs = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey) ?? KeychainHelper.defaultClaudeCodeArgs
+        let rawArgString = args.cliArgs?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let argString = (rawArgString?.isEmpty == false) ? rawArgString! : configuredArgs
+        let parsedArgs = parseCommandLineArguments(argString)
+        
+        let configuredTimeout = Int(KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? "") ?? Int(KeychainHelper.defaultClaudeCodeTimeout) ?? 300
+        let timeoutSeconds = min(max(args.timeoutSeconds ?? configuredTimeout, 30), 3600)
+        let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
+        
+        let preSnapshot = snapshotProjectFiles(projectURL: projectURL)
+        let startTime = Date()
+        let baseEnvironment = claudeBaseEnvironment()
+        let invocations = buildClaudeInvocations(command: command, cliArgs: parsedArgs, prompt: args.prompt)
+        
+        guard !invocations.isEmpty else {
+            return #"{"error":"No valid Claude Code command invocation was generated. Check Claude Code settings."}"#
+        }
+        
+        var launchErrors: [String] = []
+        var selectedInvocation: ClaudeInvocation?
+        var execution: ClaudeExecutionOutput?
+        
+        for invocation in invocations {
+            do {
+                var result = try await runClaudeInvocation(
+                    invocation,
+                    projectURL: projectURL,
+                    environment: baseEnvironment,
+                    timeoutSeconds: timeoutSeconds,
+                    maxOutputChars: maxOutputChars
+                )
+                
+                // Sandboxed contexts can block writes to ~/.claude.
+                // If that happens, retry with an app-local config directory.
+                if shouldRetryClaudeWithAppConfig(stderr: result.stderr) && baseEnvironment["CLAUDE_CONFIG_DIR"] == nil {
+                    var retryEnvironment = baseEnvironment
+                    retryEnvironment["CLAUDE_CONFIG_DIR"] = claudeConfigDirectory.path
+                    
+                    do {
+                        let retryResult = try await runClaudeInvocation(
+                            invocation,
+                            projectURL: projectURL,
+                            environment: retryEnvironment,
+                            timeoutSeconds: timeoutSeconds,
+                            maxOutputChars: maxOutputChars
+                        )
+                        result = ClaudeExecutionOutput(
+                            exitCode: retryResult.exitCode,
+                            timedOut: retryResult.timedOut,
+                            stdout: retryResult.stdout,
+                            stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with CLAUDE_CONFIG_DIR=\(claudeConfigDirectory.path)"
+                        )
+                    } catch {
+                        launchErrors.append("\(invocation.displayCommand) (retry with CLAUDE_CONFIG_DIR): \(error.localizedDescription)")
+                    }
+                }
+                
+                selectedInvocation = invocation
+                execution = result
+                break
+            } catch {
+                launchErrors.append("\(invocation.displayCommand): \(error.localizedDescription)")
+            }
+        }
+        
+        guard let finalInvocation = selectedInvocation, let finalExecution = execution else {
+            let details = launchErrors.isEmpty
+                ? "No launch diagnostics available."
+                : launchErrors.joined(separator: " | ")
+            let safeDetails = details.replacingOccurrences(of: "\"", with: "\\\"")
+            let safeCommand = command.replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"error":"Failed to launch Claude Code command '\#(safeCommand)'. Attempts: \#(safeDetails)"}"#
+        }
+        
+        let postSnapshot = snapshotProjectFiles(projectURL: projectURL)
+        let (createdFiles, modifiedFiles, deletedFiles) = diffSnapshots(before: preSnapshot, after: postSnapshot)
+        let fileChangesDetected = !(createdFiles.isEmpty && modifiedFiles.isEmpty && deletedFiles.isEmpty)
+        
+        let updatedMetadata = await updateProjectMetadataAfterRun(
+            projectURL: projectURL,
+            projectId: args.projectId,
+            prompt: args.prompt,
+            createdFiles: createdFiles,
+            modifiedFiles: modifiedFiles,
+            deletedFiles: deletedFiles,
+            stdout: finalExecution.stdout,
+            stderr: finalExecution.stderr,
+            fileChangesDetected: fileChangesDetected
+        )
+        let duration = Date().timeIntervalSince(startTime)
+        
+        let runRecord = ClaudeRunRecord(
+            timestamp: Date(),
+            prompt: args.prompt,
+            command: finalInvocation.displayCommand,
+            arguments: finalInvocation.arguments,
+            exitCode: finalExecution.exitCode,
+            timedOut: finalExecution.timedOut,
+            durationSeconds: duration,
+            createdFiles: createdFiles,
+            modifiedFiles: modifiedFiles,
+            deletedFiles: deletedFiles,
+            stdoutPreview: finalExecution.stdout,
+            stderrPreview: finalExecution.stderr
+        )
+        
+        let logFile = persistRunRecord(runRecord, projectURL: projectURL)
+        
+        let success = finalExecution.exitCode == 0 && !finalExecution.timedOut
+        let result = ClaudeRunResult(
+            success: success,
+            projectId: args.projectId,
+            command: finalInvocation.displayCommand,
+            exitCode: finalExecution.exitCode,
+            timedOut: finalExecution.timedOut,
+            durationSeconds: duration,
+            createdFiles: createdFiles,
+            modifiedFiles: modifiedFiles,
+            deletedFiles: deletedFiles,
+            fileChangesDetected: fileChangesDetected,
+            projectDescription: updatedMetadata?.projectDescription,
+            projectLastEditedAt: updatedMetadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
+            stdout: finalExecution.stdout,
+            stderr: finalExecution.stderr,
+            logFile: logFile,
+            message: success
+                ? (fileChangesDetected
+                    ? "Claude Code run completed with file changes."
+                    : "Claude Code run completed, but no file changes were detected. Verify prompt/permission mode and inspect stdout.")
+                : (finalExecution.timedOut ? "Claude Code run timed out after \(timeoutSeconds)s." : "Claude Code run failed with exit code \(finalExecution.exitCode).")
+        )
+        
+        return encodeJSON(result)
+    }
+    
+    private func executeSendProjectResult(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(SendProjectResultArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse send_project_result arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let destination = args.destination.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard destination == "chat" || destination == "email" else {
+            return #"{"error":"destination must be either 'chat' or 'email'."}"#
+        }
+        
+        var relativePaths: [String] = []
+        
+        if let requested = args.filePaths, !requested.isEmpty {
+            relativePaths = requested
+        } else if args.useLastChangedFiles ?? true {
+            if let record = loadLastRunRecord(projectURL: projectURL) {
+                relativePaths = Array(Set(record.createdFiles + record.modifiedFiles)).sorted()
+            }
+        }
+        
+        if relativePaths.isEmpty {
+            return #"{"error":"No files selected. Provide file_paths or run_claude_code first and use use_last_changed_files=true."}"#
+        }
+        
+        let maxFiles = min(max(args.maxFiles ?? 10, 1), 50)
+        var resolvedFiles: [(url: URL, relativePath: String)] = []
+        
+        for path in relativePaths {
+            guard let fileURL = resolvePath(in: projectURL, relativePath: path) else { continue }
+            
+            var isDir: ObjCBool = false
+            guard FileManager.default.fileExists(atPath: fileURL.path, isDirectory: &isDir), !isDir.boolValue else {
+                continue
+            }
+            
+            let normalized = relativePath(from: projectURL, to: fileURL)
+            resolvedFiles.append((url: fileURL, relativePath: normalized))
+            if resolvedFiles.count >= maxFiles { break }
+        }
+        
+        guard !resolvedFiles.isEmpty else {
+            return #"{"error":"None of the requested files were found."}"#
+        }
+        
+        if destination == "chat" {
+            var queuedFiles: [String] = []
+            
+            for file in resolvedFiles {
+                do {
+                    let data = try Data(contentsOf: file.url)
+                    let outputName = projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)
+                    let outputURL = documentsDirectory.appendingPathComponent(outputName)
+                    try data.write(to: outputURL)
+                    
+                    ToolExecutor.pendingDocuments.append((
+                        data: data,
+                        filename: outputName,
+                        mimeType: getMimeType(for: outputName),
+                        caption: args.caption ?? "Project \(args.projectId): \(file.relativePath)"
+                    ))
+                    ToolExecutor.queueFileForDescription(filename: outputName, data: data, mimeType: getMimeType(for: outputName))
+                    queuedFiles.append(file.relativePath)
+                } catch {
+                    print("[ToolExecutor] Failed to queue project file \(file.relativePath): \(error)")
+                }
+            }
+            
+            guard !queuedFiles.isEmpty else {
+                return #"{"error":"Failed to prepare files for chat delivery."}"#
+            }
+            
+            let result = SendProjectResultOutput(
+                success: true,
+                projectId: args.projectId,
+                destination: destination,
+                fileCount: queuedFiles.count,
+                files: queuedFiles,
+                message: "Project files queued for Telegram delivery."
+            )
+            return encodeJSON(result)
+        }
+        
+        guard let to = args.to?.trimmingCharacters(in: .whitespacesAndNewlines), to.contains("@"), to.contains(".") else {
+            return #"{"error":"A valid 'to' email address is required for destination='email'."}"#
+        }
+        
+        let subject = args.subject?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? args.subject!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "Project results: \(args.projectId)"
+        let body = args.body?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? args.body!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "Attached are project files from \(args.projectId)."
+        
+        do {
+            if await GmailService.shared.isAuthenticated {
+                var attachments: [(data: Data, name: String, mimeType: String)] = []
+                for file in resolvedFiles {
+                    let data = try Data(contentsOf: file.url)
+                    let name = projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)
+                    attachments.append((data: data, name: name, mimeType: getMimeType(for: name)))
+                }
+                
+                let success = try await GmailService.shared.sendEmail(
+                    to: to,
+                    subject: subject,
+                    body: body,
+                    threadId: nil,
+                    inReplyTo: nil,
+                    attachments: attachments
+                )
+                
+                guard success else {
+                    return #"{"error":"Failed to send project files via Gmail."}"#
+                }
+            } else {
+                guard await EmailService.shared.isConfigured else {
+                    return #"{"error":"Email is not configured. Configure Gmail or IMAP first."}"#
+                }
+                
+                var attachmentURLs: [(url: URL, name: String)] = []
+                for file in resolvedFiles {
+                    attachmentURLs.append((url: file.url, name: projectAttachmentName(projectId: args.projectId, relativePath: file.relativePath)))
+                }
+                
+                let success = try await EmailService.shared.sendEmailWithAttachments(
+                    to: to,
+                    subject: subject,
+                    body: body,
+                    attachments: attachmentURLs
+                )
+                
+                guard success else {
+                    return #"{"error":"Failed to send project files via IMAP/SMTP."}"#
+                }
+            }
+        } catch {
+            return #"{"error":"Failed to send project result: \#(error.localizedDescription)"}"#
+        }
+        
+        let result = SendProjectResultOutput(
+            success: true,
+            projectId: args.projectId,
+            destination: destination,
+            fileCount: resolvedFiles.count,
+            files: resolvedFiles.map { $0.relativePath },
+            message: "Project files sent via email."
+        )
+        return encodeJSON(result)
+    }
+    
+    private func executeFlagProjectsForDeletion(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(FlagProjectsForDeletionArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse flag_projects_for_deletion arguments"}"#
+        }
+        
+        let rawReason = args.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let reason = (rawReason?.isEmpty == false) ? rawReason : nil
+        
+        var seen: Set<String> = []
+        let requestedProjectIDs = args.projectIds
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .filter { seen.insert($0).inserted }
+        
+        guard !requestedProjectIDs.isEmpty else {
+            return #"{"error":"project_ids is empty. Use list_projects first."}"#
+        }
+        
+        var missingProjectIDs: [String] = []
+        var flaggedProjects: [FlaggedProjectResultItem] = []
+        
+        for projectID in requestedProjectIDs {
+            guard let projectURL = resolveProjectDirectory(projectId: projectID) else {
+                missingProjectIDs.append(projectID)
+                continue
+            }
+            
+            var metadata = loadProjectMetadata(projectURL: projectURL) ??
+                makeFallbackProjectMetadata(projectURL: projectURL, projectId: projectID)
+            let alreadyFlagged = metadata.flaggedForDeletion ?? false
+            let flaggedAt = Date()
+            
+            metadata.flaggedForDeletion = true
+            metadata.deletionFlaggedAt = flaggedAt
+            if reason != nil {
+                metadata.deletionFlagReason = reason
+            }
+            saveProjectMetadata(metadata, projectURL: projectURL)
+            
+            flaggedProjects.append(
+                FlaggedProjectResultItem(
+                    id: metadata.id,
+                    name: metadata.name,
+                    alreadyFlagged: alreadyFlagged,
+                    deletionFlaggedAt: isoFormatter.string(from: flaggedAt),
+                    reason: metadata.deletionFlagReason
+                )
+            )
+        }
+        
+        let result = FlagProjectsForDeletionResult(
+            success: !flaggedProjects.isEmpty,
+            requestedCount: requestedProjectIDs.count,
+            flaggedCount: flaggedProjects.count,
+            missingProjectIds: missingProjectIDs,
+            flaggedProjects: flaggedProjects,
+            message: flaggedProjects.isEmpty
+                ? "No projects were flagged. Verify project IDs with list_projects."
+                : "Flagged \(flaggedProjects.count) project(s) for user-confirmed deletion in Settings."
+        )
+        
+        return encodeJSON(result)
+    }
+    
+    private func sanitizeProjectName(_ name: String) -> String {
+        let lower = name.lowercased()
+        let allowed = lower.map { char -> Character in
+            if char.isLetter || char.isNumber {
+                return char
+            }
+            return "-"
+        }
+        let collapsed = String(allowed)
+            .replacingOccurrences(of: "-+", with: "-", options: .regularExpression)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+        return collapsed.isEmpty ? "project" : String(collapsed.prefix(40))
+    }
+    
+    private func resolveProjectDirectory(projectId: String) -> URL? {
+        let trimmed = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty,
+              trimmed.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
+            return nil
+        }
+        
+        let projectURL = projectsDirectory.appendingPathComponent(trimmed, isDirectory: true).standardizedFileURL
+        let rootURL = projectsDirectory.standardizedFileURL
+        guard projectURL.path.hasPrefix(rootURL.path) else { return nil }
+        
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: projectURL.path, isDirectory: &isDir), isDir.boolValue else {
+            return nil
+        }
+        
+        return projectURL
+    }
+    
+    private func resolvePath(in projectURL: URL, relativePath: String) -> URL? {
+        let trimmed = relativePath.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalized = trimmed.isEmpty ? "." : trimmed
+        guard !normalized.hasPrefix("/") else { return nil }
+        
+        let targetURL = projectURL.appendingPathComponent(normalized).standardizedFileURL
+        let rootPath = projectURL.standardizedFileURL.path
+        guard targetURL.path.hasPrefix(rootPath) else { return nil }
+        return targetURL
+    }
+    
+    private func isSafeDocumentFilename(_ filename: String) -> Bool {
+        let trimmed = filename.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard !trimmed.contains("/"), !trimmed.contains("\\") else { return false }
+        guard trimmed != ".", trimmed != ".." else { return false }
+        return true
+    }
+    
+    private func nextAvailableFileURL(in directoryURL: URL, preferredFilename: String) -> URL {
+        let fileManager = FileManager.default
+        let safeName = preferredFilename.trimmingCharacters(in: .whitespacesAndNewlines)
+        let ext = (safeName as NSString).pathExtension
+        var base = (safeName as NSString).deletingPathExtension
+        if base.isEmpty { base = "file" }
+        
+        var candidate = ext.isEmpty ? base : "\(base).\(ext)"
+        var candidateURL = directoryURL.appendingPathComponent(candidate)
+        var counter = 1
+        
+        while fileManager.fileExists(atPath: candidateURL.path) {
+            candidate = ext.isEmpty ? "\(base)_\(counter)" : "\(base)_\(counter).\(ext)"
+            candidateURL = directoryURL.appendingPathComponent(candidate)
+            counter += 1
+        }
+        
+        return candidateURL
+    }
+    
+    private func listProjectEntries(
+        projectURL: URL,
+        baseURL: URL,
+        recursive: Bool,
+        maxEntries: Int
+    ) throws -> [ClaudeProjectBrowseEntry] {
+        let fileManager = FileManager.default
+        var entries: [ClaudeProjectBrowseEntry] = []
+        
+        if recursive {
+            guard let enumerator = fileManager.enumerator(
+                at: baseURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles, .skipsPackageDescendants]
+            ) else {
+                return []
+            }
+            
+            for case let url as URL in enumerator {
+                let relative = relativePath(from: projectURL, to: url)
+                if shouldIgnoreProjectPath(relative) { continue }
+                
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                let isDirectory = values?.isDirectory ?? false
+                let size = isDirectory ? nil : values?.fileSize
+                let modified = values?.contentModificationDate.map { isoFormatter.string(from: $0) }
+                
+                entries.append(ClaudeProjectBrowseEntry(
+                    relativePath: relative,
+                    type: isDirectory ? "directory" : "file",
+                    sizeBytes: size,
+                    modifiedAt: modified
+                ))
+                
+                if entries.count >= maxEntries { break }
+            }
+        } else {
+            let children = try fileManager.contentsOfDirectory(
+                at: baseURL,
+                includingPropertiesForKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey],
+                options: [.skipsHiddenFiles]
+            )
+            
+            for url in children.prefix(maxEntries) {
+                let relative = relativePath(from: projectURL, to: url)
+                if shouldIgnoreProjectPath(relative) { continue }
+                
+                let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey])
+                let isDirectory = values?.isDirectory ?? false
+                let size = isDirectory ? nil : values?.fileSize
+                let modified = values?.contentModificationDate.map { isoFormatter.string(from: $0) }
+                
+                entries.append(ClaudeProjectBrowseEntry(
+                    relativePath: relative,
+                    type: isDirectory ? "directory" : "file",
+                    sizeBytes: size,
+                    modifiedAt: modified
+                ))
+            }
+        }
+        
+        return entries.sorted { lhs, rhs in
+            if lhs.type != rhs.type {
+                return lhs.type == "directory"
+            }
+            return lhs.relativePath < rhs.relativePath
+        }
+    }
+    
+    private func loadProjectMetadata(projectURL: URL) -> ClaudeProjectMetadata? {
+        let metadataURL = projectURL.appendingPathComponent(".project.json")
+        guard let data = try? Data(contentsOf: metadataURL) else { return nil }
+        return try? JSONDecoder().decode(ClaudeProjectMetadata.self, from: data)
+    }
+    
+    private func makeFallbackProjectMetadata(projectURL: URL, projectId: String) -> ClaudeProjectMetadata {
+        let attrs = try? FileManager.default.attributesOfItem(atPath: projectURL.path)
+        let createdAt = (attrs?[.creationDate] as? Date) ?? Date()
+        return ClaudeProjectMetadata(
+            id: projectId,
+            name: projectURL.lastPathComponent,
+            createdAt: createdAt,
+            initialNotes: nil,
+            projectDescription: nil,
+            lastEditedAt: nil,
+            flaggedForDeletion: nil,
+            deletionFlaggedAt: nil,
+            deletionFlagReason: nil
+        )
+    }
+    
+    private func saveProjectMetadata(_ metadata: ClaudeProjectMetadata, projectURL: URL) {
+        let metadataURL = projectURL.appendingPathComponent(".project.json")
+        guard let data = try? JSONEncoder().encode(metadata) else { return }
+        try? data.write(to: metadataURL)
+    }
+    
+    private func updateProjectMetadataAfterRun(
+        projectURL: URL,
+        projectId: String,
+        prompt: String,
+        createdFiles: [String],
+        modifiedFiles: [String],
+        deletedFiles: [String],
+        stdout: String,
+        stderr: String,
+        fileChangesDetected: Bool
+    ) async -> ClaudeProjectMetadata? {
+        guard var metadata = loadProjectMetadata(projectURL: projectURL) else { return nil }
+        
+        if fileChangesDetected {
+            metadata.lastEditedAt = Date()
+        }
+        
+        let shouldRegenerateDescription = fileChangesDetected || (metadata.projectDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        
+        if shouldRegenerateDescription {
+            if let generatedDescription = await generateProjectDescriptionAfterRun(
+                metadata: metadata,
+                prompt: prompt,
+                createdFiles: createdFiles,
+                modifiedFiles: modifiedFiles,
+                deletedFiles: deletedFiles,
+                stdout: stdout,
+                stderr: stderr,
+                fileChangesDetected: fileChangesDetected
+            ) {
+                metadata.projectDescription = generatedDescription
+            } else if fileChangesDetected || (metadata.projectDescription?.isEmpty ?? true) {
+                metadata.projectDescription = fallbackProjectDescription(
+                    projectName: metadata.name,
+                    initialNotes: metadata.initialNotes,
+                    prompt: prompt,
+                    createdFiles: createdFiles,
+                    modifiedFiles: modifiedFiles
+                )
+            }
+        }
+        
+        saveProjectMetadata(metadata, projectURL: projectURL)
+        return metadata
+    }
+    
+    private func generateProjectDescriptionOnCreate(
+        projectName: String,
+        initialNotes: String?
+    ) async -> String? {
+        let trimmedNotes = initialNotes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = """
+        Create a concise project catalog description.
+        Project name: \(projectName)
+        Initial notes: \(trimmedNotes?.isEmpty == false ? trimmedNotes! : "None")
+        
+        Keep it under 180 characters. Focus on intent and expected output.
+        """
+        
+        if let generated = await requestGeminiProjectDescription(prompt: prompt) {
+            return generated
+        }
+        
+        return fallbackProjectDescription(
+            projectName: projectName,
+            initialNotes: initialNotes,
+            prompt: nil,
+            createdFiles: [],
+            modifiedFiles: []
+        )
+    }
+    
+    private func generateProjectDescriptionAfterRun(
+        metadata: ClaudeProjectMetadata,
+        prompt: String,
+        createdFiles: [String],
+        modifiedFiles: [String],
+        deletedFiles: [String],
+        stdout: String,
+        stderr: String,
+        fileChangesDetected: Bool
+    ) async -> String? {
+        let changedFiles = (createdFiles + modifiedFiles).sorted()
+        let changedSummary = changedFiles.isEmpty ? "None" : changedFiles.prefix(12).joined(separator: ", ")
+        let deletedSummary = deletedFiles.isEmpty ? "None" : deletedFiles.prefix(8).joined(separator: ", ")
+        let previousDescription = metadata.projectDescription ?? "None"
+        
+        let promptSnippet = String(prompt.prefix(700))
+        let stdoutSnippet = String(stdout.prefix(500))
+        let stderrSnippet = String(stderr.prefix(300))
+        
+        let promptText = """
+        Update this project catalog description after a Claude Code run.
+        
+        Project name: \(metadata.name)
+        Previous description: \(previousDescription)
+        Initial notes: \(metadata.initialNotes ?? "None")
+        Latest run prompt: \(promptSnippet)
+        File changes detected: \(fileChangesDetected ? "Yes" : "No")
+        Created/Modified files: \(changedSummary)
+        Deleted files: \(deletedSummary)
+        Stdout excerpt: \(stdoutSnippet.isEmpty ? "None" : stdoutSnippet)
+        Stderr excerpt: \(stderrSnippet.isEmpty ? "None" : stderrSnippet)
+        
+        Produce a single compact description (<180 chars) that helps choose this project later.
+        """
+        
+        if let generated = await requestGeminiProjectDescription(prompt: promptText) {
+            return generated
+        }
+        
+        return nil
+    }
+    
+    private func fallbackProjectDescription(
+        projectName: String,
+        initialNotes: String?,
+        prompt: String?,
+        createdFiles: [String],
+        modifiedFiles: [String]
+    ) -> String {
+        if let prompt, !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return trimProjectDescription("Project '\(projectName)': \(prompt)")
+        }
+        
+        if !createdFiles.isEmpty || !modifiedFiles.isEmpty {
+            let fileHint = (createdFiles + modifiedFiles).prefix(2).joined(separator: ", ")
+            return trimProjectDescription("Project '\(projectName)' with recent work on \(fileHint).")
+        }
+        
+        let noteSnippet = initialNotes?.trimmingCharacters(in: .whitespacesAndNewlines)
+        if let noteSnippet, !noteSnippet.isEmpty {
+            return trimProjectDescription(noteSnippet)
+        }
+        
+        return trimProjectDescription("Project '\(projectName)' workspace.")
+    }
+    
+    private func requestGeminiProjectDescription(prompt: String) async -> String? {
+        let apiKey = (KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !apiKey.isEmpty else { return nil }
+        
+        let body: [String: Any] = [
+            "model": "google/gemini-3-flash-preview",
+            "messages": [
+                [
+                    "role": "system",
+                    "content": """
+                    You generate project catalog descriptions for local coding workspaces.
+                    Return strict JSON only: {"description":"..."}.
+                    Rules:
+                    - max 180 characters
+                    - one sentence
+                    - include purpose and current progress
+                    - no markdown, no code fences
+                    """
+                ],
+                ["role": "user", "content": prompt]
+            ]
+        ]
+        
+        guard let requestBody = try? JSONSerialization.data(withJSONObject: body) else {
+            return nil
+        }
+        
+        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 15
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        request.httpBody = requestBody
+        
+        do {
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let choices = json["choices"] as? [[String: Any]],
+                  let firstChoice = choices.first,
+                  let message = firstChoice["message"] as? [String: Any],
+                  let content = message["content"] as? String else {
+                return nil
+            }
+            
+            return extractProjectDescription(from: content)
+        } catch {
+            return nil
+        }
+    }
+    
+    private func extractProjectDescription(from content: String) -> String? {
+        var cleaned = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !cleaned.isEmpty else { return nil }
+        
+        if cleaned.hasPrefix("```") {
+            cleaned = cleaned
+                .replacingOccurrences(of: "```json", with: "")
+                .replacingOccurrences(of: "```", with: "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        
+        if let data = cleaned.data(using: .utf8),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let description = json["description"] as? String,
+           !description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return trimProjectDescription(description)
+        }
+        
+        return trimProjectDescription(cleaned)
+    }
+    
+    private func trimProjectDescription(_ text: String) -> String {
+        let squashed = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .replacingOccurrences(of: #"\s+"#, with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if squashed.count <= 180 {
+            return squashed
+        }
+        return String(squashed.prefix(177)) + "..."
+    }
+    
+    private func countProjectFiles(projectURL: URL) -> Int {
+        guard let enumerator = FileManager.default.enumerator(
+            at: projectURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return 0
+        }
+        
+        var count = 0
+        for case let url as URL in enumerator {
+            let relative = relativePath(from: projectURL, to: url)
+            if shouldIgnoreProjectPath(relative) { continue }
+            
+            let values = try? url.resourceValues(forKeys: [.isRegularFileKey])
+            if values?.isRegularFile == true {
+                count += 1
+            }
+        }
+        return count
+    }
+    
+    private func snapshotProjectFiles(projectURL: URL) -> [String: ProjectSnapshotEntry] {
+        guard let enumerator = FileManager.default.enumerator(
+            at: projectURL,
+            includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return [:]
+        }
+        
+        var snapshot: [String: ProjectSnapshotEntry] = [:]
+        
+        for case let url as URL in enumerator {
+            let relative = relativePath(from: projectURL, to: url)
+            if shouldIgnoreProjectPath(relative) { continue }
+            
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .contentModificationDateKey]),
+                  values.isRegularFile == true else {
+                continue
+            }
+            
+            let size = UInt64(values.fileSize ?? 0)
+            let modified = values.contentModificationDate ?? .distantPast
+            snapshot[relative] = ProjectSnapshotEntry(size: size, modifiedAt: modified)
+        }
+        
+        return snapshot
+    }
+    
+    private func diffSnapshots(
+        before: [String: ProjectSnapshotEntry],
+        after: [String: ProjectSnapshotEntry]
+    ) -> (created: [String], modified: [String], deleted: [String]) {
+        let beforeKeys = Set(before.keys)
+        let afterKeys = Set(after.keys)
+        
+        let created = Array(afterKeys.subtracting(beforeKeys)).sorted()
+        let deleted = Array(beforeKeys.subtracting(afterKeys)).sorted()
+        
+        let shared = beforeKeys.intersection(afterKeys)
+        var modified: [String] = []
+        
+        for key in shared {
+            guard let pre = before[key], let post = after[key] else { continue }
+            if pre.size != post.size || pre.modifiedAt != post.modifiedAt {
+                modified.append(key)
+            }
+        }
+        
+        return (created, modified.sorted(), deleted)
+    }
+    
+    private func shouldIgnoreProjectPath(_ relativePath: String) -> Bool {
+        if relativePath == ".project.json" || relativePath == ".claude_last_run.json" {
+            return true
+        }
+        if relativePath.hasPrefix(".claude_runs/") {
+            return true
+        }
+        return false
+    }
+    
+    private var claudeConfigDirectory: URL {
+        let path = projectsDirectory.deletingLastPathComponent().appendingPathComponent("claude-config", isDirectory: true)
+        try? FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        return path
+    }
+    
+    private func claudeBaseEnvironment() -> [String: String] {
+        var environment = ProcessInfo.processInfo.environment
+        let requiredPaths = ["/opt/homebrew/bin", "/usr/local/bin", "/usr/bin", "/bin"]
+        let existing = (environment["PATH"] ?? "")
+            .split(separator: ":")
+            .map(String.init)
+        var merged = existing
+        
+        for path in requiredPaths where !merged.contains(path) {
+            merged.append(path)
+        }
+        
+        environment["PATH"] = merged.joined(separator: ":")
+        return environment
+    }
+    
+    private func buildClaudeInvocations(command: String, cliArgs: [String], prompt: String) -> [ClaudeInvocation] {
+        let commandTokens = parseCommandLineArguments(command)
+        let primaryCommand = commandTokens.first ?? "claude"
+        let commandPrefixArgs = Array(commandTokens.dropFirst())
+        let taskArgs = commandPrefixArgs + cliArgs + [prompt]
+        
+        let fileManager = FileManager.default
+        var invocations: [ClaudeInvocation] = []
+        var seen: Set<String> = []
+        
+        func appendInvocation(executable: String, args: [String]) {
+            let key = executable + "\u{1f}" + args.joined(separator: "\u{1f}")
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            
+            let displayArgs: [String]
+            if args.isEmpty {
+                displayArgs = []
+            } else {
+                displayArgs = Array(args.dropLast()) + ["<prompt>"]
+            }
+            let display = ([executable] + displayArgs).joined(separator: " ")
+            invocations.append(
+                ClaudeInvocation(
+                    executableURL: URL(fileURLWithPath: executable),
+                    arguments: args,
+                    displayCommand: display
+                )
+            )
+        }
+        
+        if primaryCommand.contains("/") {
+            appendInvocation(executable: primaryCommand, args: taskArgs)
+        } else {
+            appendInvocation(executable: "/usr/bin/env", args: [primaryCommand] + taskArgs)
+        }
+        
+        if primaryCommand == "claude" {
+            for launcher in ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"] {
+                if fileManager.fileExists(atPath: launcher) {
+                    appendInvocation(executable: launcher, args: taskArgs)
+                }
+            }
+        }
+        
+        var launcherCandidates: [String] = []
+        if primaryCommand.contains("/") {
+            launcherCandidates.append(primaryCommand)
+        } else if primaryCommand == "claude" {
+            launcherCandidates += ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"]
+        }
+        
+        for launcher in launcherCandidates {
+            guard let scriptPath = resolveClaudeScriptPath(launcherPath: launcher) else { continue }
+            
+            if let nodePath = resolveNodeExecutablePath() {
+                appendInvocation(executable: nodePath, args: [scriptPath] + taskArgs)
+            }
+            appendInvocation(executable: "/usr/bin/env", args: ["node", scriptPath] + taskArgs)
+        }
+        
+        return invocations
+    }
+    
+    private func resolveClaudeScriptPath(launcherPath: String) -> String? {
+        let fileManager = FileManager.default
+        let launcherURL = URL(fileURLWithPath: launcherPath)
+        
+        if launcherURL.pathExtension == "js", fileManager.fileExists(atPath: launcherURL.path) {
+            return launcherURL.standardizedFileURL.path
+        }
+        
+        guard fileManager.fileExists(atPath: launcherPath) else { return nil }
+        
+        if let destination = try? fileManager.destinationOfSymbolicLink(atPath: launcherPath) {
+            let resolvedURL: URL
+            if destination.hasPrefix("/") {
+                resolvedURL = URL(fileURLWithPath: destination)
+            } else {
+                resolvedURL = launcherURL.deletingLastPathComponent().appendingPathComponent(destination)
+            }
+            let standardized = resolvedURL.standardizedFileURL.path
+            if standardized.hasSuffix(".js"), fileManager.fileExists(atPath: standardized) {
+                return standardized
+            }
+        }
+        
+        return nil
+    }
+    
+    private func resolveNodeExecutablePath() -> String? {
+        let candidates = ["/opt/homebrew/bin/node", "/usr/local/bin/node", "/usr/bin/node"]
+        for path in candidates where FileManager.default.isExecutableFile(atPath: path) {
+            return path
+        }
+        return nil
+    }
+    
+    private func runClaudeInvocation(
+        _ invocation: ClaudeInvocation,
+        projectURL: URL,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        maxOutputChars: Int
+    ) async throws -> ClaudeExecutionOutput {
+        try Task.checkCancellation()
+        
+        let process = Process()
+        let outputPipe = Pipe()
+        let errorPipe = Pipe()
+        
+        process.currentDirectoryURL = projectURL
+        process.environment = environment
+        process.standardOutput = outputPipe
+        process.standardError = errorPipe
+        process.executableURL = invocation.executableURL
+        process.arguments = invocation.arguments
+        
+        try process.run()
+        ToolExecutor.registerRunningProcess(process)
+        defer { ToolExecutor.unregisterRunningProcess(process) }
+        
+        var timedOut = false
+        var wasCancelled = false
+        let timeoutNanos = UInt64(timeoutSeconds) * 1_000_000_000
+        let pollNanos: UInt64 = 200_000_000
+        var elapsedNanos: UInt64 = 0
+        
+        while process.isRunning && elapsedNanos < timeoutNanos {
+            if Task.isCancelled {
+                wasCancelled = true
+                break
+            }
+            try? await Task.sleep(nanoseconds: pollNanos)
+            elapsedNanos += pollNanos
+        }
+        
+        if process.isRunning {
+            timedOut = !wasCancelled
+            process.terminate()
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            if process.isRunning {
+                process.interrupt()
+            }
+        }
+        
+        process.waitUntilExit()
+        
+        let stdoutData = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
+        
+        if wasCancelled {
+            throw CancellationError()
+        }
+        
+        return ClaudeExecutionOutput(
+            exitCode: process.terminationStatus,
+            timedOut: timedOut,
+            stdout: truncateForToolOutput(stringFromData(stdoutData), maxChars: maxOutputChars),
+            stderr: truncateForToolOutput(stringFromData(stderrData), maxChars: maxOutputChars)
+        )
+    }
+    
+    private func shouldRetryClaudeWithAppConfig(stderr: String) -> Bool {
+        let lower = stderr.lowercased()
+        let permissionSignal = lower.contains("eperm") || lower.contains("operation not permitted") || lower.contains("permission denied")
+        let claudeHomeSignal = lower.contains(".claude")
+        return permissionSignal && claudeHomeSignal
+    }
+    
+    private func relativePath(from root: URL, to child: URL) -> String {
+        let rootPath = root.standardizedFileURL.path
+        let childPath = child.standardizedFileURL.path
+        if childPath == rootPath { return "." }
+        if childPath.hasPrefix(rootPath + "/") {
+            return String(childPath.dropFirst(rootPath.count + 1))
+        }
+        return child.lastPathComponent
+    }
+    
+    private func parseCommandLineArguments(_ raw: String) -> [String] {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return [] }
+        
+        var args: [String] = []
+        var current = ""
+        var quote: Character? = nil
+        var isEscaping = false
+        
+        for char in trimmed {
+            if isEscaping {
+                current.append(char)
+                isEscaping = false
+                continue
+            }
+            
+            if char == "\\" {
+                isEscaping = true
+                continue
+            }
+            
+            if let activeQuote = quote {
+                if char == activeQuote {
+                    quote = nil
+                } else {
+                    current.append(char)
+                }
+                continue
+            }
+            
+            if char == "\"" || char == "'" {
+                quote = char
+                continue
+            }
+            
+            if char.isWhitespace {
+                if !current.isEmpty {
+                    args.append(current)
+                    current = ""
+                }
+            } else {
+                current.append(char)
+            }
+        }
+        
+        if !current.isEmpty {
+            args.append(current)
+        }
+        
+        return args
+    }
+    
+    private func truncateForToolOutput(_ text: String, maxChars: Int) -> String {
+        if text.count <= maxChars {
+            return text
+        }
+        return String(text.prefix(maxChars)) + "\n...[truncated]..."
+    }
+    
+    private func stringFromData(_ data: Data) -> String {
+        if let string = String(data: data, encoding: .utf8) {
+            return string
+        }
+        return "[binary output: \(data.count) bytes]"
+    }
+    
+    private func persistRunRecord(_ record: ClaudeRunRecord, projectURL: URL) -> String {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        encoder.dateEncodingStrategy = .iso8601
+        
+        let latestURL = projectURL.appendingPathComponent(".claude_last_run.json")
+        if let data = try? encoder.encode(record) {
+            try? data.write(to: latestURL)
+        }
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let runFolder = projectURL.appendingPathComponent(".claude_runs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: runFolder, withIntermediateDirectories: true)
+        let logURL = runFolder.appendingPathComponent("run-\(formatter.string(from: record.timestamp)).json")
+        if let data = try? encoder.encode(record) {
+            try? data.write(to: logURL)
+        }
+        
+        return relativePath(from: projectURL, to: logURL)
+    }
+    
+    private func loadLastRunRecord(projectURL: URL) -> ClaudeRunRecord? {
+        let url = projectURL.appendingPathComponent(".claude_last_run.json")
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ClaudeRunRecord.self, from: data)
+    }
+    
+    private func projectAttachmentName(projectId: String, relativePath: String) -> String {
+        let sanitized = relativePath
+            .replacingOccurrences(of: "/", with: "__")
+            .replacingOccurrences(of: "\\", with: "__")
+        return "\(projectId)__\(sanitized)"
+    }
+}
+
+// MARK: - Gmail Tool Argument Types
+
+struct GmailQueryArguments: Codable {
+    let query: String?
+    let limit: Int?
+}
+
+struct GmailSendArguments: Codable {
+    let to: String
+    let subject: String
+    let body: String
+    let threadId: String?
+    let inReplyTo: String?
+    let cc: [String]
+    let bcc: [String]
+    let attachmentFilenames: [String]?
+    
+    enum CodingKeys: String, CodingKey {
+        case to, subject, body, cc, bcc
+        case threadId = "thread_id"
+        case inReplyTo = "in_reply_to"
+        case attachmentFilenames = "attachment_filenames"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        to = try container.decode(String.self, forKey: .to)
+        subject = try container.decode(String.self, forKey: .subject)
+        body = try container.decode(String.self, forKey: .body)
+        threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+        inReplyTo = try container.decodeIfPresent(String.self, forKey: .inReplyTo)
+        cc = decodeRecipients(from: container, forKey: .cc)
+        bcc = decodeRecipients(from: container, forKey: .bcc)
+        
+        // Handle attachmentFilenames as either an array or a JSON string
+        if let array = try? container.decodeIfPresent([String].self, forKey: .attachmentFilenames) {
+            attachmentFilenames = array
+        } else if let jsonString = try? container.decodeIfPresent(String.self, forKey: .attachmentFilenames),
+                  let data = jsonString.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode([String].self, from: data) {
+            attachmentFilenames = parsed
+        } else {
+            attachmentFilenames = nil
+        }
+    }
+}
+
+struct GmailThreadArguments: Codable {
+    let threadId: String
+    
+    enum CodingKeys: String, CodingKey {
+        case threadId = "thread_id"
+    }
+}
+
+struct GmailForwardArguments: Codable {
+    let to: String
+    let messageId: String
+    let comment: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case to
+        case messageId = "message_id"
+        case comment
+    }
+}
+
+struct GmailAttachmentArguments: Codable {
+    let messageId: String
+    let attachmentId: String
+    let filename: String
+    
+    enum CodingKeys: String, CodingKey {
+        case messageId = "message_id"
+        case attachmentId = "attachment_id"
+        case filename
+    }
+}

@@ -1,0 +1,1387 @@
+import Foundation
+import SwiftUI
+
+@MainActor
+class ConversationManager: ObservableObject {
+    @Published var messages: [Message] = []
+    @Published var isPolling: Bool = false
+    @Published var statusMessage: String = "Not started"
+    @Published var error: String?
+    
+    private let telegramService = TelegramBotService()
+    private let openRouterService = OpenRouterService()
+    private let toolExecutor = ToolExecutor()
+    private let archiveService = ConversationArchiveService()
+    
+    private var pollingTask: Task<Void, Never>?
+    private var activeProcessingTask: Task<Void, Never>?
+    private var activeRunId: UUID?
+    private var pairedChatId: Int?
+    
+    // Pending media buffer - media is buffered until text triggers processing
+    private var pendingImages: [(fileName: String, fileSize: Int)] = []
+    private var pendingDocuments: [(fileName: String, fileSize: Int)] = []
+    private var pendingReferencedImages: [(fileName: String, fileSize: Int)] = []
+    private var pendingReferencedDocuments: [(fileName: String, fileSize: Int)] = []
+    private var pendingForwardContext: String?
+    private var pendingReplyContext: String?
+    
+    private let appFolder: URL = {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let folder = appSupport.appendingPathComponent("TelegramConcierge", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder
+    }()
+    
+    private var conversationFileURL: URL {
+        appFolder.appendingPathComponent("conversation.json")
+    }
+    
+    private var imagesDirectory: URL {
+        let dir = appFolder.appendingPathComponent("images", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+    
+    var documentsDirectory: URL {
+        let dir = appFolder.appendingPathComponent("documents", isDirectory: true)
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        return dir
+    }
+    
+    init() {
+        loadConversation()
+    }
+    
+    // MARK: - Configuration
+    
+    func configure() async {
+        guard let token = KeychainHelper.load(key: KeychainHelper.telegramBotTokenKey),
+              let chatIdString = KeychainHelper.load(key: KeychainHelper.telegramChatIdKey),
+              let chatId = Int(chatIdString),
+              let apiKey = KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) else {
+            error = "Please configure all settings first"
+            return
+        }
+        
+        // Get optional web search keys
+        let serperKey = KeychainHelper.load(key: KeychainHelper.serperApiKeyKey) ?? ""
+        let jinaKey = KeychainHelper.load(key: KeychainHelper.jinaApiKeyKey) ?? ""
+        
+        pairedChatId = chatId
+        await telegramService.configure(token: token)
+        await openRouterService.configure(apiKey: apiKey)
+        
+        // Configure tool executor if web search keys are available
+        if !serperKey.isEmpty {
+            await toolExecutor.configure(openRouterKey: apiKey, serperKey: serperKey, jinaKey: jinaKey)
+        }
+        
+        // Configure archive service and recover any pending chunks from previous crash
+        await archiveService.configure(apiKey: apiKey)
+        await archiveService.recoverPendingChunks()
+        
+        // Configure email service: prefer Gmail OAuth if authenticated, fall back to IMAP
+        let gmailAuthenticated = await GmailService.shared.isAuthenticated
+        
+        if gmailAuthenticated {
+            // Use Gmail API with OAuth
+            print("[ConversationManager] Using Gmail API for email (OAuth authenticated)")
+            await GmailService.shared.startBackgroundFetch()
+            
+            // Register handler for smart Gmail notifications
+            await GmailService.shared.setNewEmailHandler { [weak self] newEmails in
+                await self?.processNewGmailEmails(newEmails)
+            }
+        } else if let imapHost = KeychainHelper.load(key: KeychainHelper.imapHostKey),
+           let imapPortStr = KeychainHelper.load(key: KeychainHelper.imapPortKey),
+           let smtpHost = KeychainHelper.load(key: KeychainHelper.smtpHostKey),
+           let smtpPortStr = KeychainHelper.load(key: KeychainHelper.smtpPortKey),
+           let emailUsername = KeychainHelper.load(key: KeychainHelper.imapUsernameKey),
+           let emailPassword = KeychainHelper.load(key: KeychainHelper.imapPasswordKey) {
+            // Fall back to IMAP/SMTP
+            print("[ConversationManager] Using IMAP/SMTP for email")
+            let displayName = KeychainHelper.load(key: KeychainHelper.emailDisplayNameKey) ?? emailUsername
+            await EmailService.shared.configure(
+                imapHost: imapHost,
+                imapPort: Int(imapPortStr) ?? 993,
+                smtpHost: smtpHost,
+                smtpPort: Int(smtpPortStr) ?? 465,
+                username: emailUsername,
+                password: emailPassword,
+                displayName: displayName
+            )
+            // Start background email fetch (every 5 minutes)
+            await EmailService.shared.startBackgroundFetch()
+            
+            // Register handler for smart email notifications (runs in detached task)
+            await EmailService.shared.setNewEmailHandler { [weak self] newEmails in
+                await self?.processNewEmails(newEmails)
+            }
+        }
+        
+        // Configure Gemini image service if API key is available
+        if let geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey), !geminiApiKey.isEmpty {
+            await GeminiImageService.shared.configure(apiKey: geminiApiKey)
+        }
+        
+        error = nil
+    }
+    
+    // MARK: - Polling Control
+    
+    func startPolling() async {
+        // Prevent duplicate polling tasks
+        guard !isPolling else {
+            print("[ConversationManager] Polling already running, ignoring duplicate start")
+            return
+        }
+        
+        await configure()
+        
+        guard error == nil else { return }
+        
+        isPolling = true
+        statusMessage = "Polling for messages..."
+        
+        pollingTask = Task {
+            while !Task.isCancelled && isPolling {
+                do {
+                    // Check for due reminders first
+                    await checkDueReminders()
+                    
+                    let updates = try await telegramService.getUpdates()
+                    
+                    for update in updates {
+                        await processUpdate(update)
+                    }
+                    
+                    statusMessage = "Listening... (Last check: \(formattedTime()))"
+                    
+                    // Poll every 1 second
+                    try? await Task.sleep(nanoseconds: 1_000_000_000)
+                } catch {
+                    if !Task.isCancelled {
+                        statusMessage = "Error: \(error.localizedDescription)"
+                        try? await Task.sleep(nanoseconds: 5_000_000_000) // 5 seconds before retry
+                    }
+                }
+            }
+        }
+    }
+    
+    func stopPolling() {
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeRunId = nil
+        Task { await toolExecutor.cancelAllRunningProcesses() }
+        ToolExecutor.clearPendingToolOutputs()
+        
+        isPolling = false
+        pollingTask?.cancel()
+        pollingTask = nil
+        statusMessage = "Stopped"
+    }
+    
+    // MARK: - Message Processing
+    
+    private func processUpdate(_ update: TelegramUpdate) async {
+        // Clear any previous error when starting to process a new message
+        error = nil
+        
+        guard let telegramMessage = update.message else {
+            return
+        }
+        
+        // Only process messages from the paired chat
+        guard telegramMessage.chat.id == pairedChatId else {
+            return
+        }
+        
+        // Skip messages from the bot itself
+        if telegramMessage.from?.isBot == true {
+            return
+        }
+        
+        if let text = telegramMessage.text, isStopCommand(text) {
+            await stopActiveExecution()
+            return
+        }
+        
+        if activeRunId != nil {
+            if let chatId = pairedChatId {
+                try? await telegramService.sendMessage(
+                    chatId: chatId,
+                    text: "⏳ I'm still working on your previous request. Send /stop to interrupt it."
+                )
+            }
+            return
+        }
+        
+        // Extract forward context if this is a forwarded message (accumulate with pending)
+        if telegramMessage.isForwarded {
+            var forwardSource = "unknown"
+            
+            if let origin = telegramMessage.forwardOrigin {
+                forwardSource = origin.description
+            } else if let fromUser = telegramMessage.forwardFrom {
+                let name = [fromUser.firstName, fromUser.lastName].compactMap { $0 }.joined(separator: " ")
+                forwardSource = name.isEmpty ? "a user" : name
+            } else if let fromChat = telegramMessage.forwardFromChat {
+                forwardSource = fromChat.title ?? "a chat"
+            }
+            
+            let newForwardContext = "[Forwarded from \(forwardSource)]"
+            if let existing = pendingForwardContext {
+                pendingForwardContext = existing + "\n" + newForwardContext
+            } else {
+                pendingForwardContext = newForwardContext
+            }
+            print("[ConversationManager] User forwarded message from: \(forwardSource)")
+        }
+        
+        // Extract reply context if user is replying to a previous message
+        if let replyToMsg = telegramMessage.replyToMessage {
+            var replyContent = ""
+            
+            if let text = replyToMsg.text, !text.isEmpty {
+                replyContent = text
+            } else if let caption = replyToMsg.caption, !caption.isEmpty {
+                replyContent = caption
+            } else if replyToMsg.photo != nil {
+                replyContent = "[Image]"
+            } else if let doc = replyToMsg.document {
+                replyContent = "[Document: \(doc.fileName ?? "file")]"
+            } else if replyToMsg.voice != nil {
+                replyContent = "[Voice message]"
+            } else if let video = replyToMsg.video {
+                replyContent = "[Video: \(video.duration)s]"
+            }
+            
+            if !replyContent.isEmpty {
+                let senderInfo: String
+                if replyToMsg.from?.isBot == true {
+                    senderInfo = "your previous message"
+                } else {
+                    senderInfo = "their previous message"
+                }
+                let newReplyContext = "[Replying to \(senderInfo): \"\(replyContent)\"]"
+                if let existing = pendingReplyContext {
+                    pendingReplyContext = existing + "\n" + newReplyContext
+                } else {
+                    pendingReplyContext = newReplyContext
+                }
+                print("[ConversationManager] User replied to: \(replyContent.prefix(100))")
+            }
+            
+            // Download attachments from replied-to message (add to pending referenced)
+            if let photos = replyToMsg.photo, !photos.isEmpty {
+                statusMessage = "Downloading referenced image..."
+                let largestPhoto = photos.max(by: { $0.width * $0.height < $1.width * $1.height })!
+                
+                do {
+                    let imageData = try await telegramService.downloadPhoto(fileId: largestPhoto.fileId)
+                    let fileName = "ref_\(UUID().uuidString.prefix(8)).jpg"
+                    let fileURL = imagesDirectory.appendingPathComponent(fileName)
+                    try imageData.write(to: fileURL)
+                    
+                    pendingReferencedImages.append((fileName: fileName, fileSize: imageData.count))
+                    print("[ConversationManager] Buffered referenced image: \(fileName) (\(imageData.count) bytes)")
+                } catch {
+                    print("[ConversationManager] Failed to download referenced image: \(error)")
+                }
+            }
+            
+            if let document = replyToMsg.document {
+                statusMessage = "Downloading referenced document..."
+                
+                do {
+                    let documentData = try await telegramService.downloadDocument(fileId: document.fileId)
+                    let originalName = document.fileName ?? "document"
+                    let ext = URL(fileURLWithPath: originalName).pathExtension
+                    let fileName = "ref_\(UUID().uuidString.prefix(8)).\(ext.isEmpty ? "bin" : ext)"
+                    let fileURL = documentsDirectory.appendingPathComponent(fileName)
+                    try documentData.write(to: fileURL)
+                    
+                    pendingReferencedDocuments.append((fileName: fileName, fileSize: documentData.count))
+                    print("[ConversationManager] Buffered referenced document: \(fileName) (\(originalName), \(documentData.count) bytes)")
+                } catch {
+                    print("[ConversationManager] Failed to download referenced document: \(error)")
+                }
+            }
+            
+            // Download referenced video if user replied to a video message
+            if let video = replyToMsg.video {
+                statusMessage = "Downloading referenced video..."
+                
+                do {
+                    let videoData = try await telegramService.downloadDocument(fileId: video.fileId)
+                    let ext: String
+                    if let mimeType = video.mimeType {
+                        switch mimeType {
+                        case "video/mp4": ext = "mp4"
+                        case "video/quicktime": ext = "mov"
+                        case "video/webm": ext = "webm"
+                        default: ext = "mp4"
+                        }
+                    } else {
+                        ext = "mp4"
+                    }
+                    let fileName = "ref_\(UUID().uuidString.prefix(8)).\(ext)"
+                    let fileURL = documentsDirectory.appendingPathComponent(fileName)
+                    try videoData.write(to: fileURL)
+                    
+                    pendingReferencedDocuments.append((fileName: fileName, fileSize: videoData.count))
+                    print("[ConversationManager] Buffered referenced video: \(fileName) (\(videoData.count) bytes)")
+                } catch {
+                    print("[ConversationManager] Failed to download referenced video: \(error)")
+                }
+            }
+        }
+        
+        // Determine what type of message this is and whether to trigger processing
+        var triggerText: String? = nil
+        
+        // Text message → triggers processing
+        if let text = telegramMessage.text, !text.isEmpty {
+            triggerText = text
+        }
+        // Photo message
+        else if let photos = telegramMessage.photo, !photos.isEmpty {
+            statusMessage = "Downloading image..."
+            
+            let largestPhoto = photos.max(by: { $0.width * $0.height < $1.width * $1.height })!
+            
+            do {
+                let imageData = try await telegramService.downloadPhoto(fileId: largestPhoto.fileId)
+                
+                let fileName = "\(UUID().uuidString.prefix(8)).jpg"
+                let fileURL = imagesDirectory.appendingPathComponent(fileName)
+                try imageData.write(to: fileURL)
+                
+                // Also save to documents directory for email attachments
+                let documentsFileURL = documentsDirectory.appendingPathComponent(fileName)
+                try imageData.write(to: documentsFileURL)
+                
+                pendingImages.append((fileName: fileName, fileSize: imageData.count))
+                print("[ConversationManager] Buffered image: \(fileName) (\(imageData.count) bytes)")
+                
+                // Caption triggers processing; no caption means buffer only
+                if let caption = telegramMessage.caption, !caption.isEmpty {
+                    triggerText = caption
+                }
+            } catch {
+                self.error = "Failed to download image: \(error.localizedDescription)"
+                statusMessage = "Image download failed"
+                return
+            }
+        }
+        // Voice message → transcription triggers processing
+        else if let voice = telegramMessage.voice {
+            statusMessage = "Transcribing audio..."
+            
+            guard WhisperKitService.shared.isModelReady else {
+                self.error = "Voice model not ready. Please download it in Settings."
+                statusMessage = "Voice model not ready"
+                return
+            }
+            
+            do {
+                let audioURL = try await telegramService.downloadVoiceFile(fileId: voice.fileId)
+                
+                if let transcription = await WhisperKitService.shared.transcribeAudioFile(url: audioURL) {
+                    triggerText = transcription
+                    print("[ConversationManager] Transcribed voice: \(transcription)")
+                    try? FileManager.default.removeItem(at: audioURL)
+                } else {
+                    self.error = "Failed to transcribe audio"
+                    statusMessage = "Transcription failed"
+                    return
+                }
+            } catch {
+                self.error = "Failed to download voice file: \(error.localizedDescription)"
+                statusMessage = "Voice download failed"
+                return
+            }
+        }
+        // Document message
+        else if let document = telegramMessage.document {
+            statusMessage = "Downloading document..."
+            
+            do {
+                let documentData = try await telegramService.downloadDocument(fileId: document.fileId)
+                
+                let originalName = document.fileName ?? "document"
+                let ext = URL(fileURLWithPath: originalName).pathExtension
+                let fileName = "\(UUID().uuidString.prefix(8)).\(ext.isEmpty ? "bin" : ext)"
+                let fileURL = documentsDirectory.appendingPathComponent(fileName)
+                try documentData.write(to: fileURL)
+                
+                pendingDocuments.append((fileName: fileName, fileSize: documentData.count))
+                print("[ConversationManager] Buffered document: \(fileName) (\(originalName), \(documentData.count) bytes)")
+                
+                // Caption triggers processing; no caption means buffer only
+                if let caption = telegramMessage.caption, !caption.isEmpty {
+                    triggerText = caption
+                }
+            } catch {
+                self.error = "Failed to download document: \(error.localizedDescription)"
+                statusMessage = "Document download failed"
+                return
+            }
+        }
+        // Video message - treated as a document for storage and email purposes
+        else if let video = telegramMessage.video {
+            statusMessage = "Downloading video..."
+            
+            do {
+                let videoData = try await telegramService.downloadDocument(fileId: video.fileId)
+                
+                // Use original filename if available, otherwise generate one with proper extension
+                let ext: String
+                if let mimeType = video.mimeType {
+                    switch mimeType {
+                    case "video/mp4": ext = "mp4"
+                    case "video/quicktime": ext = "mov"
+                    case "video/webm": ext = "webm"
+                    case "video/x-matroska": ext = "mkv"
+                    default: ext = "mp4"
+                    }
+                } else {
+                    ext = "mp4"
+                }
+                
+                let fileName = video.fileName ?? "\(UUID().uuidString.prefix(8)).\(ext)"
+                let fileURL = documentsDirectory.appendingPathComponent(fileName)
+                try videoData.write(to: fileURL)
+                
+                pendingDocuments.append((fileName: fileName, fileSize: videoData.count))
+                print("[ConversationManager] Buffered video: \(fileName) (\(videoData.count) bytes, \(video.duration)s, \(video.width)x\(video.height))")
+                
+                // Caption triggers processing; no caption means buffer only
+                if let caption = telegramMessage.caption, !caption.isEmpty {
+                    triggerText = caption
+                }
+            } catch {
+                self.error = "Failed to download video: \(error.localizedDescription)"
+                statusMessage = "Video download failed"
+                return
+            }
+        }
+        
+        // If no trigger text, just show status and return (media is buffered)
+        guard let promptText = triggerText else {
+            let imageCount = pendingImages.count
+            let docCount = pendingDocuments.count
+            if imageCount > 0 || docCount > 0 {
+                var parts: [String] = []
+                if imageCount > 0 { parts.append("\(imageCount) image\(imageCount > 1 ? "s" : "")") }
+                if docCount > 0 { parts.append("\(docCount) file\(docCount > 1 ? "s" : "")") }
+                statusMessage = "📎 \(parts.joined(separator: ", ")) waiting for your message..."
+            }
+            return
+        }
+        
+        // Build message content with forward and reply context
+        var messageContent = promptText
+        if let fwdContext = pendingForwardContext {
+            messageContent = fwdContext + "\n\n" + messageContent
+        }
+        if let replyCtx = pendingReplyContext {
+            messageContent = replyCtx + "\n\n" + messageContent
+        }
+        
+        // Combine all pending media into the message
+        let userMessage = Message(
+            role: .user,
+            content: messageContent,
+            imageFileNames: pendingImages.map { $0.fileName },
+            documentFileNames: pendingDocuments.map { $0.fileName },
+            imageFileSizes: pendingImages.map { $0.fileSize },
+            documentFileSizes: pendingDocuments.map { $0.fileSize },
+            referencedImageFileNames: pendingReferencedImages.map { $0.fileName },
+            referencedDocumentFileNames: pendingReferencedDocuments.map { $0.fileName },
+            referencedImageFileSizes: pendingReferencedImages.map { $0.fileSize },
+            referencedDocumentFileSizes: pendingReferencedDocuments.map { $0.fileSize }
+        )
+        
+        // Clear all buffers
+        pendingImages.removeAll()
+        pendingDocuments.removeAll()
+        pendingReferencedImages.removeAll()
+        pendingReferencedDocuments.removeAll()
+        pendingForwardContext = nil
+        pendingReplyContext = nil
+        
+        messages.append(userMessage)
+        saveConversation()
+        
+        statusMessage = "Generating response..."
+        startActiveProcessing(for: userMessage)
+    }
+
+    private func startActiveProcessing(for userMessage: Message) {
+        let runId = UUID()
+        activeRunId = runId
+        
+        activeProcessingTask?.cancel()
+        activeProcessingTask = Task { [weak self] in
+            await self?.runActiveProcessing(for: userMessage, runId: runId)
+        }
+    }
+    
+    private func runActiveProcessing(for userMessage: Message, runId: UUID) async {
+        defer {
+            if activeRunId == runId {
+                activeRunId = nil
+                activeProcessingTask = nil
+            }
+        }
+        
+        do {
+            try Task.checkCancellation()
+            let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id)
+            try Task.checkCancellation()
+            
+            guard activeRunId == runId else { return }
+            
+            // Add assistant message with any downloaded files tracked
+            let finalResponse = response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? "I completed the requested actions."
+                : response
+            let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
+            let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
+            messages.append(assistantMessage)
+            saveConversation()
+            
+            if let chatId = pairedChatId {
+                try Task.checkCancellation()
+                guard activeRunId == runId else { return }
+                try await telegramService.sendMessage(chatId: chatId, text: finalResponse)
+                
+                // Send any generated images (from tool executor, renamed to avoid conflict)
+                let toolGeneratedImages = ToolExecutor.getPendingImages()
+                for (imageData, mimeType, prompt) in toolGeneratedImages {
+                    try Task.checkCancellation()
+                    guard activeRunId == runId else { return }
+                    
+                    do {
+                        let caption = "🎨 Generated: \(prompt.prefix(200))\(prompt.count > 200 ? "..." : "")"
+                        try await telegramService.sendPhoto(chatId: chatId, imageData: imageData, caption: caption, mimeType: mimeType)
+                        print("[ConversationManager] Sent generated image (\(imageData.count) bytes)")
+                    } catch {
+                        print("[ConversationManager] Failed to send generated image: \(error)")
+                    }
+                }
+                
+                // Send any queued documents (or photos if the file is an image)
+                let toolPendingDocuments = ToolExecutor.getPendingDocuments()
+                for (documentData, filename, mimeType, caption) in toolPendingDocuments {
+                    try Task.checkCancellation()
+                    guard activeRunId == runId else { return }
+                    
+                    do {
+                        if mimeType.hasPrefix("image/") {
+                            try await telegramService.sendPhoto(chatId: chatId, imageData: documentData, caption: caption, mimeType: mimeType)
+                            print("[ConversationManager] Sent image as photo: \(filename) (\(documentData.count) bytes)")
+                        } else {
+                            try await telegramService.sendDocument(chatId: chatId, documentData: documentData, filename: filename, caption: caption, mimeType: mimeType)
+                            print("[ConversationManager] Sent document: \(filename) (\(documentData.count) bytes)")
+                        }
+                    } catch {
+                        print("[ConversationManager] Failed to send document \(filename): \(error)")
+                    }
+                }
+            }
+            
+            // Generate descriptions for files in the user message (synchronous to ensure availability)
+            // This happens while context is still fresh, so descriptions will be available for future prompts
+            var filesToDescribe = collectFilesForDescription(from: userMessage)
+            
+            // Also collect files downloaded via tools (email attachments, etc.)
+            let toolDownloadedFiles = ToolExecutor.getPendingFilesForDescription()
+            filesToDescribe.append(contentsOf: toolDownloadedFiles)
+            
+            if !filesToDescribe.isEmpty {
+                do {
+                    let descriptions = try await openRouterService.generateFileDescriptions(files: filesToDescribe, conversationContext: messages)
+                    await FileDescriptionService.shared.saveMultiple(descriptions)
+                } catch {
+                    print("[ConversationManager] Failed to generate file descriptions: \(error)")
+                }
+            }
+            
+            guard activeRunId == runId else { return }
+            statusMessage = "Listening... (Last check: \(formattedTime()))"
+        } catch is CancellationError {
+            ToolExecutor.clearPendingToolOutputs()
+            if activeRunId == runId {
+                statusMessage = "Cancelled"
+            }
+            print("[ConversationManager] Active run cancelled")
+        } catch {
+            ToolExecutor.clearPendingToolOutputs()
+            if activeRunId == runId {
+                self.error = "Failed to generate response: \(error.localizedDescription)"
+                statusMessage = "Error generating response"
+            }
+        }
+    }
+    
+    private func isStopCommand(_ text: String) -> Bool {
+        let firstToken = text
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .split(whereSeparator: { $0.isWhitespace })
+            .first?
+            .lowercased() ?? ""
+        
+        return firstToken.hasPrefix("/stop")
+            || firstToken.hasPrefix("/cancel")
+            || firstToken == "stop"
+            || firstToken == "cancel"
+            || firstToken == "abort"
+    }
+    
+    private func stopActiveExecution() async {
+        let wasRunning = activeRunId != nil
+        
+        activeProcessingTask?.cancel()
+        activeProcessingTask = nil
+        activeRunId = nil
+        
+        await toolExecutor.cancelAllRunningProcesses()
+        ToolExecutor.clearPendingToolOutputs()
+        
+        if let chatId = pairedChatId {
+            let text = wasRunning
+                ? "⛔ Stopped current execution."
+                : "Nothing is currently running."
+            try? await telegramService.sendMessage(chatId: chatId, text: text)
+        }
+        
+        statusMessage = wasRunning ? "Cancelled" : "Listening... (Last check: \(formattedTime()))"
+    }
+    
+    // MARK: - Tool-Aware Response Generation
+    
+    private func generateResponseWithTools(currentUserMessageId: UUID) async throws -> String {
+        let startTime = Date()
+        try Task.checkCancellation()
+        
+        // Note: Tool logs persist across turns so users can ask about previous tool uses
+        // Logs are session-scoped and cleared on app restart
+        
+        // Check if tools are available
+        let serperKey = KeychainHelper.load(key: KeychainHelper.serperApiKeyKey) ?? ""
+        let tools: [ToolDefinition]? = AvailableTools.all(includeWebSearch: !serperKey.isEmpty)
+        
+        // Fetch all context data in PARALLEL for performance
+        let contextStartTime = Date()
+        async let calendarContextTask = CalendarService.shared.getCalendarContextForSystemPrompt()
+        async let emailContextTask = EmailService.shared.getEmailContextForSystemPrompt()
+        async let chunkSummariesTask = archiveService.getRecentChunkSummaries(count: 5)
+        async let totalChunkCountTask = archiveService.getAllChunks()
+        async let contextResultTask = openRouterService.processContextWindow(messages)
+        
+        // Await all parallel operations
+        let calendarContext = await calendarContextTask
+        let emailContext = await emailContextTask
+        let chunkSummaries = await chunkSummariesTask
+        let allChunks = await totalChunkCountTask
+        let totalChunkCount = allChunks.count
+        let contextResult = await contextResultTask
+        try Task.checkCancellation()
+        print("[TIMING] Context fetch took: \(String(format: "%.2f", Date().timeIntervalSince(contextStartTime)))s")
+        
+        // Archive messages if threshold exceeded - BLOCKING with infinite retry
+        // Summarization is critical: we MUST complete it before proceeding to avoid data loss
+        if contextResult.needsArchiving && !contextResult.messagesToArchive.isEmpty {
+            let archiveStartTime = Date()
+            var archived = false
+            var retryCount = 0
+            let baseDelay: UInt64 = 2_000_000_000 // 2 seconds
+            let maxDelay: UInt64 = 60_000_000_000 // 60 seconds max
+            
+            // Build full summarization context for high-quality summaries
+            let summarizationContext = buildSummarizationContext(
+                chunkSummaries: chunkSummaries,
+                currentMessages: contextResult.messagesToSend
+            )
+            
+            while !archived {
+                try Task.checkCancellation()
+                do {
+                    _ = try await archiveService.archiveMessages(contextResult.messagesToArchive, context: summarizationContext)
+                    print("[ConversationManager] Archived \(contextResult.messagesToArchive.count) messages successfully")
+                    archived = true
+                    
+                    // Remove archived messages from the main conversation array
+                    // They're now safely stored in chunks and available via summaries
+                    let archivedCount = contextResult.messagesToArchive.count
+                    messages.removeFirst(archivedCount)
+                    saveConversation()
+                    print("[ConversationManager] Removed \(archivedCount) archived messages from active conversation")
+                } catch {
+                    retryCount += 1
+                    let delay = min(baseDelay * UInt64(pow(2.0, Double(min(retryCount - 1, 5)))), maxDelay)
+                    print("[ConversationManager] Archive failed (attempt \(retryCount)): \(error). Retrying in \(delay / 1_000_000_000)s...")
+                    
+                    // Notify user that we're working on archival
+                    if retryCount == 1, let chatId = pairedChatId {
+                        try? await telegramService.sendMessage(chatId: chatId, text: "📦 Archiving conversation history, please wait...")
+                    }
+                    
+                    try await Task.sleep(nanoseconds: delay)
+                }
+            }
+            print("[TIMING] Archive took: \(String(format: "%.2f", Date().timeIntervalSince(archiveStartTime)))s")
+        }
+        
+        // Tool interaction loop - allow up to 20 rounds of tool calls
+        let maxToolRounds = 20
+        var toolInteractions: [ToolInteraction] = []
+        
+        for round in 1...maxToolRounds {
+            try Task.checkCancellation()
+            print("[ConversationManager] Tool round \(round)/\(maxToolRounds)")
+            
+            // Call LLM (with tools available for chaining)
+            let llmStartTime = Date()
+            let response = try await openRouterService.generateResponse(
+                messages: contextResult.messagesToSend,
+                imagesDirectory: imagesDirectory,
+                documentsDirectory: documentsDirectory,
+                tools: tools,  // Always pass tools so LLM can chain calls
+                toolResultMessages: toolInteractions.isEmpty ? nil : toolInteractions,
+                calendarContext: calendarContext,
+                emailContext: emailContext,
+                chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
+                totalChunkCount: totalChunkCount,
+                currentUserMessageId: currentUserMessageId
+            )
+            print("[TIMING] LLM API call took: \(String(format: "%.2f", Date().timeIntervalSince(llmStartTime)))s")
+            
+            switch response {
+            case .text(let content, let promptTokens):
+                // LLM decided to respond with text - we're done
+                if let tokens = promptTokens {
+                    print("[ConversationManager] LLM returned text response after \(round) round(s) (\(tokens) prompt tokens)")
+                } else {
+                    print("[ConversationManager] LLM returned text response after \(round) round(s)")
+                }
+                return content
+                
+            case .toolCalls(let assistantMessage, let calls, _):
+                // Model wants to use more tools
+                print("[ConversationManager] Round \(round): LLM requested \(calls.count) tool(s): \(calls.map { $0.function.name })")
+                
+                // Send progress message to Telegram
+                if let chatId = pairedChatId {
+                    let progressMessage = getProgressMessage(for: calls)
+                    try? await telegramService.sendMessage(chatId: chatId, text: progressMessage)
+                }
+                statusMessage = "Executing tools (round \(round))..."
+                
+                // Execute all tools in parallel
+                let toolResults = try await toolExecutor.executeParallel(calls)
+                try Task.checkCancellation()
+                
+                print("[ConversationManager] Round \(round) tool execution complete")
+                
+                // Add this interaction to the chain
+                let interaction = ToolInteraction(
+                    assistantToolCalls: assistantMessage.toolCalls,
+                    results: toolResults
+                )
+                toolInteractions.append(interaction)
+                
+                statusMessage = "Processing results..."
+            }
+        }
+        
+        // If we've exhausted all rounds, make one final call WITHOUT tools to force a text response
+        print("[ConversationManager] Max tool rounds reached, forcing final response")
+        try Task.checkCancellation()
+        let finalResponse = try await openRouterService.generateResponse(
+            messages: contextResult.messagesToSend,
+            imagesDirectory: imagesDirectory,
+            documentsDirectory: documentsDirectory,
+            tools: nil,  // No tools to force text response
+            toolResultMessages: toolInteractions,
+            calendarContext: calendarContext,
+            emailContext: emailContext,
+            chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
+            totalChunkCount: totalChunkCount,
+            currentUserMessageId: currentUserMessageId
+        )
+        
+        switch finalResponse {
+        case .text(let content, _):
+            return content
+        case .toolCalls(_, _, _):
+            return "I completed the requested actions but had trouble summarizing the results."
+        }
+    }
+    
+    /// Get appropriate progress message for tool calls
+    private func getProgressMessage(for calls: [ToolCall]) -> String {
+        let toolNames = Set(calls.map { $0.function.name })
+        
+        // Check for calendar operations
+        let hasCalendarOp = toolNames.contains("view_calendar") ||
+                           toolNames.contains("add_calendar_event") ||
+                           toolNames.contains("edit_calendar_event") ||
+                           toolNames.contains("delete_calendar_event")
+        
+        // Check for email operations
+        let hasEmailOp = toolNames.contains("read_emails") || toolNames.contains("search_emails") || toolNames.contains("send_email") || toolNames.contains("reply_email") || toolNames.contains("forward_email")
+        
+        if toolNames.contains("web_search") && toolNames.contains("set_reminder") {
+            return "🔍 Searching the web and setting reminder..."
+        } else if toolNames.contains("web_search") && hasCalendarOp {
+            return "🔍📅 Searching the web and managing calendar..."
+        } else if toolNames.contains("web_search") {
+            return "🔍 Searching the web..."
+        } else if toolNames.contains("run_claude_code") {
+            return "🤖 Running Claude Code..."
+        } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") || toolNames.contains("flag_projects_for_deletion") {
+            return "📁 Managing project workspace..."
+        } else if toolNames.contains("send_project_result") {
+            return "📤 Sending project result..."
+        } else if toolNames.contains("set_reminder") {
+            return "⏰ Setting reminder..."
+        } else if toolNames.contains("list_reminders") {
+            return "📋 Checking reminders..."
+        } else if toolNames.contains("delete_reminder") {
+            return "🗑️ Deleting reminder..."
+        } else if hasCalendarOp {
+            return "📅 Managing calendar..."
+        } else if toolNames.contains("search_emails") {
+            return "🔎 Searching emails..."
+        } else if toolNames.contains("read_emails") {
+            return "📧 Reading emails..."
+        } else if toolNames.contains("send_email") {
+            return "📤 Sending email..."
+        } else if toolNames.contains("reply_email") {
+            return "↩️ Replying to email..."
+        } else if toolNames.contains("forward_email") {
+            return "📨 Forwarding email..."
+        } else if hasEmailOp {
+            return "📧 Managing email..."
+        } else if toolNames.contains("read_document") {
+            return "📄 Opening document..."
+        } else {
+            return "🔧 Processing..."
+        }
+    }
+    
+    // MARK: - Reminder Processing
+    
+    private func checkDueReminders() async {
+        // Clear any previous error when checking reminders
+        error = nil
+        
+        // Don't run reminder workflows while a user-triggered run is active
+        guard activeRunId == nil else { return }
+        
+        let dueReminders = await ReminderService.shared.getDueReminders()
+        
+        guard !dueReminders.isEmpty else { return }
+        
+        for reminder in dueReminders {
+            // Mark as triggered FIRST to prevent race conditions with next poll iteration
+            await ReminderService.shared.markTriggered(id: reminder.id)
+            
+            // If this is a recurring reminder, schedule the next occurrence
+            if reminder.recurrence != nil {
+                if let nextReminder = await ReminderService.shared.rescheduleRecurring(id: reminder.id) {
+                    let dateFormatter = DateFormatter()
+                    dateFormatter.dateStyle = .medium
+                    dateFormatter.timeStyle = .short
+                    print("[ConversationManager] Recurring reminder rescheduled for: \(dateFormatter.string(from: nextReminder.triggerDate))")
+                }
+            }
+            
+            print("[ConversationManager] Processing due reminder: \(reminder.id)")
+            statusMessage = "Processing reminder..."
+            
+            // Notify user that a reminder is being processed
+            if let chatId = pairedChatId {
+                try? await telegramService.sendMessage(chatId: chatId, text: "⏰ Reminder triggered!")
+            }
+            
+            // Format the reminder as a user message so the LLM can respond to it
+            let reminderPrompt = """
+            [SCHEDULED REMINDER - This is a message you wrote to yourself earlier]
+            
+            \(reminder.prompt)
+            
+            [END OF REMINDER - Please act on these instructions now]
+            """
+            
+            // Add the reminder as a user message
+            let userMessage = Message(role: .user, content: reminderPrompt)
+            messages.append(userMessage)
+            saveConversation()
+            
+            // Generate LLM response with tools available
+            do {
+                let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id)
+                
+                // Add assistant message (guard against empty response)
+                let finalResponse = response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                    ? "I completed the reminder actions."
+                    : response
+                let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
+                let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
+                messages.append(assistantMessage)
+                saveConversation()
+                
+                // Send reply via Telegram
+                if let chatId = pairedChatId {
+                    try await telegramService.sendMessage(chatId: chatId, text: finalResponse)
+                }
+                
+                print("[ConversationManager] Reminder \(reminder.id) processed successfully")
+            } catch {
+                self.error = "Failed to process reminder: \(error.localizedDescription)"
+                print("[ConversationManager] Failed to process reminder: \(error)")
+            }
+        }
+        
+        statusMessage = "Listening... (Last check: \(formattedTime()))"
+    }
+    
+    // MARK: - Smart Email Notifications
+    
+    /// Process new emails: use Gemini with full context to decide if notification-worthy
+    /// and generate a personalized notification message.
+    /// Runs in a detached context to avoid blocking user interactions.
+    private func processNewEmails(_ emails: [EmailMessage]) async {
+        guard let chatId = pairedChatId, !emails.isEmpty else { return }
+        
+        print("[ConversationManager] Processing \(emails.count) new email(s) for notification")
+        
+        // Build full email details (not just summaries)
+        var emailDetails: [String] = []
+        for email in emails {
+            var detail = """
+            ---
+            From: \(email.from)
+            Subject: \(email.subject)
+            Date: \(email.date)
+            UID: \(email.id)
+            """
+            if !email.bodyPreview.isEmpty {
+                detail += "\nBody:\n\(email.bodyPreview)"
+            }
+            if !email.attachments.isEmpty {
+                let attachNames = email.attachments.map { "\($0.filename) (\($0.mimeType))" }.joined(separator: ", ")
+                detail += "\nAttachments: \(attachNames)"
+            }
+            emailDetails.append(detail)
+        }
+        
+        // Fetch the same context as the main LLM instance for personalized responses
+        async let calendarContextTask = CalendarService.shared.getCalendarContextForSystemPrompt()
+        async let emailContextTask = EmailService.shared.getEmailContextForSystemPrompt()
+        async let chunkSummariesTask = archiveService.getRecentChunkSummaries(count: 5)
+        async let totalChunkCountTask = archiveService.getAllChunks()
+        
+        let calendarContext = await calendarContextTask
+        let emailContext = await emailContextTask
+        let chunkSummaries = await chunkSummariesTask
+        let totalChunkCount = await totalChunkCountTask.count
+        
+        let classificationPrompt = """
+        NEW EMAILS JUST ARRIVED. Your job is to tell the user about them naturally, like a helpful assistant would.
+        
+        SKIP (respond with just "SKIP"): spam, promotional/marketing, newsletters, automated notifications, social media alerts, shipping updates, routine confirmations, or anything clearly unimportant.
+        
+        For emails worth mentioning:
+        - Write naturally, as if you're telling the user about their mail
+        - Explain what the email is about and what it says
+        - If you recognize the sender from our conversation history, mention their relationship/context
+        - If it seems like something that needs a response, offer to help draft a reply
+        - If there are multiple important emails, summarize each briefly
+        
+        New emails:
+        \(emailDetails.joined(separator: "\n"))
+        
+        Respond with "SKIP" if nothing is worth mentioning, or write your natural message to the user.
+        """
+        
+        do {
+            // Use the same rich context as the main LLM for personalized notifications
+            let response = try await openRouterService.generateResponse(
+                messages: messages + [Message(role: .user, content: classificationPrompt)],
+                imagesDirectory: imagesDirectory,
+                documentsDirectory: documentsDirectory,
+                tools: nil,
+                toolResultMessages: nil,
+                calendarContext: calendarContext,
+                emailContext: emailContext,
+                chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
+                totalChunkCount: totalChunkCount
+            )
+            
+            guard case .text(let content, _) = response else { return }
+            
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Check if Gemini decided to skip
+            if trimmed.uppercased() == "SKIP" || trimmed.uppercased().hasPrefix("SKIP") {
+                print("[ConversationManager] Gemini decided not to notify about these emails")
+                return
+            }
+            
+            // Build a summary of the emails for the conversation record
+            let emailSummaries = emails.map { email in
+                "From: \(email.from), Subject: \(email.subject)"
+            }.joined(separator: "; ")
+            
+            // Add email arrival as a "system" user message so Gemini remembers it
+            let emailArrivalMessage = Message(
+                role: .user,
+                content: "[EMAIL NOTIFICATION - New emails arrived]\n\(emailSummaries)"
+            )
+            messages.append(emailArrivalMessage)
+            
+            // Send the personalized notification
+            let notification = "📬 \(trimmed)"
+            try await telegramService.sendMessage(chatId: chatId, text: notification)
+            
+            // Save Gemini's notification response to the conversation
+            let assistantMessage = Message(role: .assistant, content: notification)
+            messages.append(assistantMessage)
+            saveConversation()
+            
+            print("[ConversationManager] Sent personalized email notification (saved to history)")
+            
+        } catch {
+            print("[ConversationManager] Email notification failed: \(error)")
+            // Don't notify on error - better to miss a notification than spam the user
+        }
+    }
+    
+    /// Process new Gmail emails (Gmail API version of processNewEmails)
+    private func processNewGmailEmails(_ emails: [GmailMessage]) async {
+        guard let chatId = pairedChatId, !emails.isEmpty else { return }
+        
+        print("[ConversationManager] Processing \(emails.count) new Gmail email(s) for notification")
+        
+        // Build full email details
+        var emailDetails: [String] = []
+        for email in emails {
+            let from = email.getHeader("From") ?? "Unknown"
+            let subject = email.getHeader("Subject") ?? "(No subject)"
+            let date = email.getHeader("Date") ?? ""
+            let body = email.getPlainTextBody()
+            
+            var detail = """
+            ---
+            From: \(from)
+            Subject: \(subject)
+            Date: \(date)
+            ID: \(email.id)
+            """
+            if !body.isEmpty {
+                detail += "\nBody:\n\(body)"
+            }
+            let attachments = email.payload?.getAttachmentParts() ?? []
+            if !attachments.isEmpty {
+                let attachNames = attachments.compactMap { "\($0.filename ?? "file") (\($0.mimeType ?? "unknown"))" }.joined(separator: ", ")
+                detail += "\nAttachments: \(attachNames)"
+            }
+            emailDetails.append(detail)
+        }
+        
+        // Fetch context for personalized responses
+        async let calendarContextTask = CalendarService.shared.getCalendarContextForSystemPrompt()
+        async let emailContextTask = GmailService.shared.getEmailContextForSystemPrompt()
+        async let chunkSummariesTask = archiveService.getRecentChunkSummaries(count: 5)
+        async let totalChunkCountTask = archiveService.getAllChunks()
+        
+        let calendarContext = await calendarContextTask
+        let emailContext = await emailContextTask
+        let chunkSummaries = await chunkSummariesTask
+        let totalChunkCount = await totalChunkCountTask.count
+        
+        let classificationPrompt = """
+        NEW EMAILS JUST ARRIVED. Your job is to tell the user about them naturally, like a helpful assistant would.
+        
+        SKIP (respond with just "SKIP"): spam, promotional/marketing, newsletters, automated notifications, social media alerts, shipping updates, routine confirmations, or anything clearly unimportant.
+        
+        For emails worth mentioning:
+        - Write naturally, as if you're telling the user about their mail
+        - Explain what the email is about and what it says
+        - If you recognize the sender from our conversation history, mention their relationship/context
+        - If it seems like something that needs a response, offer to help draft a reply
+        - If there are multiple important emails, summarize each briefly
+        
+        New emails:
+        \(emailDetails.joined(separator: "\n"))
+        
+        Respond with "SKIP" if nothing is worth mentioning, or write your natural message to the user.
+        """
+        
+        do {
+            let response = try await openRouterService.generateResponse(
+                messages: messages + [Message(role: .user, content: classificationPrompt)],
+                imagesDirectory: imagesDirectory,
+                documentsDirectory: documentsDirectory,
+                tools: nil,
+                toolResultMessages: nil,
+                calendarContext: calendarContext,
+                emailContext: emailContext,
+                chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
+                totalChunkCount: totalChunkCount
+            )
+            
+            guard case .text(let content, _) = response else { return }
+            
+            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Check if Gemini decided to skip
+            if trimmed.uppercased() == "SKIP" || trimmed.uppercased().hasPrefix("SKIP") {
+                print("[ConversationManager] Gemini decided not to notify about these Gmail emails")
+                return
+            }
+            
+            // Build a summary of the emails for the conversation record
+            let emailSummaries = emails.map { email in
+                let from = email.getHeader("From") ?? "Unknown"
+                let subject = email.getHeader("Subject") ?? "(No subject)"
+                return "From: \(from), Subject: \(subject)"
+            }.joined(separator: "; ")
+            
+            // Add email arrival as a "system" user message so Gemini remembers it
+            let emailArrivalMessage = Message(
+                role: .user,
+                content: "[EMAIL NOTIFICATION - New emails arrived]\n\(emailSummaries)"
+            )
+            messages.append(emailArrivalMessage)
+            
+            // Send the personalized notification
+            let notification = "📬 \(trimmed)"
+            try await telegramService.sendMessage(chatId: chatId, text: notification)
+            
+            // Save Gemini's notification response to the conversation
+            let assistantMessage = Message(role: .assistant, content: notification)
+            messages.append(assistantMessage)
+            saveConversation()
+            
+            print("[ConversationManager] Sent personalized Gmail notification (saved to history)")
+            
+        } catch {
+            print("[ConversationManager] Gmail notification failed: \(error)")
+        }
+    }
+    
+    // MARK: - Persistence
+    
+    private func loadConversation() {
+        guard FileManager.default.fileExists(atPath: conversationFileURL.path) else { return }
+        
+        do {
+            let data = try Data(contentsOf: conversationFileURL)
+            messages = try JSONDecoder().decode([Message].self, from: data)
+        } catch {
+            print("Failed to load conversation: \(error)")
+        }
+    }
+    
+    private func saveConversation() {
+        do {
+            let data = try JSONEncoder().encode(messages)
+            try data.write(to: conversationFileURL)
+        } catch {
+            print("Failed to save conversation: \(error)")
+        }
+    }
+    
+    func clearConversation() {
+        messages = []
+        saveConversation()
+        
+        // Also clear images
+        try? FileManager.default.removeItem(at: imagesDirectory)
+        try? FileManager.default.createDirectory(at: imagesDirectory, withIntermediateDirectories: true)
+    }
+    
+    /// Delete all memory: conversation, chunks, summaries, user context, reminders
+    /// Keeps: Calendar and Contacts
+    func deleteAllMemory() async {
+        // 1. Clear conversation and images
+        clearConversation()
+        
+        // 2. Clear all archived chunks
+        await archiveService.clearAllArchives()
+        
+        // 3. Clear all reminders
+        await ReminderService.shared.clearAllReminders()
+        
+        // 4. Clear user context from Keychain
+        try? KeychainHelper.delete(key: KeychainHelper.userContextKey)
+        try? KeychainHelper.delete(key: KeychainHelper.structuredUserContextKey)
+        
+        // 5. Clear documents directory
+        try? FileManager.default.removeItem(at: documentsDirectory)
+        try? FileManager.default.createDirectory(at: documentsDirectory, withIntermediateDirectories: true)
+        
+        // 6. Clear file descriptions
+        await FileDescriptionService.shared.clearAll()
+        
+        print("[ConversationManager] All memory deleted")
+    }
+    
+    /// Reload all data from disk after Soul restore
+    /// This refreshes the conversation and archive service to pick up restored data
+    func reloadAfterSoulRestore() async {
+        loadConversation()
+        await archiveService.reloadFromDisk()
+        print("[ConversationManager] Reloaded data after Soul restore")
+    }
+    
+    // MARK: - Helpers
+    
+    private func formattedTime() -> String {
+        let formatter = DateFormatter()
+        formatter.timeStyle = .medium
+        return formatter.string(from: Date())
+    }
+    
+    // MARK: - Image Access (for UI)
+    
+    func imageURL(for message: Message) -> URL? {
+        guard let fileName = message.imageFileName else { return nil }
+        let url = imagesDirectory.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    
+    /// Returns all image URLs for a message (primary attachments)
+    func imageURLs(for message: Message) -> [URL] {
+        message.imageFileNames.compactMap { fileName in
+            let url = imagesDirectory.appendingPathComponent(fileName)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+    }
+    
+    /// Returns all referenced image URLs for a message (from replied-to messages)
+    func referencedImageURLs(for message: Message) -> [URL] {
+        message.referencedImageFileNames.compactMap { fileName in
+            let url = imagesDirectory.appendingPathComponent(fileName)
+            return FileManager.default.fileExists(atPath: url.path) ? url : nil
+        }
+    }
+    
+    /// Returns the URL for a document file
+    func documentURL(fileName: String) -> URL? {
+        let url = documentsDirectory.appendingPathComponent(fileName)
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+    
+    // MARK: - Context for Settings Structuring
+    
+    /// Get conversation context for the "Process & Save" feature in Settings.
+    /// Returns recent messages and chunk summaries so Gemini has full awareness.
+    func getContextForStructuring() async -> (recentMessages: [Message], chunkSummaries: [ConversationChunk]) {
+        let chunkSummaries = await archiveService.getRecentChunkSummaries(count: 10)
+        // Return last 20 messages for recent context
+        let recentMessages = Array(messages.suffix(20))
+        return (recentMessages, chunkSummaries)
+    }
+    
+    // MARK: - Summarization Context Builder
+    
+    /// Build full context for summarization so the LLM can properly understand
+    /// relationships, references, and meaning in the chunk being archived.
+    /// Note: Calendar is deliberately excluded - it contains future events not relevant to historical summarization.
+    private func buildSummarizationContext(
+        chunkSummaries: [ConversationChunk],
+        currentMessages: [Message]
+    ) -> ConversationArchiveService.SummarizationContext {
+        // Get persona settings
+        let personaContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey)
+        let assistantName = KeychainHelper.load(key: KeychainHelper.assistantNameKey)
+        let userName = KeychainHelper.load(key: KeychainHelper.userNameKey)
+        
+        // Format previous summaries chronologically
+        let previousSummaries = chunkSummaries.sorted { $0.startDate < $1.startDate }.map { $0.summary }
+        
+        // Format current conversation context (last ~10 messages of what's happening now)
+        let recentMessages = currentMessages.suffix(10)
+        let currentContext: String?
+        if !recentMessages.isEmpty {
+            currentContext = recentMessages.map { msg in
+                let role = msg.role == .user ? "User" : "Assistant"
+                return "[\(role)]: \(msg.content.prefix(500))"
+            }.joined(separator: "\n")
+        } else {
+            currentContext = nil
+        }
+        
+        return ConversationArchiveService.SummarizationContext(
+            personaContext: personaContext,
+            assistantName: assistantName,
+            userName: userName,
+            previousSummaries: previousSummaries,
+            currentConversationContext: currentContext
+        )
+    }
+    
+    // MARK: - File Description Helpers
+    
+    /// Collect files from a message for description generation
+    private func collectFilesForDescription(from message: Message) -> [(filename: String, data: Data, mimeType: String)] {
+        var files: [(filename: String, data: Data, mimeType: String)] = []
+        
+        // Collect images
+        for imageFileName in message.imageFileNames {
+            let imageURL = imagesDirectory.appendingPathComponent(imageFileName)
+            if let imageData = try? Data(contentsOf: imageURL) {
+                let ext = imageURL.pathExtension.lowercased()
+                let mimeType: String
+                switch ext {
+                case "png": mimeType = "image/png"
+                case "gif": mimeType = "image/gif"
+                case "webp": mimeType = "image/webp"
+                case "heic": mimeType = "image/heic"
+                default: mimeType = "image/jpeg"
+                }
+                files.append((filename: imageFileName, data: imageData, mimeType: mimeType))
+            }
+        }
+        
+        // Collect documents
+        for documentFileName in message.documentFileNames {
+            let documentURL = documentsDirectory.appendingPathComponent(documentFileName)
+            if let documentData = try? Data(contentsOf: documentURL) {
+                let ext = documentURL.pathExtension.lowercased()
+                let mimeType: String
+                switch ext {
+                case "pdf": mimeType = "application/pdf"
+                case "txt": mimeType = "text/plain"
+                case "md": mimeType = "text/markdown"
+                case "json": mimeType = "application/json"
+                case "csv": mimeType = "text/csv"
+                case "mp3": mimeType = "audio/mpeg"
+                case "m4a": mimeType = "audio/mp4"
+                case "wav": mimeType = "audio/wav"
+                case "ogg", "oga": mimeType = "audio/ogg"
+                case "aac": mimeType = "audio/aac"
+                case "flac": mimeType = "audio/flac"
+                case "jpg", "jpeg": mimeType = "image/jpeg"
+                case "png": mimeType = "image/png"
+                case "gif": mimeType = "image/gif"
+                case "webp": mimeType = "image/webp"
+                case "heic": mimeType = "image/heic"
+                default: mimeType = "application/octet-stream"
+                }
+                files.append((filename: documentFileName, data: documentData, mimeType: mimeType))
+            }
+        }
+        
+        return files
+    }
+}

@@ -1,0 +1,543 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 56;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		1BAD23532F2E2E5C000A88B2 /* WhisperKit in Frameworks */ = {isa = PBXBuildFile; productRef = 1BAD23522F2E2E5C000A88B2 /* WhisperKit */; };
+		1BAD23552F2E2E5C000A88B2 /* whisperkit-cli in Frameworks */ = {isa = PBXBuildFile; productRef = 1BAD23542F2E2E5C000A88B2 /* whisperkit-cli */; };
+		1BAD23572F2E2F00000A88B2 /* WhisperKitService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 1BAD23562F2E2F00000A88B2 /* WhisperKitService.swift */; };
+		2B0A45D1F5390F2A1E1AD385 /* Reminder.swift in Sources */ = {isa = PBXBuildFile; fileRef = DDB20D1783E9B2F00765A721 /* Reminder.swift */; };
+		31B7CF7E140CC51F1318A043 /* FileDescriptionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F6F41BFCEF3C81A6A0A64255 /* FileDescriptionService.swift */; };
+		58BCD35919355360BA19A45B /* ConversationArchiveService.swift in Sources */ = {isa = PBXBuildFile; fileRef = F819F46CC6EAA2842A19FB51 /* ConversationArchiveService.swift */; };
+		603CFC4690F84C64979D3048 /* WebOrchestrator+Helpers.swift in Sources */ = {isa = PBXBuildFile; fileRef = AD50E4C9FE60DE1DEB6071AF /* WebOrchestrator+Helpers.swift */; };
+		68FA8CA6412AA1AFB0B30BBA /* ToolExecutor.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2E12F15918DC9CEE64092A28 /* ToolExecutor.swift */; };
+		69A2A54160E030BDBF124555 /* EmailService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4E5FCEEB85030C0670DBB947 /* EmailService.swift */; };
+		822F9BF6D5ABC15C17E38EC4 /* ReminderService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 21DCD141150F4C77541F4982 /* ReminderService.swift */; };
+		872F4C787E9A3ED2E5384972 /* DocumentModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = BADE3E4558F8DFD065AE6A26 /* DocumentModels.swift */; };
+		87DCAC7DFD7B3B3C02ECDBA3 /* CalendarService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 55871B59F1F9B733E94E96B7 /* CalendarService.swift */; };
+		A1000001282D4F0100000001 /* TelegramConciergeApp.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000002282D4F0100000001 /* TelegramConciergeApp.swift */; };
+		A1000003282D4F0100000001 /* ContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000004282D4F0100000001 /* ContentView.swift */; };
+		A1000005282D4F0100000001 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = A1000006282D4F0100000001 /* Assets.xcassets */; };
+		A1000007282D4F0100000001 /* Message.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000008282D4F0100000001 /* Message.swift */; };
+		A1000009282D4F0100000001 /* TelegramModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000A282D4F0100000001 /* TelegramModels.swift */; };
+		A100000B282D4F0100000001 /* TelegramBotService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000C282D4F0100000001 /* TelegramBotService.swift */; };
+		A100000D282D4F0100000001 /* OpenRouterService.swift in Sources */ = {isa = PBXBuildFile; fileRef = A100000E282D4F0100000001 /* OpenRouterService.swift */; };
+		A100000F282D4F0100000001 /* ConversationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000010282D4F0100000001 /* ConversationManager.swift */; };
+		A1000011282D4F0100000001 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000012282D4F0100000001 /* KeychainHelper.swift */; };
+		A1000013282D4F0100000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000014282D4F0100000001 /* SettingsView.swift */; };
+		A1000015282D4F0100000001 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000016282D4F0100000001 /* MessageBubbleView.swift */; };
+		A1B2C3D4E5F60718293A4B5C /* ClaudeProjectsBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* ClaudeProjectsBrowserView.swift */; };
+		A20FA62FAD25E07335060F6F /* WebOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA0AE409F8E6598E75DFDF72 /* WebOrchestrator.swift */; };
+		A494EEEA1729398C6C50A56F /* ToolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC662244A7AAD92235CE193B /* ToolModels.swift */; };
+		C2B87AA65DC778516C459184 /* ConversationArchiveModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 788EABC6659EB6C669DBACA3 /* ConversationArchiveModels.swift */; };
+		CC2E2FEA08D0E88323DCC140 /* GmailService.swift in Sources */ = {isa = PBXBuildFile; fileRef = D2B3D8D014FCCF0BC929CA79 /* GmailService.swift */; };
+		CONTACT01234567890ABCDEF1 /* Contact.swift in Sources */ = {isa = PBXBuildFile; fileRef = CONTACT01234567890ABCDEF2 /* Contact.swift */; };
+		CONTACT01234567890ABCDEF3 /* ContactsService.swift in Sources */ = {isa = PBXBuildFile; fileRef = CONTACT01234567890ABCDEF4 /* ContactsService.swift */; };
+		CONTEXTVIEW0123456789ABC1 /* ContextViewerView.swift in Sources */ = {isa = PBXBuildFile; fileRef = CONTEXTVIEW0123456789ABC2 /* ContextViewerView.swift */; };
+		DEF123AB456CD789EFAB1234 /* DocumentService.swift in Sources */ = {isa = PBXBuildFile; fileRef = DEF123AB456CD789EFAB5678 /* DocumentService.swift */; };
+		DF3114E0259D2473CAE34DDF /* CalendarEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B883CAF85B587CFB8951D59 /* CalendarEvent.swift */; };
+		F968F82FBFCB478DF1BD23F6 /* DocumentGeneratorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A93EA054D5A31889F2D4564 /* DocumentGeneratorService.swift */; };
+		GEMINIIMG012345678901234A /* GeminiImageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = GEMINIIMG012345678901234B /* GeminiImageService.swift */; };
+		SOULEXP0123456789ABCDEF1 /* SoulExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SOULEXP0123456789ABCDEF2 /* SoulExportService.swift */; };
+/* End PBXBuildFile section */
+
+/* Begin PBXFileReference section */
+		0B883CAF85B587CFB8951D59 /* CalendarEvent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CalendarEvent.swift; sourceTree = "<group>"; };
+		1BAD23562F2E2F00000A88B2 /* WhisperKitService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WhisperKitService.swift; sourceTree = "<group>"; };
+		21DCD141150F4C77541F4982 /* ReminderService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ReminderService.swift; sourceTree = "<group>"; };
+		2E12F15918DC9CEE64092A28 /* ToolExecutor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToolExecutor.swift; sourceTree = "<group>"; };
+		4E5FCEEB85030C0670DBB947 /* EmailService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = EmailService.swift; sourceTree = "<group>"; };
+		55871B59F1F9B733E94E96B7 /* CalendarService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = CalendarService.swift; sourceTree = "<group>"; };
+		5A93EA054D5A31889F2D4564 /* DocumentGeneratorService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DocumentGeneratorService.swift; sourceTree = "<group>"; };
+		788EABC6659EB6C669DBACA3 /* ConversationArchiveModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationArchiveModels.swift; sourceTree = "<group>"; };
+		A1000000282D4F0100000001 /* TelegramConcierge.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TelegramConcierge.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A1000002282D4F0100000001 /* TelegramConciergeApp.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramConciergeApp.swift; sourceTree = "<group>"; };
+		A1000004282D4F0100000001 /* ContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ContentView.swift; sourceTree = "<group>"; };
+		A1000006282D4F0100000001 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
+		A1000008282D4F0100000001 /* Message.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Message.swift; sourceTree = "<group>"; };
+		A100000A282D4F0100000001 /* TelegramModels.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramModels.swift; sourceTree = "<group>"; };
+		A100000C282D4F0100000001 /* TelegramBotService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramBotService.swift; sourceTree = "<group>"; };
+		A100000E282D4F0100000001 /* OpenRouterService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OpenRouterService.swift; sourceTree = "<group>"; };
+		A1000010282D4F0100000001 /* ConversationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationManager.swift; sourceTree = "<group>"; };
+		A1000012282D4F0100000001 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
+		A1000014282D4F0100000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A1000016282D4F0100000001 /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
+		A1000017282D4F0100000001 /* TelegramConcierge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TelegramConcierge.entitlements; sourceTree = "<group>"; };
+		A1B2C3D4E5F60718293A4B5D /* ClaudeProjectsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeProjectsBrowserView.swift; sourceTree = "<group>"; };
+		AD50E4C9FE60DE1DEB6071AF /* WebOrchestrator+Helpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "WebOrchestrator+Helpers.swift"; sourceTree = "<group>"; };
+		BADE3E4558F8DFD065AE6A26 /* DocumentModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DocumentModels.swift; sourceTree = "<group>"; };
+		CONTACT01234567890ABCDEF2 /* Contact.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Contact.swift; sourceTree = "<group>"; };
+		CONTACT01234567890ABCDEF4 /* ContactsService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContactsService.swift; sourceTree = "<group>"; };
+		CONTEXTVIEW0123456789ABC2 /* ContextViewerView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ContextViewerView.swift; sourceTree = "<group>"; };
+		D2B3D8D014FCCF0BC929CA79 /* GmailService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GmailService.swift; sourceTree = "<group>"; };
+		DA0AE409F8E6598E75DFDF72 /* WebOrchestrator.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = WebOrchestrator.swift; sourceTree = "<group>"; };
+		DDB20D1783E9B2F00765A721 /* Reminder.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Reminder.swift; sourceTree = "<group>"; };
+		DEF123AB456CD789EFAB5678 /* DocumentService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DocumentService.swift; sourceTree = "<group>"; };
+		F6F41BFCEF3C81A6A0A64255 /* FileDescriptionService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = FileDescriptionService.swift; sourceTree = "<group>"; };
+		F819F46CC6EAA2842A19FB51 /* ConversationArchiveService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationArchiveService.swift; sourceTree = "<group>"; };
+		FC662244A7AAD92235CE193B /* ToolModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToolModels.swift; sourceTree = "<group>"; };
+		GEMINIIMG012345678901234B /* GeminiImageService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeminiImageService.swift; sourceTree = "<group>"; };
+		SOULEXP0123456789ABCDEF2 /* SoulExportService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SoulExportService.swift; sourceTree = "<group>"; };
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		A10000FD282D4F0100000001 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				1BAD23532F2E2E5C000A88B2 /* WhisperKit in Frameworks */,
+				1BAD23552F2E2E5C000A88B2 /* whisperkit-cli in Frameworks */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		A1000020282D4F0100000001 /* TelegramConcierge */ = {
+			isa = PBXGroup;
+			children = (
+				A1000002282D4F0100000001 /* TelegramConciergeApp.swift */,
+				A1000021282D4F0100000001 /* Models */,
+				A1000022282D4F0100000001 /* Services */,
+				A1000023282D4F0100000001 /* Views */,
+				A1000024282D4F0100000001 /* Utilities */,
+				A1000006282D4F0100000001 /* Assets.xcassets */,
+				A1000017282D4F0100000001 /* TelegramConcierge.entitlements */,
+			);
+			path = TelegramConcierge;
+			sourceTree = "<group>";
+		};
+		A1000021282D4F0100000001 /* Models */ = {
+			isa = PBXGroup;
+			children = (
+				A1000008282D4F0100000001 /* Message.swift */,
+				A100000A282D4F0100000001 /* TelegramModels.swift */,
+				FC662244A7AAD92235CE193B /* ToolModels.swift */,
+				DDB20D1783E9B2F00765A721 /* Reminder.swift */,
+				0B883CAF85B587CFB8951D59 /* CalendarEvent.swift */,
+				788EABC6659EB6C669DBACA3 /* ConversationArchiveModels.swift */,
+				CONTACT01234567890ABCDEF2 /* Contact.swift */,
+				BADE3E4558F8DFD065AE6A26 /* DocumentModels.swift */,
+			);
+			path = Models;
+			sourceTree = "<group>";
+		};
+		A1000022282D4F0100000001 /* Services */ = {
+			isa = PBXGroup;
+			children = (
+				A100000C282D4F0100000001 /* TelegramBotService.swift */,
+				A100000E282D4F0100000001 /* OpenRouterService.swift */,
+				A1000010282D4F0100000001 /* ConversationManager.swift */,
+				1BAD23562F2E2F00000A88B2 /* WhisperKitService.swift */,
+				DA0AE409F8E6598E75DFDF72 /* WebOrchestrator.swift */,
+				AD50E4C9FE60DE1DEB6071AF /* WebOrchestrator+Helpers.swift */,
+				2E12F15918DC9CEE64092A28 /* ToolExecutor.swift */,
+				21DCD141150F4C77541F4982 /* ReminderService.swift */,
+				55871B59F1F9B733E94E96B7 /* CalendarService.swift */,
+				F819F46CC6EAA2842A19FB51 /* ConversationArchiveService.swift */,
+				4E5FCEEB85030C0670DBB947 /* EmailService.swift */,
+				DEF123AB456CD789EFAB5678 /* DocumentService.swift */,
+				CONTACT01234567890ABCDEF4 /* ContactsService.swift */,
+				GEMINIIMG012345678901234B /* GeminiImageService.swift */,
+				5A93EA054D5A31889F2D4564 /* DocumentGeneratorService.swift */,
+				D2B3D8D014FCCF0BC929CA79 /* GmailService.swift */,
+				F6F41BFCEF3C81A6A0A64255 /* FileDescriptionService.swift */,
+				SOULEXP0123456789ABCDEF2 /* SoulExportService.swift */,
+			);
+			path = Services;
+			sourceTree = "<group>";
+		};
+		A1000023282D4F0100000001 /* Views */ = {
+			isa = PBXGroup;
+			children = (
+				A1000004282D4F0100000001 /* ContentView.swift */,
+				A1000014282D4F0100000001 /* SettingsView.swift */,
+				A1000016282D4F0100000001 /* MessageBubbleView.swift */,
+				CONTEXTVIEW0123456789ABC2 /* ContextViewerView.swift */,
+				A1B2C3D4E5F60718293A4B5D /* ClaudeProjectsBrowserView.swift */,
+			);
+			path = Views;
+			sourceTree = "<group>";
+		};
+		A1000024282D4F0100000001 /* Utilities */ = {
+			isa = PBXGroup;
+			children = (
+				A1000012282D4F0100000001 /* KeychainHelper.swift */,
+			);
+			path = Utilities;
+			sourceTree = "<group>";
+		};
+		A10000F7282D4F0100000001 = {
+			isa = PBXGroup;
+			children = (
+				A1000020282D4F0100000001 /* TelegramConcierge */,
+				A10000FF282D4F0100000001 /* Products */,
+			);
+			sourceTree = "<group>";
+		};
+		A10000FF282D4F0100000001 /* Products */ = {
+			isa = PBXGroup;
+			children = (
+				A1000000282D4F0100000001 /* TelegramConcierge.app */,
+			);
+			name = Products;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		A10000FB282D4F0100000001 /* TelegramConcierge */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = A1000110282D4F0100000001 /* Build configuration list for PBXNativeTarget "TelegramConcierge" */;
+			buildPhases = (
+				A10000FC282D4F0100000001 /* Sources */,
+				A10000FD282D4F0100000001 /* Frameworks */,
+				A10000FE282D4F0100000001 /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = TelegramConcierge;
+			productName = TelegramConcierge;
+			productReference = A1000000282D4F0100000001 /* TelegramConcierge.app */;
+			productType = "com.apple.product-type.application";
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		A10000F8282D4F0100000001 /* Project object */ = {
+			isa = PBXProject;
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1500;
+				LastUpgradeCheck = 1500;
+				TargetAttributes = {
+					A10000FB282D4F0100000001 = {
+						CreatedOnToolsVersion = 15.0;
+					};
+				};
+			};
+			buildConfigurationList = A100010F282D4F0100000001 /* Build configuration list for PBXProject "TelegramConcierge" */;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = A10000F7282D4F0100000001;
+			packageReferences = (
+				1BAD23512F2E2E5C000A88B2 /* XCRemoteSwiftPackageReference "whisperkit" */,
+			);
+			productRefGroup = A10000FF282D4F0100000001 /* Products */;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				A10000FB282D4F0100000001 /* TelegramConcierge */,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		A10000FE282D4F0100000001 /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000005282D4F0100000001 /* Assets.xcassets in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		A10000FC282D4F0100000001 /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				A1000001282D4F0100000001 /* TelegramConciergeApp.swift in Sources */,
+				A1000003282D4F0100000001 /* ContentView.swift in Sources */,
+				A1000007282D4F0100000001 /* Message.swift in Sources */,
+				A1000009282D4F0100000001 /* TelegramModels.swift in Sources */,
+				A100000B282D4F0100000001 /* TelegramBotService.swift in Sources */,
+				A100000D282D4F0100000001 /* OpenRouterService.swift in Sources */,
+				A100000F282D4F0100000001 /* ConversationManager.swift in Sources */,
+				1BAD23572F2E2F00000A88B2 /* WhisperKitService.swift in Sources */,
+				A1000011282D4F0100000001 /* KeychainHelper.swift in Sources */,
+				A1000013282D4F0100000001 /* SettingsView.swift in Sources */,
+				A1000015282D4F0100000001 /* MessageBubbleView.swift in Sources */,
+				A1B2C3D4E5F60718293A4B5C /* ClaudeProjectsBrowserView.swift in Sources */,
+				A494EEEA1729398C6C50A56F /* ToolModels.swift in Sources */,
+				A20FA62FAD25E07335060F6F /* WebOrchestrator.swift in Sources */,
+				603CFC4690F84C64979D3048 /* WebOrchestrator+Helpers.swift in Sources */,
+				68FA8CA6412AA1AFB0B30BBA /* ToolExecutor.swift in Sources */,
+				2B0A45D1F5390F2A1E1AD385 /* Reminder.swift in Sources */,
+				822F9BF6D5ABC15C17E38EC4 /* ReminderService.swift in Sources */,
+				DF3114E0259D2473CAE34DDF /* CalendarEvent.swift in Sources */,
+				87DCAC7DFD7B3B3C02ECDBA3 /* CalendarService.swift in Sources */,
+				C2B87AA65DC778516C459184 /* ConversationArchiveModels.swift in Sources */,
+				58BCD35919355360BA19A45B /* ConversationArchiveService.swift in Sources */,
+				69A2A54160E030BDBF124555 /* EmailService.swift in Sources */,
+				DEF123AB456CD789EFAB1234 /* DocumentService.swift in Sources */,
+				CONTACT01234567890ABCDEF1 /* Contact.swift in Sources */,
+				CONTACT01234567890ABCDEF3 /* ContactsService.swift in Sources */,
+				GEMINIIMG012345678901234A /* GeminiImageService.swift in Sources */,
+				CONTEXTVIEW0123456789ABC1 /* ContextViewerView.swift in Sources */,
+				872F4C787E9A3ED2E5384972 /* DocumentModels.swift in Sources */,
+				F968F82FBFCB478DF1BD23F6 /* DocumentGeneratorService.swift in Sources */,
+				CC2E2FEA08D0E88323DCC140 /* GmailService.swift in Sources */,
+				31B7CF7E140CC51F1318A043 /* FileDescriptionService.swift in Sources */,
+				SOULEXP0123456789ABCDEF1 /* SoulExportService.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin XCBuildConfiguration section */
+		A100010D282D4F0100000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_TESTABILITY = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_DYNAMIC_NO_PIC = NO;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_OPTIMIZATION_LEVEL = 0;
+				GCC_PREPROCESSOR_DEFINITIONS = (
+					"DEBUG=1",
+					"$(inherited)",
+				);
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = INCLUDE_SOURCE;
+				MTL_FAST_MATH = YES;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = macosx;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = "DEBUG $(inherited)";
+				SWIFT_OPTIMIZATION_LEVEL = "-Onone";
+			};
+			name = Debug;
+		};
+		A100010E282D4F0100000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				ASSETCATALOG_COMPILER_GENERATE_SWIFT_ASSET_SYMBOL_EXTENSIONS = YES;
+				CLANG_ANALYZER_NONNULL = YES;
+				CLANG_ANALYZER_NUMBER_OBJECT_CONVERSION = YES_AGGRESSIVE;
+				CLANG_CXX_LANGUAGE_STANDARD = "gnu++20";
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CLANG_ENABLE_OBJC_WEAK = YES;
+				CLANG_WARN_BLOCK_CAPTURE_AUTORELEASING = YES;
+				CLANG_WARN_BOOL_CONVERSION = YES;
+				CLANG_WARN_COMMA = YES;
+				CLANG_WARN_CONSTANT_CONVERSION = YES;
+				CLANG_WARN_DEPRECATED_OBJC_IMPLEMENTATIONS = YES;
+				CLANG_WARN_DIRECT_OBJC_ISA_USAGE = YES_ERROR;
+				CLANG_WARN_DOCUMENTATION_COMMENTS = YES;
+				CLANG_WARN_EMPTY_BODY = YES;
+				CLANG_WARN_ENUM_CONVERSION = YES;
+				CLANG_WARN_INFINITE_RECURSION = YES;
+				CLANG_WARN_INT_CONVERSION = YES;
+				CLANG_WARN_NON_LITERAL_NULL_CONVERSION = YES;
+				CLANG_WARN_OBJC_IMPLICIT_RETAIN_SELF = YES;
+				CLANG_WARN_OBJC_LITERAL_CONVERSION = YES;
+				CLANG_WARN_OBJC_ROOT_CLASS = YES_ERROR;
+				CLANG_WARN_QUOTED_INCLUDE_IN_FRAMEWORK_HEADER = YES;
+				CLANG_WARN_RANGE_LOOP_ANALYSIS = YES;
+				CLANG_WARN_STRICT_PROTOTYPES = YES;
+				CLANG_WARN_SUSPICIOUS_MOVE = YES;
+				CLANG_WARN_UNGUARDED_AVAILABILITY = YES_AGGRESSIVE;
+				CLANG_WARN_UNREACHABLE_CODE = YES;
+				CLANG_WARN__DUPLICATE_METHOD_MATCH = YES;
+				COPY_PHASE_STRIP = NO;
+				DEBUG_INFORMATION_FORMAT = "dwarf-with-dsym";
+				ENABLE_NS_ASSERTIONS = NO;
+				ENABLE_STRICT_OBJC_MSGSEND = YES;
+				ENABLE_USER_SCRIPT_SANDBOXING = YES;
+				GCC_C_LANGUAGE_STANDARD = gnu17;
+				GCC_NO_COMMON_BLOCKS = YES;
+				GCC_WARN_64_TO_32_BIT_CONVERSION = YES;
+				GCC_WARN_ABOUT_RETURN_TYPE = YES_ERROR;
+				GCC_WARN_UNDECLARED_SELECTOR = YES;
+				GCC_WARN_UNINITIALIZED_AUTOS = YES_AGGRESSIVE;
+				GCC_WARN_UNUSED_FUNCTION = YES;
+				GCC_WARN_UNUSED_VARIABLE = YES;
+				MACOSX_DEPLOYMENT_TARGET = 14.0;
+				MTL_ENABLE_DEBUG_INFO = NO;
+				MTL_FAST_MATH = YES;
+				SDKROOT = macosx;
+				SWIFT_COMPILATION_MODE = wholemodule;
+			};
+			name = Release;
+		};
+		A1000111282D4F0100000001 /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TelegramConcierge/TelegramConciergeDebug.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D3NH2BPWCU;
+				ENABLE_APP_SANDBOX = NO;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = YES;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Telegram Concierge needs automation access to run Shortcuts and retrieve their outputs.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.telegramconcierge.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Debug;
+		};
+		A1000112282D4F0100000001 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = TelegramConcierge/TelegramConcierge.entitlements;
+				CODE_SIGN_STYLE = Automatic;
+				COMBINE_HIDPI_IMAGES = YES;
+				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = D3NH2BPWCU;
+				ENABLE_APP_SANDBOX = YES;
+				ENABLE_HARDENED_RUNTIME = YES;
+				ENABLE_INCOMING_NETWORK_CONNECTIONS = NO;
+				ENABLE_OUTGOING_NETWORK_CONNECTIONS = NO;
+				ENABLE_RESOURCE_ACCESS_AUDIO_INPUT = NO;
+				ENABLE_RESOURCE_ACCESS_BLUETOOTH = NO;
+				ENABLE_RESOURCE_ACCESS_CALENDARS = NO;
+				ENABLE_RESOURCE_ACCESS_CAMERA = YES;
+				ENABLE_RESOURCE_ACCESS_CONTACTS = NO;
+				ENABLE_RESOURCE_ACCESS_LOCATION = NO;
+				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
+				ENABLE_RESOURCE_ACCESS_USB = NO;
+				ENABLE_USER_SELECTED_FILES = readwrite;
+				GENERATE_INFOPLIST_FILE = YES;
+				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.productivity";
+				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Telegram Concierge needs automation access to run Shortcuts and retrieve their outputs.";
+				INFOPLIST_KEY_NSHumanReadableCopyright = "";
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/../Frameworks",
+				);
+				MARKETING_VERSION = 1.0;
+				PRODUCT_BUNDLE_IDENTIFIER = com.telegramconcierge.app;
+				PRODUCT_NAME = "$(TARGET_NAME)";
+				SWIFT_EMIT_LOC_STRINGS = YES;
+				SWIFT_VERSION = 5.0;
+			};
+			name = Release;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		A100010F282D4F0100000001 /* Build configuration list for PBXProject "TelegramConcierge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A100010D282D4F0100000001 /* Debug */,
+				A100010E282D4F0100000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		A1000110282D4F0100000001 /* Build configuration list for PBXNativeTarget "TelegramConcierge" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				A1000111282D4F0100000001 /* Debug */,
+				A1000112282D4F0100000001 /* Release */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCRemoteSwiftPackageReference section */
+		1BAD23512F2E2E5C000A88B2 /* XCRemoteSwiftPackageReference "whisperkit" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/argmaxinc/whisperkit";
+			requirement = {
+				branch = main;
+				kind = branch;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		1BAD23522F2E2E5C000A88B2 /* WhisperKit */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1BAD23512F2E2E5C000A88B2 /* XCRemoteSwiftPackageReference "whisperkit" */;
+			productName = WhisperKit;
+		};
+		1BAD23542F2E2E5C000A88B2 /* whisperkit-cli */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = 1BAD23512F2E2E5C000A88B2 /* XCRemoteSwiftPackageReference "whisperkit" */;
+			productName = "whisperkit-cli";
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = A10000F8282D4F0100000001 /* Project object */;
+}
