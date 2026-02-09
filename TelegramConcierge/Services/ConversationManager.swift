@@ -849,6 +849,8 @@ class ConversationManager: ObservableObject {
             return "📁 Managing project workspace..."
         } else if toolNames.contains("send_project_result") {
             return "📤 Sending project result..."
+        } else if toolNames.contains("deploy_project_to_vercel") {
+            return "🚀 Deploying project to Vercel..."
         } else if toolNames.contains("set_reminder") {
             return "⏰ Setting reminder..."
         } else if toolNames.contains("list_reminders") {

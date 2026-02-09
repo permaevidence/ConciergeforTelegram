@@ -71,6 +71,8 @@ enum KeychainHelper {
 extension KeychainHelper {
     static let defaultClaudeCodeArgs = "-p --permission-mode bypassPermissions"
     static let defaultClaudeCodeTimeout = "1000"
+    static let defaultVercelCommand = "vercel"
+    static let defaultVercelTimeout = "1200"
     
     static let telegramBotTokenKey = "telegram_bot_token"
     static let telegramChatIdKey = "telegram_chat_id"
@@ -99,6 +101,13 @@ extension KeychainHelper {
     static let claudeCodeArgsKey = "claude_code_args"
     static let claudeCodeTimeoutKey = "claude_code_timeout"
     static let claudeCodeDisableLegacyDocumentGenerationToolsKey = "claude_code_disable_legacy_document_generation_tools"
+    
+    // Vercel Deployment Settings
+    static let vercelApiTokenKey = "vercel_api_token"
+    static let vercelTeamScopeKey = "vercel_team_scope"
+    static let vercelProjectNameKey = "vercel_project_name"
+    static let vercelCommandKey = "vercel_command"
+    static let vercelTimeoutKey = "vercel_timeout"
     
     // Persona Settings Keys
     static let assistantNameKey = "assistant_name"

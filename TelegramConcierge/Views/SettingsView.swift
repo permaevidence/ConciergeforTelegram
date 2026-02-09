@@ -52,6 +52,13 @@ struct SettingsView: View {
     @State private var claudeCodeTimeout: String = KeychainHelper.defaultClaudeCodeTimeout
     @State private var claudeCodeDisableLegacyDocumentGenerationTools: Bool = false
     
+    // Vercel deployment settings
+    @State private var vercelApiToken: String = ""
+    @State private var vercelTeamScope: String = ""
+    @State private var vercelProjectName: String = ""
+    @State private var vercelCommand: String = KeychainHelper.defaultVercelCommand
+    @State private var vercelTimeout: String = KeychainHelper.defaultVercelTimeout
+    
     // Persona settings
     @State private var assistantName: String = ""
     @State private var userName: String = ""
@@ -305,6 +312,52 @@ struct SettingsView: View {
                 .buttonStyle(.bordered)
             } header: {
                 Label("Claude Code", systemImage: "terminal")
+            }
+            
+            Section {
+                SecureField("Vercel API Token", text: $vercelApiToken)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Create a token in Vercel Dashboard > Settings > Tokens. Required for deploy_project_to_vercel.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("Default Team Scope (optional)", text: $vercelTeamScope)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Your Vercel team/account scope slug. Used when deploy tool doesn't pass team_scope.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("Default Project Name (optional)", text: $vercelProjectName)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Used for automatic `vercel link` before deploy when project_name is omitted.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("CLI Command", text: $vercelCommand)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Default: \(KeychainHelper.defaultVercelCommand)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("Default Timeout (seconds)", text: $vercelTimeout)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Used by deploy_project_to_vercel when timeout_seconds is omitted. Range: 60-3600.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Link("Install Vercel CLI", destination: URL(string: "https://vercel.com/docs/cli")!)
+                    .font(.caption)
+                
+                sectionSaveButton("vercel") {
+                    saveVercelSection()
+                }
+            } header: {
+                Label("Vercel Deployment", systemImage: "icloud.and.arrow.up")
             }
             
             // MARK: - Email Settings Section
@@ -1229,6 +1282,13 @@ struct SettingsView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() == "true"
         
+        // Load Vercel deployment settings
+        vercelApiToken = KeychainHelper.load(key: KeychainHelper.vercelApiTokenKey) ?? ""
+        vercelTeamScope = KeychainHelper.load(key: KeychainHelper.vercelTeamScopeKey) ?? ""
+        vercelProjectName = KeychainHelper.load(key: KeychainHelper.vercelProjectNameKey) ?? ""
+        vercelCommand = KeychainHelper.load(key: KeychainHelper.vercelCommandKey) ?? KeychainHelper.defaultVercelCommand
+        vercelTimeout = KeychainHelper.load(key: KeychainHelper.vercelTimeoutKey) ?? KeychainHelper.defaultVercelTimeout
+        
         // Load persona settings
         assistantName = KeychainHelper.load(key: KeychainHelper.assistantNameKey) ?? ""
         userName = KeychainHelper.load(key: KeychainHelper.userNameKey) ?? ""
@@ -1405,6 +1465,39 @@ struct SettingsView: View {
                 value: claudeCodeDisableLegacyDocumentGenerationTools ? "true" : "false"
             )
             
+            // Save Vercel deployment settings
+            let normalizedVercelToken = vercelApiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedVercelToken.isEmpty {
+                try? KeychainHelper.delete(key: KeychainHelper.vercelApiTokenKey)
+            } else {
+                try KeychainHelper.save(key: KeychainHelper.vercelApiTokenKey, value: normalizedVercelToken)
+            }
+            
+            let normalizedVercelScope = vercelTeamScope.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedVercelScope.isEmpty {
+                try? KeychainHelper.delete(key: KeychainHelper.vercelTeamScopeKey)
+            } else {
+                try KeychainHelper.save(key: KeychainHelper.vercelTeamScopeKey, value: normalizedVercelScope)
+            }
+            
+            let normalizedVercelProject = vercelProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedVercelProject.isEmpty {
+                try? KeychainHelper.delete(key: KeychainHelper.vercelProjectNameKey)
+            } else {
+                try KeychainHelper.save(key: KeychainHelper.vercelProjectNameKey, value: normalizedVercelProject)
+            }
+            
+            let normalizedVercelCommand = vercelCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+            try KeychainHelper.save(
+                key: KeychainHelper.vercelCommandKey,
+                value: normalizedVercelCommand.isEmpty ? KeychainHelper.defaultVercelCommand : normalizedVercelCommand
+            )
+            
+            let vercelTimeoutValue = Int(vercelTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1200
+            let clampedVercelTimeout = min(max(vercelTimeoutValue, 60), 3600)
+            try KeychainHelper.save(key: KeychainHelper.vercelTimeoutKey, value: "\(clampedVercelTimeout)")
+            vercelTimeout = "\(clampedVercelTimeout)"
+            
             // Save persona settings
             try KeychainHelper.save(key: KeychainHelper.assistantNameKey, value: assistantName)
             try KeychainHelper.save(key: KeychainHelper.userNameKey, value: userName)
@@ -1544,6 +1637,46 @@ struct SettingsView: View {
         claudeCodeCommand = normalizedCommand.isEmpty ? "claude" : normalizedCommand
         claudeCodeArgs = normalizedArgs.isEmpty ? KeychainHelper.defaultClaudeCodeArgs : normalizedArgs
         claudeCodeTimeout = "\(clamped)"
+    }
+    
+    private func saveVercelSection() {
+        let normalizedToken = vercelApiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedScope = vercelTeamScope.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedProject = vercelProjectName.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCommand = vercelCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if normalizedToken.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.vercelApiTokenKey)
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.vercelApiTokenKey, value: normalizedToken)
+        }
+        
+        if normalizedScope.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.vercelTeamScopeKey)
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.vercelTeamScopeKey, value: normalizedScope)
+        }
+        
+        if normalizedProject.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.vercelProjectNameKey)
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.vercelProjectNameKey, value: normalizedProject)
+        }
+        
+        let timeout = Int(vercelTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 1200
+        let clamped = min(max(timeout, 60), 3600)
+        
+        try? KeychainHelper.save(
+            key: KeychainHelper.vercelCommandKey,
+            value: normalizedCommand.isEmpty ? KeychainHelper.defaultVercelCommand : normalizedCommand
+        )
+        try? KeychainHelper.save(key: KeychainHelper.vercelTimeoutKey, value: "\(clamped)")
+        
+        vercelApiToken = normalizedToken
+        vercelTeamScope = normalizedScope
+        vercelProjectName = normalizedProject
+        vercelCommand = normalizedCommand.isEmpty ? KeychainHelper.defaultVercelCommand : normalizedCommand
+        vercelTimeout = "\(clamped)"
     }
     
     private func saveEmailSection() {

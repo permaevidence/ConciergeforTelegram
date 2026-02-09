@@ -425,6 +425,7 @@ actor OpenRouterService {
                 - If a ZIP appears unrelated to current projects and the user did not explicitly choose an existing project, create a new project first (name it from the ZIP/context), then import the ZIP there.
                 - Reuse an existing project only when the user clearly asks to continue that specific project.
                 - When sending websites/apps or other multi-file outputs, prefer send_project_result with package_as='zip_project' unless the user explicitly asked for individual files.
+                - When the user asks to publish/deploy a website to Vercel, use deploy_project_to_vercel after files are ready. Default to preview deployments unless the user explicitly requests production/live.
                 - For project cleanup requests, use flag_projects_for_deletion to mark projects; never assume deletion is complete until the user confirms in Settings.
                 - Do not claim files/code were created unless run_claude_code reports file_changes_detected or returns created_files/modified_files.
                 """

@@ -173,6 +173,9 @@ actor ToolExecutor {
         case "send_project_result":
             content = await executeSendProjectResult(call)
             
+        case "deploy_project_to_vercel":
+            content = await executeDeployProjectToVercel(call)
+            
         case "flag_projects_for_deletion":
             content = await executeFlagProjectsForDeletion(call)
             
@@ -3524,6 +3527,28 @@ struct SendProjectResultArguments: Codable {
     }
 }
 
+struct DeployProjectToVercelArguments: Codable {
+    let projectId: String
+    let relativePath: String?
+    let production: Bool?
+    let projectName: String?
+    let teamScope: String?
+    let forceRelink: Bool?
+    let timeoutSeconds: Int?
+    let maxOutputChars: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case production
+        case projectName = "project_name"
+        case teamScope = "team_scope"
+        case forceRelink = "force_relink"
+        case timeoutSeconds = "timeout_seconds"
+        case maxOutputChars = "max_output_chars"
+    }
+}
+
 struct FlagProjectsForDeletionArguments: Codable {
     let projectIds: [String]
     let reason: String?
@@ -3812,6 +3837,34 @@ private struct SendProjectResultOutput: Codable {
         case fileCount = "file_count"
         case packageAs = "package_as"
         case packagedFileCount = "packaged_file_count"
+    }
+}
+
+private struct VercelDeployResult: Codable {
+    let success: Bool
+    let projectId: String
+    let relativePath: String
+    let mode: String
+    let deploymentUrl: String?
+    let projectName: String?
+    let teamScope: String?
+    let linked: Bool
+    let command: String?
+    let exitCode: Int32?
+    let timedOut: Bool?
+    let stdout: String?
+    let stderr: String?
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, mode, message, linked, stdout, stderr, command
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case deploymentUrl = "deployment_url"
+        case projectName = "project_name"
+        case teamScope = "team_scope"
+        case exitCode = "exit_code"
+        case timedOut = "timed_out"
     }
 }
 
@@ -4658,6 +4711,221 @@ extension ToolExecutor {
                 : "Project archive sent via email."
         )
         return encodeJSON(result)
+    }
+    
+    private func executeDeployProjectToVercel(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(DeployProjectToVercelArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse deploy_project_to_vercel arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let requestedRelativePath = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
+        let deployRelativePath = requestedRelativePath.isEmpty ? "." : requestedRelativePath
+        
+        guard let deployDirectoryURL = resolvePath(in: projectURL, relativePath: deployRelativePath) else {
+            return #"{"error":"Invalid relative_path. Path must stay inside the project."}"#
+        }
+        
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: deployDirectoryURL.path, isDirectory: &isDir), isDir.boolValue else {
+            return #"{"error":"relative_path does not exist or is not a directory."}"#
+        }
+        
+        let token = (KeychainHelper.load(key: KeychainHelper.vercelApiTokenKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            return #"{"error":"Vercel API token is not configured. Add it in Settings > Vercel Deployment."}"#
+        }
+        
+        let command = (KeychainHelper.load(key: KeychainHelper.vercelCommandKey) ?? KeychainHelper.defaultVercelCommand)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let vercelCommand = command.isEmpty ? KeychainHelper.defaultVercelCommand : command
+        
+        let defaultScope = (KeychainHelper.load(key: KeychainHelper.vercelTeamScopeKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let defaultProjectName = (KeychainHelper.load(key: KeychainHelper.vercelProjectNameKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let explicitTeamScope = args.teamScope?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let explicitProjectName = args.projectName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let teamScope = (explicitTeamScope?.isEmpty == false)
+            ? explicitTeamScope
+            : (defaultScope.isEmpty ? nil : defaultScope)
+        let projectName = (explicitProjectName?.isEmpty == false)
+            ? explicitProjectName
+            : (defaultProjectName.isEmpty ? nil : defaultProjectName)
+        
+        let configuredTimeout = Int(KeychainHelper.load(key: KeychainHelper.vercelTimeoutKey) ?? "") ?? Int(KeychainHelper.defaultVercelTimeout) ?? 1200
+        let timeoutSeconds = min(max(args.timeoutSeconds ?? configuredTimeout, 60), 3600)
+        let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
+        
+        let production = args.production ?? false
+        let mode = production ? "production" : "preview"
+        let forceRelink = args.forceRelink ?? false
+        let sensitiveValues = [token]
+        
+        var stdoutParts: [String] = []
+        var stderrParts: [String] = []
+        let environment = claudeBaseEnvironment()
+        
+        var linked = hasVercelProjectLink(at: deployDirectoryURL)
+        let shouldRelink = projectName != nil && ((explicitProjectName?.isEmpty == false) || forceRelink || !linked)
+        if let projectName, shouldRelink {
+            var linkArgs = ["link", "--yes", "--token", token, "--project", projectName]
+            if let teamScope {
+                linkArgs.append(contentsOf: ["--scope", teamScope])
+            }
+            
+            do {
+                let (linkInvocation, linkOutput) = try await executeVercelCommand(
+                    command: vercelCommand,
+                    arguments: linkArgs,
+                    workingDirectory: deployDirectoryURL,
+                    environment: environment,
+                    timeoutSeconds: timeoutSeconds,
+                    maxOutputChars: maxOutputChars,
+                    sensitiveValues: sensitiveValues
+                )
+                
+                let linkStdout = redactSensitiveValues(in: linkOutput.stdout, values: sensitiveValues)
+                let linkStderr = redactSensitiveValues(in: linkOutput.stderr, values: sensitiveValues)
+                if !linkStdout.isEmpty {
+                    stdoutParts.append("[link] \(linkInvocation.displayCommand)\n\(linkStdout)")
+                }
+                if !linkStderr.isEmpty {
+                    stderrParts.append("[link] \(linkInvocation.displayCommand)\n\(linkStderr)")
+                }
+                
+                guard linkOutput.exitCode == 0, !linkOutput.timedOut else {
+                    let result = VercelDeployResult(
+                        success: false,
+                        projectId: args.projectId,
+                        relativePath: deployRelativePath,
+                        mode: mode,
+                        deploymentUrl: nil,
+                        projectName: projectName,
+                        teamScope: teamScope,
+                        linked: false,
+                        command: linkInvocation.displayCommand,
+                        exitCode: linkOutput.exitCode,
+                        timedOut: linkOutput.timedOut,
+                        stdout: stdoutParts.joined(separator: "\n\n"),
+                        stderr: stderrParts.joined(separator: "\n\n"),
+                        message: linkOutput.timedOut
+                            ? "Vercel link timed out after \(timeoutSeconds)s."
+                            : "Vercel link failed with exit code \(linkOutput.exitCode)."
+                    )
+                    return encodeJSON(result)
+                }
+                
+                linked = hasVercelProjectLink(at: deployDirectoryURL)
+            } catch {
+                let result = VercelDeployResult(
+                    success: false,
+                    projectId: args.projectId,
+                    relativePath: deployRelativePath,
+                    mode: mode,
+                    deploymentUrl: nil,
+                    projectName: projectName,
+                    teamScope: teamScope,
+                    linked: false,
+                    command: nil,
+                    exitCode: nil,
+                    timedOut: nil,
+                    stdout: stdoutParts.joined(separator: "\n\n"),
+                    stderr: truncateForToolOutput(redactSensitiveValues(in: error.localizedDescription, values: sensitiveValues), maxChars: maxOutputChars),
+                    message: "Failed to run `vercel link`. Check CLI configuration and token permissions."
+                )
+                return encodeJSON(result)
+            }
+        }
+        
+        var deployArgs = ["deploy", "--yes", "--token", token]
+        if let teamScope {
+            deployArgs.append(contentsOf: ["--scope", teamScope])
+        }
+        if production {
+            deployArgs.append("--prod")
+        }
+        deployArgs.append(".")
+        
+        do {
+            let (deployInvocation, deployOutput) = try await executeVercelCommand(
+                command: vercelCommand,
+                arguments: deployArgs,
+                workingDirectory: deployDirectoryURL,
+                environment: environment,
+                timeoutSeconds: timeoutSeconds,
+                maxOutputChars: maxOutputChars,
+                sensitiveValues: sensitiveValues
+            )
+            
+            let deployStdout = redactSensitiveValues(in: deployOutput.stdout, values: sensitiveValues)
+            let deployStderr = redactSensitiveValues(in: deployOutput.stderr, values: sensitiveValues)
+            if !deployStdout.isEmpty {
+                stdoutParts.append("[deploy] \(deployInvocation.displayCommand)\n\(deployStdout)")
+            }
+            if !deployStderr.isEmpty {
+                stderrParts.append("[deploy] \(deployInvocation.displayCommand)\n\(deployStderr)")
+            }
+            
+            let combinedOutput = stdoutParts.joined(separator: "\n\n") + "\n" + stderrParts.joined(separator: "\n\n")
+            let deploymentURL = extractVercelDeploymentURL(from: combinedOutput)
+            let success = deployOutput.exitCode == 0 && !deployOutput.timedOut
+            
+            let message: String
+            if success {
+                if let deploymentURL {
+                    message = "Vercel \(mode) deployment completed successfully."
+                } else {
+                    message = "Vercel \(mode) deployment completed, but deployment URL could not be parsed from CLI output."
+                }
+            } else if deployOutput.timedOut {
+                message = "Vercel deploy timed out after \(timeoutSeconds)s."
+            } else {
+                message = "Vercel deploy failed with exit code \(deployOutput.exitCode)."
+            }
+            
+            let result = VercelDeployResult(
+                success: success,
+                projectId: args.projectId,
+                relativePath: deployRelativePath,
+                mode: mode,
+                deploymentUrl: deploymentURL,
+                projectName: projectName,
+                teamScope: teamScope,
+                linked: linked,
+                command: deployInvocation.displayCommand,
+                exitCode: deployOutput.exitCode,
+                timedOut: deployOutput.timedOut,
+                stdout: truncateForToolOutput(stdoutParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
+                stderr: truncateForToolOutput(stderrParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
+                message: message
+            )
+            return encodeJSON(result)
+        } catch {
+            let result = VercelDeployResult(
+                success: false,
+                projectId: args.projectId,
+                relativePath: deployRelativePath,
+                mode: mode,
+                deploymentUrl: nil,
+                projectName: projectName,
+                teamScope: teamScope,
+                linked: linked,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                stdout: truncateForToolOutput(stdoutParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
+                stderr: truncateForToolOutput(redactSensitiveValues(in: error.localizedDescription, values: sensitiveValues), maxChars: maxOutputChars),
+                message: "Failed to execute Vercel deploy command. Ensure Vercel CLI is installed and configured."
+            )
+            return encodeJSON(result)
+        }
     }
     
     private func executeFlagProjectsForDeletion(_ call: ToolCall) async -> String {
@@ -5596,6 +5864,166 @@ extension ToolExecutor {
         }
         
         return invocations
+    }
+    
+    private func executeVercelCommand(
+        command: String,
+        arguments: [String],
+        workingDirectory: URL,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        maxOutputChars: Int,
+        sensitiveValues: [String]
+    ) async throws -> (ClaudeInvocation, ClaudeExecutionOutput) {
+        let invocations = buildVercelInvocations(
+            command: command,
+            arguments: arguments,
+            sensitiveValues: sensitiveValues
+        )
+        
+        guard !invocations.isEmpty else {
+            throw NSError(domain: "ToolExecutor", code: 1, userInfo: [
+                NSLocalizedDescriptionKey: "No valid Vercel command invocation was generated. Check Vercel CLI settings."
+            ])
+        }
+        
+        var launchErrors: [String] = []
+        
+        for invocation in invocations {
+            do {
+                let output = try await runClaudeInvocation(
+                    invocation,
+                    projectURL: workingDirectory,
+                    environment: environment,
+                    timeoutSeconds: timeoutSeconds,
+                    maxOutputChars: maxOutputChars
+                )
+                return (invocation, output)
+            } catch {
+                launchErrors.append("\(invocation.displayCommand): \(error.localizedDescription)")
+            }
+        }
+        
+        let details = launchErrors.isEmpty
+            ? "No launch diagnostics available."
+            : launchErrors.joined(separator: " | ")
+        
+        throw NSError(domain: "ToolExecutor", code: 2, userInfo: [
+            NSLocalizedDescriptionKey: "Failed to launch Vercel command. Attempts: \(details)"
+        ])
+    }
+    
+    private func buildVercelInvocations(
+        command: String,
+        arguments: [String],
+        sensitiveValues: [String]
+    ) -> [ClaudeInvocation] {
+        let commandTokens = parseCommandLineArguments(command)
+        let primaryCommand = commandTokens.first ?? KeychainHelper.defaultVercelCommand
+        let commandPrefixArgs = Array(commandTokens.dropFirst())
+        let taskArgs = commandPrefixArgs + arguments
+        
+        let fileManager = FileManager.default
+        var invocations: [ClaudeInvocation] = []
+        var seen: Set<String> = []
+        
+        func appendInvocation(executable: String, args: [String]) {
+            let key = executable + "\u{1f}" + args.joined(separator: "\u{1f}")
+            guard !seen.contains(key) else { return }
+            seen.insert(key)
+            
+            invocations.append(
+                ClaudeInvocation(
+                    executableURL: URL(fileURLWithPath: executable),
+                    arguments: args,
+                    displayCommand: displayExternalInvocationCommand(
+                        executable: executable,
+                        arguments: args,
+                        sensitiveValues: sensitiveValues
+                    )
+                )
+            )
+        }
+        
+        if primaryCommand.contains("/") {
+            appendInvocation(executable: primaryCommand, args: taskArgs)
+        } else {
+            appendInvocation(executable: "/usr/bin/env", args: [primaryCommand] + taskArgs)
+        }
+        
+        if primaryCommand == "vercel" {
+            for launcher in ["/opt/homebrew/bin/vercel", "/usr/local/bin/vercel", "/usr/bin/vercel"] where fileManager.fileExists(atPath: launcher) {
+                appendInvocation(executable: launcher, args: taskArgs)
+            }
+        }
+        
+        return invocations
+    }
+    
+    private func displayExternalInvocationCommand(
+        executable: String,
+        arguments: [String],
+        sensitiveValues: [String]
+    ) -> String {
+        let sanitizedArgs = arguments.map { sanitizeArgumentForDisplay($0, sensitiveValues: sensitiveValues) }
+        return ([executable] + sanitizedArgs).joined(separator: " ")
+    }
+    
+    private func sanitizeArgumentForDisplay(_ argument: String, sensitiveValues: [String]) -> String {
+        if argument.hasPrefix("--token=") {
+            return "--token=<redacted>"
+        }
+        
+        for value in sensitiveValues where !value.isEmpty {
+            if argument == value {
+                return "<redacted>"
+            }
+            if argument.contains(value) {
+                return argument.replacingOccurrences(of: value, with: "<redacted>")
+            }
+        }
+        
+        return argument
+    }
+    
+    private func redactSensitiveValues(in text: String, values: [String]) -> String {
+        var redacted = text
+        for value in values where !value.isEmpty {
+            redacted = redacted.replacingOccurrences(of: value, with: "<redacted>")
+        }
+        return redacted
+    }
+    
+    private func hasVercelProjectLink(at directoryURL: URL) -> Bool {
+        let linkFileURL = directoryURL.appendingPathComponent(".vercel/project.json")
+        var isDirectory: ObjCBool = false
+        return FileManager.default.fileExists(atPath: linkFileURL.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+    }
+    
+    private func extractVercelDeploymentURL(from output: String) -> String? {
+        if let exact = firstRegexMatch(in: output, pattern: #"https://[A-Za-z0-9][A-Za-z0-9.-]*\.vercel\.app(?:/[^\s"'<>]*)?"#) {
+            return exact
+        }
+        
+        if let exact = firstRegexMatch(in: output, pattern: #"https://[A-Za-z0-9][A-Za-z0-9.-]*\.vercel\.com/[^\s"'<>]*"#) {
+            return exact
+        }
+        
+        if let domain = firstRegexMatch(in: output, pattern: #"\b[A-Za-z0-9][A-Za-z0-9.-]*\.vercel\.app\b"#) {
+            return "https://\(domain)"
+        }
+        
+        return nil
+    }
+    
+    private func firstRegexMatch(in text: String, pattern: String) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, range: range),
+              let matchRange = Range(match.range, in: text) else {
+            return nil
+        }
+        return String(text[matchRange])
     }
     
     private func resolveClaudeScriptPath(launcherPath: String) -> String? {

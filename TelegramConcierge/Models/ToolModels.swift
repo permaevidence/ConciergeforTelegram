@@ -1193,6 +1193,50 @@ enum AvailableTools {
         )
     )
     
+    static let deployProjectToVercel = ToolDefinition(
+        function: FunctionDefinition(
+            name: "deploy_project_to_vercel",
+            description: "Deploy a project workspace (or subfolder) to Vercel. Use when the user asks to publish, deploy, or put a website/app online. By default create a preview deployment; set production=true only when user explicitly asks for production/live deployment.",
+            parameters: FunctionParameters(
+                properties: [
+                    "project_id": ParameterProperty(
+                        type: "string",
+                        description: "Project ID from list_projects."
+                    ),
+                    "relative_path": ParameterProperty(
+                        type: "string",
+                        description: "Optional folder inside the project to deploy (default '.'). Use this when the app lives in a subdirectory."
+                    ),
+                    "production": ParameterProperty(
+                        type: "boolean",
+                        description: "If true, deploy to production. If false or omitted, deploy a preview build."
+                    ),
+                    "project_name": ParameterProperty(
+                        type: "string",
+                        description: "Optional Vercel project name to link before deploy. Defaults to the configured value in Settings if present."
+                    ),
+                    "team_scope": ParameterProperty(
+                        type: "string",
+                        description: "Optional Vercel team/account scope (slug). Defaults to the configured value in Settings if present."
+                    ),
+                    "force_relink": ParameterProperty(
+                        type: "boolean",
+                        description: "If true, re-run `vercel link` even if .vercel/project.json already exists in the target folder."
+                    ),
+                    "timeout_seconds": ParameterProperty(
+                        type: "integer",
+                        description: "Optional timeout for each CLI command (link/deploy). Defaults to configured Settings value."
+                    ),
+                    "max_output_chars": ParameterProperty(
+                        type: "integer",
+                        description: "Optional max output characters to return from stdout/stderr. Default 12000."
+                    )
+                ],
+                required: ["project_id"]
+            )
+        )
+    )
+    
     static let flagProjectsForDeletion = ToolDefinition(
         function: FunctionDefinition(
             name: "flag_projects_for_deletion",
@@ -1227,7 +1271,7 @@ enum AvailableTools {
     
     /// Non-email tools that do not depend on web search credentials
     static var coreToolsWithoutWebSearch: [ToolDefinition] {
-        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, runClaudeCode, sendProjectResult, flagProjectsForDeletion]
+        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, runClaudeCode, sendProjectResult, deployProjectToVercel, flagProjectsForDeletion]
     }
     
     /// All available tools - dynamically selects email tools and optionally web search
