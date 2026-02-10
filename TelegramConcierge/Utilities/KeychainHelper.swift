@@ -73,6 +73,7 @@ extension KeychainHelper {
     static let defaultClaudeCodeTimeout = "1000"
     static let defaultVercelCommand = "vercel"
     static let defaultVercelTimeout = "1200"
+    static let defaultInstantCLICommand = "npx instant-cli@latest"
     
     static let telegramBotTokenKey = "telegram_bot_token"
     static let telegramChatIdKey = "telegram_chat_id"
@@ -108,6 +109,10 @@ extension KeychainHelper {
     static let vercelProjectNameKey = "vercel_project_name"
     static let vercelCommandKey = "vercel_command"
     static let vercelTimeoutKey = "vercel_timeout"
+    
+    // Instant Database Settings
+    static let instantApiTokenKey = "instant_api_token"
+    static let instantCLICommandKey = "instant_cli_command"
     
     // Persona Settings Keys
     static let assistantNameKey = "assistant_name"

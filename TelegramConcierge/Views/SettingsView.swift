@@ -59,6 +59,10 @@ struct SettingsView: View {
     @State private var vercelCommand: String = KeychainHelper.defaultVercelCommand
     @State private var vercelTimeout: String = KeychainHelper.defaultVercelTimeout
     
+    // Instant database settings
+    @State private var instantApiToken: String = ""
+    @State private var instantCLICommand: String = KeychainHelper.defaultInstantCLICommand
+    
     // Persona settings
     @State private var assistantName: String = ""
     @State private var userName: String = ""
@@ -358,6 +362,31 @@ struct SettingsView: View {
                 }
             } header: {
                 Label("Vercel Deployment", systemImage: "icloud.and.arrow.up")
+            }
+            
+            Section {
+                SecureField("Instant CLI Auth Token", text: $instantApiToken)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Used by provision/push database tools. Run `npx instant-cli login` to get your CLI auth token.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                TextField("Instant CLI Command", text: $instantCLICommand)
+                    .textFieldStyle(.roundedBorder)
+                
+                Text("Default: \(KeychainHelper.defaultInstantCLICommand)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+                
+                Link("Instant CLI Docs", destination: URL(string: "https://www.instantdb.com/docs/cli")!)
+                    .font(.caption)
+                
+                sectionSaveButton("instantdb") {
+                    saveInstantDatabaseSection()
+                }
+            } header: {
+                Label("Instant Database", systemImage: "externaldrive.badge.icloud")
             }
             
             // MARK: - Email Settings Section
@@ -1289,6 +1318,10 @@ struct SettingsView: View {
         vercelCommand = KeychainHelper.load(key: KeychainHelper.vercelCommandKey) ?? KeychainHelper.defaultVercelCommand
         vercelTimeout = KeychainHelper.load(key: KeychainHelper.vercelTimeoutKey) ?? KeychainHelper.defaultVercelTimeout
         
+        // Load Instant database settings
+        instantApiToken = KeychainHelper.load(key: KeychainHelper.instantApiTokenKey) ?? ""
+        instantCLICommand = KeychainHelper.load(key: KeychainHelper.instantCLICommandKey) ?? KeychainHelper.defaultInstantCLICommand
+        
         // Load persona settings
         assistantName = KeychainHelper.load(key: KeychainHelper.assistantNameKey) ?? ""
         userName = KeychainHelper.load(key: KeychainHelper.userNameKey) ?? ""
@@ -1498,6 +1531,21 @@ struct SettingsView: View {
             try KeychainHelper.save(key: KeychainHelper.vercelTimeoutKey, value: "\(clampedVercelTimeout)")
             vercelTimeout = "\(clampedVercelTimeout)"
             
+            // Save Instant database settings
+            let normalizedInstantToken = instantApiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedInstantToken.isEmpty {
+                try? KeychainHelper.delete(key: KeychainHelper.instantApiTokenKey)
+            } else {
+                try KeychainHelper.save(key: KeychainHelper.instantApiTokenKey, value: normalizedInstantToken)
+            }
+            
+            let normalizedInstantCommand = instantCLICommand.trimmingCharacters(in: .whitespacesAndNewlines)
+            try KeychainHelper.save(
+                key: KeychainHelper.instantCLICommandKey,
+                value: normalizedInstantCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : normalizedInstantCommand
+            )
+            instantCLICommand = normalizedInstantCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : normalizedInstantCommand
+            
             // Save persona settings
             try KeychainHelper.save(key: KeychainHelper.assistantNameKey, value: assistantName)
             try KeychainHelper.save(key: KeychainHelper.userNameKey, value: userName)
@@ -1677,6 +1725,25 @@ struct SettingsView: View {
         vercelProjectName = normalizedProject
         vercelCommand = normalizedCommand.isEmpty ? KeychainHelper.defaultVercelCommand : normalizedCommand
         vercelTimeout = "\(clamped)"
+    }
+    
+    private func saveInstantDatabaseSection() {
+        let normalizedToken = instantApiToken.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCommand = instantCLICommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if normalizedToken.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.instantApiTokenKey)
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.instantApiTokenKey, value: normalizedToken)
+        }
+        
+        try? KeychainHelper.save(
+            key: KeychainHelper.instantCLICommandKey,
+            value: normalizedCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : normalizedCommand
+        )
+        
+        instantApiToken = normalizedToken
+        instantCLICommand = normalizedCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : normalizedCommand
     }
     
     private func saveEmailSection() {

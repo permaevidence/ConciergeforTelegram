@@ -687,7 +687,7 @@ class ConversationManager: ObservableObject {
         
         // Check if tools are available
         let serperKey = KeychainHelper.load(key: KeychainHelper.serperApiKeyKey) ?? ""
-        let tools: [ToolDefinition]? = AvailableTools.all(includeWebSearch: !serperKey.isEmpty)
+        var deploymentToolsUnlockedForTurn = false
         
         // Fetch all context data in PARALLEL for performance
         let contextStartTime = Date()
@@ -761,11 +761,15 @@ class ConversationManager: ObservableObject {
             
             // Call LLM (with tools available for chaining)
             let llmStartTime = Date()
+            let toolsForRound: [ToolDefinition]? = AvailableTools.all(
+                includeWebSearch: !serperKey.isEmpty,
+                includeProjectDeploymentTools: deploymentToolsUnlockedForTurn
+            )
             let response = try await openRouterService.generateResponse(
                 messages: contextResult.messagesToSend,
                 imagesDirectory: imagesDirectory,
                 documentsDirectory: documentsDirectory,
-                tools: tools,  // Always pass tools so LLM can chain calls
+                tools: toolsForRound,  // Always pass tools so LLM can chain calls
                 toolResultMessages: toolInteractions.isEmpty ? nil : toolInteractions,
                 calendarContext: calendarContext,
                 emailContext: emailContext,
@@ -804,6 +808,10 @@ class ConversationManager: ObservableObject {
                 try Task.checkCancellation()
                 
                 print("[ConversationManager] Round \(round) tool execution complete")
+                
+                if calls.contains(where: { $0.function.name == "show_project_deployment_tools" }) {
+                    deploymentToolsUnlockedForTurn = true
+                }
                 
                 // Add this interaction to the chain
                 let interaction = ToolInteraction(
@@ -865,6 +873,16 @@ class ConversationManager: ObservableObject {
             return "🔍📅 Searching the web and managing calendar..."
         } else if toolNames.contains("web_search") {
             return "🔍 Searching the web..."
+        } else if toolNames.contains("show_project_deployment_tools") {
+            return "🧰 Enabling deployment and database tools for this turn..."
+        } else if toolNames.contains("provision_project_database") {
+            return "🗄️ Provisioning project database..."
+        } else if toolNames.contains("push_project_database_schema") {
+            return "🧱 Applying project database schema..."
+        } else if toolNames.contains("sync_project_database_env_to_vercel") {
+            return "🔐 Syncing database environment variables to Vercel..."
+        } else if toolNames.contains("generate_project_mcp_config") {
+            return "🧩 Generating MCP configuration..."
         } else if toolNames.contains("run_claude_code") {
             return "🤖 Running Claude Code..."
         } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") || toolNames.contains("flag_projects_for_deletion") {

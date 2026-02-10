@@ -82,6 +82,9 @@ actor ToolExecutor {
         let content: String
         
         switch call.function.name {
+        case "show_project_deployment_tools":
+            content = await executeShowProjectDeploymentTools(call)
+            
         case "web_search":
             content = try await executeWebSearch(call)
             
@@ -178,6 +181,18 @@ actor ToolExecutor {
             
         case "deploy_project_to_vercel":
             content = await executeDeployProjectToVercel(call)
+        
+        case "provision_project_database":
+            content = await executeProvisionProjectDatabase(call)
+        
+        case "push_project_database_schema":
+            content = await executePushProjectDatabaseSchema(call)
+        
+        case "sync_project_database_env_to_vercel":
+            content = await executeSyncProjectDatabaseEnvToVercel(call)
+        
+        case "generate_project_mcp_config":
+            content = await executeGenerateProjectMCPConfig(call)
             
         case "flag_projects_for_deletion":
             content = await executeFlagProjectsForDeletion(call)
@@ -3562,6 +3577,131 @@ struct DeployProjectToVercelArguments: Codable {
     }
 }
 
+struct ProvisionProjectDatabaseArguments: Codable {
+    let projectId: String
+    let provider: String?
+    let databaseTitle: String?
+    let instantToken: String?
+    let useTemporaryApp: Bool?
+    let timeoutSeconds: Int?
+    let maxOutputChars: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case provider
+        case databaseTitle = "database_title"
+        case instantToken = "instant_token"
+        case useTemporaryApp = "use_temporary_app"
+        case timeoutSeconds = "timeout_seconds"
+        case maxOutputChars = "max_output_chars"
+    }
+}
+
+struct PushProjectDatabaseSchemaArguments: Codable {
+    let projectId: String
+    let provider: String?
+    let relativePath: String?
+    let schemaFilePath: String?
+    let permsFilePath: String?
+    let instantToken: String?
+    let timeoutSeconds: Int?
+    let maxOutputChars: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case provider
+        case relativePath = "relative_path"
+        case schemaFilePath = "schema_file_path"
+        case permsFilePath = "perms_file_path"
+        case instantToken = "instant_token"
+        case timeoutSeconds = "timeout_seconds"
+        case maxOutputChars = "max_output_chars"
+    }
+}
+
+struct SyncProjectDatabaseEnvToVercelArguments: Codable {
+    let projectId: String
+    let relativePath: String?
+    let includeSavedDatabaseEnv: Bool?
+    let includeAdminToken: Bool?
+    let envVars: [String: String]?
+    let targets: [String]?
+    let projectName: String?
+    let teamId: String?
+    let timeoutSeconds: Int?
+    let maxOutputChars: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case includeSavedDatabaseEnv = "include_saved_database_env"
+        case includeAdminToken = "include_admin_token"
+        case envVars = "env_vars"
+        case targets
+        case projectName = "project_name"
+        case teamId = "team_id"
+        case timeoutSeconds = "timeout_seconds"
+        case maxOutputChars = "max_output_chars"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        projectId = try container.decode(String.self, forKey: .projectId)
+        relativePath = try container.decodeIfPresent(String.self, forKey: .relativePath)
+        includeSavedDatabaseEnv = try container.decodeIfPresent(Bool.self, forKey: .includeSavedDatabaseEnv)
+        includeAdminToken = try container.decodeIfPresent(Bool.self, forKey: .includeAdminToken)
+        projectName = try container.decodeIfPresent(String.self, forKey: .projectName)
+        teamId = try container.decodeIfPresent(String.self, forKey: .teamId)
+        timeoutSeconds = try container.decodeIfPresent(Int.self, forKey: .timeoutSeconds)
+        maxOutputChars = try container.decodeIfPresent(Int.self, forKey: .maxOutputChars)
+        
+        if let dict = try? container.decodeIfPresent([String: String].self, forKey: .envVars) {
+            envVars = dict
+        } else if let raw = (try? container.decodeIfPresent(String.self, forKey: .envVars))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty,
+                  let data = raw.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode([String: String].self, from: data) {
+            envVars = parsed
+        } else {
+            envVars = nil
+        }
+        
+        if let array = try? container.decodeIfPresent([String].self, forKey: .targets) {
+            targets = array
+        } else if let raw = (try? container.decodeIfPresent(String.self, forKey: .targets))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                targets = parsed
+            } else {
+                let csv = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                targets = csv
+            }
+        } else {
+            targets = nil
+        }
+    }
+}
+
+struct GenerateProjectMCPConfigArguments: Codable {
+    let projectId: String
+    let provider: String?
+    let relativePath: String?
+    let mode: String?
+    let outputPath: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case provider
+        case relativePath = "relative_path"
+        case mode
+        case outputPath = "output_path"
+    }
+}
+
 struct FlagProjectsForDeletionArguments: Codable {
     let projectIds: [String]
     let reason: String?
@@ -3904,6 +4044,116 @@ private struct VercelDeployResult: Codable {
         case teamScope = "team_scope"
         case exitCode = "exit_code"
         case timedOut = "timed_out"
+    }
+}
+
+private struct ProjectDatabaseMetadata: Codable {
+    let provider: String
+    var databaseTitle: String
+    var appId: String?
+    var createdAt: Date?
+    var schemaLastPushedAt: Date?
+    var lastUpdatedAt: Date
+}
+
+private struct ShowProjectDeploymentToolsResult: Codable {
+    let success: Bool
+    let unlockedForCurrentTurn: Bool
+    let tools: [String]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, tools, message
+        case unlockedForCurrentTurn = "unlocked_for_current_turn"
+    }
+}
+
+private struct ProvisionProjectDatabaseResult: Codable {
+    let success: Bool
+    let projectId: String
+    let provider: String
+    let databaseTitle: String
+    let appId: String?
+    let savedAdminToken: Bool
+    let command: String?
+    let exitCode: Int32?
+    let timedOut: Bool?
+    let diagnosticExcerpt: String?
+    let logFile: String?
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, provider, command, message
+        case projectId = "project_id"
+        case databaseTitle = "database_title"
+        case appId = "app_id"
+        case savedAdminToken = "saved_admin_token"
+        case exitCode = "exit_code"
+        case timedOut = "timed_out"
+        case diagnosticExcerpt = "diagnostic_excerpt"
+        case logFile = "log_file"
+    }
+}
+
+private struct PushProjectDatabaseSchemaResult: Codable {
+    let success: Bool
+    let projectId: String
+    let provider: String
+    let appId: String?
+    let command: String?
+    let exitCode: Int32?
+    let timedOut: Bool?
+    let diagnosticExcerpt: String?
+    let logFile: String?
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, provider, command, message
+        case projectId = "project_id"
+        case appId = "app_id"
+        case exitCode = "exit_code"
+        case timedOut = "timed_out"
+        case diagnosticExcerpt = "diagnostic_excerpt"
+        case logFile = "log_file"
+    }
+}
+
+private struct SyncProjectDatabaseEnvToVercelResult: Codable {
+    let success: Bool
+    let projectId: String
+    let relativePath: String
+    let projectIdentifier: String
+    let targets: [String]
+    let requestedCount: Int
+    let syncedCount: Int
+    let failedKeys: [String]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, targets, message
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case projectIdentifier = "project_identifier"
+        case requestedCount = "requested_count"
+        case syncedCount = "synced_count"
+        case failedKeys = "failed_keys"
+    }
+}
+
+private struct GenerateProjectMCPConfigResult: Codable {
+    let success: Bool
+    let projectId: String
+    let provider: String
+    let mode: String
+    let relativePath: String
+    let outputPath: String
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, provider, mode, message
+        case projectId = "project_id"
+        case relativePath = "relative_path"
+        case outputPath = "output_path"
     }
 }
 
@@ -4476,8 +4726,8 @@ extension ToolExecutor {
             let details = launchErrors.isEmpty
                 ? "No launch diagnostics available."
                 : launchErrors.joined(separator: " | ")
-            let safeDetails = details.replacingOccurrences(of: "\"", with: "\\\"")
-            let safeCommand = command.replacingOccurrences(of: "\"", with: "\\\"")
+            let safeDetails = redactSensitiveContextForModel(details).replacingOccurrences(of: "\"", with: "\\\"")
+            let safeCommand = redactSensitiveContextForModel(command).replacingOccurrences(of: "\"", with: "\\\"")
             return #"{"error":"Failed to launch Claude Code command '\#(safeCommand)'. Attempts: \#(safeDetails)"}"#
         }
         
@@ -4517,10 +4767,32 @@ extension ToolExecutor {
         
         let permissionBlocked = containsClaudePermissionPromptSignal(text: finalExecution.stdout + "\n" + finalExecution.stderr)
         let success = finalExecution.exitCode == 0 && !finalExecution.timedOut && !permissionBlocked
+        let safeCommand = redactSensitiveContextForModel(finalInvocation.displayCommand)
+        let safeStdout = redactSensitiveContextForModel(finalExecution.stdout)
+        let safeStderr = redactSensitiveContextForModel(finalExecution.stderr)
+        let modelOutputRedacted = safeStdout != finalExecution.stdout || safeStderr != finalExecution.stderr
+        
+        let baseMessage: String
+        if success {
+            baseMessage = fileChangesDetected
+                ? "Claude Code run completed with file changes."
+                : "Claude Code run completed, but no file changes were detected. Verify prompt/permission mode and inspect stdout."
+        } else if permissionBlocked {
+            baseMessage = "Claude Code run was blocked by command approval prompts. Retried with bypassPermissions if possible, but execution still could not complete the requested actions."
+        } else if finalExecution.timedOut {
+            baseMessage = "Claude Code run timed out after \(timeoutSeconds)s."
+        } else {
+            baseMessage = "Claude Code run failed with exit code \(finalExecution.exitCode)."
+        }
+        
+        let resultMessage = modelOutputRedacted
+            ? baseMessage + " Sensitive-looking values were redacted before sharing output with the model."
+            : baseMessage
+        
         let result = ClaudeRunResult(
             success: success,
             projectId: args.projectId,
-            command: finalInvocation.displayCommand,
+            command: safeCommand,
             exitCode: finalExecution.exitCode,
             timedOut: finalExecution.timedOut,
             permissionBlocked: permissionBlocked,
@@ -4533,16 +4805,10 @@ extension ToolExecutor {
             historyTokensEstimate: promptContext.historyTokensEstimate,
             projectDescription: updatedMetadata?.projectDescription,
             projectLastEditedAt: updatedMetadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
-            stdout: finalExecution.stdout,
-            stderr: finalExecution.stderr,
+            stdout: safeStdout,
+            stderr: safeStderr,
             logFile: logFile,
-            message: success
-                ? (fileChangesDetected
-                    ? "Claude Code run completed with file changes."
-                    : "Claude Code run completed, but no file changes were detected. Verify prompt/permission mode and inspect stdout.")
-                : (permissionBlocked
-                    ? "Claude Code run was blocked by command approval prompts. Retried with bypassPermissions if possible, but execution still could not complete the requested actions."
-                    : (finalExecution.timedOut ? "Claude Code run timed out after \(timeoutSeconds)s." : "Claude Code run failed with exit code \(finalExecution.exitCode)."))
+            message: resultMessage
         )
         
         return encodeJSON(result)
@@ -4921,6 +5187,8 @@ extension ToolExecutor {
             }
         }
         
+        ensureVercelIgnore(at: deployDirectoryURL)
+        
         var deployArgs = ["deploy", "--yes", "--token", token]
         if let teamScope {
             deployArgs.append(contentsOf: ["--scope", teamScope])
@@ -5005,6 +5273,515 @@ extension ToolExecutor {
         }
     }
     
+    private func executeShowProjectDeploymentTools(_ call: ToolCall) async -> String {
+        let result = ShowProjectDeploymentToolsResult(
+            success: true,
+            unlockedForCurrentTurn: true,
+            tools: AvailableTools.gatedProjectDeploymentTools.map { $0.function.name },
+            message: "Deployment and database tools are now visible for this turn."
+        )
+        return encodeJSON(result)
+    }
+    
+    private func executeProvisionProjectDatabase(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ProvisionProjectDatabaseArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse provision_project_database arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let provider = (args.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
+            ? args.provider!.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            : "instantdb"
+        guard provider == "instantdb" else {
+            return #"{"error":"Unsupported provider. Supported providers: instantdb."}"#
+        }
+        
+        let metadata = loadProjectMetadata(projectURL: projectURL)
+        let fallbackTitle = metadata?.name ?? args.projectId
+        let rawTitle = args.databaseTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let databaseTitle = (rawTitle?.isEmpty == false) ? rawTitle! : fallbackTitle
+        
+        let useTemporary = args.useTemporaryApp ?? false
+        let configuredCommand = (KeychainHelper.load(key: KeychainHelper.instantCLICommandKey) ?? KeychainHelper.defaultInstantCLICommand)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = configuredCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : configuredCommand
+        
+        let token = (args.instantToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? args.instantToken!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : (KeychainHelper.load(key: KeychainHelper.instantApiTokenKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if !useTemporary && token.isEmpty {
+            return #"{"error":"Instant token is missing. Add Instant CLI auth token in Settings or pass instant_token."}"#
+        }
+        
+        let timeoutSeconds = min(max(args.timeoutSeconds ?? 120, 30), 1800)
+        let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
+        
+        var commandArgs = ["init-without-files", "--title", databaseTitle]
+        if useTemporary {
+            commandArgs.append("--temp")
+        } else {
+            commandArgs.append(contentsOf: ["--token", token])
+        }
+        
+        do {
+            let (invocation, output) = try await executeVercelCommand(
+                command: command,
+                arguments: commandArgs,
+                workingDirectory: projectURL,
+                environment: claudeBaseEnvironment(),
+                timeoutSeconds: timeoutSeconds,
+                maxOutputChars: maxOutputChars,
+                sensitiveValues: token.isEmpty ? [] : [token]
+            )
+            
+            let redactedStdout = redactSensitiveValues(in: output.stdout, values: token.isEmpty ? [] : [token])
+            let redactedStderr = redactSensitiveValues(in: output.stderr, values: token.isEmpty ? [] : [token])
+            
+            let parsed = parseJSONObject(in: output.stdout) ?? parseJSONObject(in: output.stderr)
+            let appId = extractString(
+                from: parsed,
+                candidatePaths: [
+                    ["appId"],
+                    ["app_id"],
+                    ["app", "id"],
+                    ["id"]
+                ]
+            )
+            let adminToken = extractString(
+                from: parsed,
+                candidatePaths: [
+                    ["adminToken"],
+                    ["admin_token"],
+                    ["app", "admin_token"],
+                    ["app", "adminToken"]
+                ]
+            )
+            
+            if let adminToken, !adminToken.isEmpty {
+                try? KeychainHelper.save(
+                    key: instantAdminTokenKey(projectId: args.projectId),
+                    value: adminToken
+                )
+            }
+            
+            let additionalSensitive = [token, adminToken ?? ""].filter { !$0.isEmpty }
+            let fullyRedactedStdout = redactSensitiveValues(in: redactedStdout, values: additionalSensitive)
+            let fullyRedactedStderr = redactSensitiveValues(in: redactedStderr, values: additionalSensitive)
+            let logFile = persistProjectDatabaseCommandLog(
+                projectURL: projectURL,
+                toolName: "provision_project_database",
+                command: invocation.displayCommand,
+                exitCode: output.exitCode,
+                timedOut: output.timedOut,
+                stdout: fullyRedactedStdout,
+                stderr: fullyRedactedStderr
+            )
+            
+            let metadataToSave = ProjectDatabaseMetadata(
+                provider: provider,
+                databaseTitle: databaseTitle,
+                appId: appId,
+                createdAt: Date(),
+                schemaLastPushedAt: nil,
+                lastUpdatedAt: Date()
+            )
+            saveProjectDatabaseMetadata(metadataToSave, projectURL: projectURL)
+            
+            let success = output.exitCode == 0 && !output.timedOut
+            let message: String
+            if success {
+                if appId == nil || appId?.isEmpty == true {
+                    message = "Database provisioning command succeeded, but app_id could not be parsed from output."
+                } else {
+                    message = "Database provisioned successfully."
+                }
+            } else if output.timedOut {
+                message = "Database provisioning timed out after \(timeoutSeconds)s."
+            } else {
+                message = "Database provisioning failed with exit code \(output.exitCode)."
+            }
+            
+            let result = ProvisionProjectDatabaseResult(
+                success: success,
+                projectId: args.projectId,
+                provider: provider,
+                databaseTitle: databaseTitle,
+                appId: appId,
+                savedAdminToken: adminToken?.isEmpty == false,
+                command: invocation.displayCommand,
+                exitCode: output.exitCode,
+                timedOut: output.timedOut,
+                diagnosticExcerpt: success
+                    ? nil
+                    : diagnosticExcerpt(stdout: fullyRedactedStdout, stderr: fullyRedactedStderr, maxChars: min(600, maxOutputChars)),
+                logFile: logFile,
+                message: message
+            )
+            return encodeJSON(result)
+        } catch {
+            let result = ProvisionProjectDatabaseResult(
+                success: false,
+                projectId: args.projectId,
+                provider: provider,
+                databaseTitle: databaseTitle,
+                appId: nil,
+                savedAdminToken: false,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                diagnosticExcerpt: truncateForToolOutput(error.localizedDescription, maxChars: min(600, maxOutputChars)),
+                logFile: nil,
+                message: "Failed to execute database provisioning command. Check Instant CLI setup."
+            )
+            return encodeJSON(result)
+        }
+    }
+    
+    private func executePushProjectDatabaseSchema(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(PushProjectDatabaseSchemaArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse push_project_database_schema arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let provider = (args.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
+            ? args.provider!.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            : "instantdb"
+        guard provider == "instantdb" else {
+            return #"{"error":"Unsupported provider. Supported providers: instantdb."}"#
+        }
+        
+        guard var databaseMetadata = loadProjectDatabaseMetadata(projectURL: projectURL) else {
+            return #"{"error":"No saved project database metadata. Run provision_project_database first."}"#
+        }
+        
+        guard let appId = databaseMetadata.appId, !appId.isEmpty else {
+            return #"{"error":"Saved database metadata does not contain app_id. Re-run provision_project_database."}"#
+        }
+        
+        let tokenOverride = args.instantToken?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let savedAdminToken = KeychainHelper.load(key: instantAdminTokenKey(projectId: args.projectId))
+        let defaultToken = KeychainHelper.load(key: KeychainHelper.instantApiTokenKey)
+        let token = (tokenOverride?.isEmpty == false)
+            ? tokenOverride!
+            : (savedAdminToken?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+               ? savedAdminToken!.trimmingCharacters(in: .whitespacesAndNewlines)
+               : (defaultToken ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+        
+        guard !token.isEmpty else {
+            return #"{"error":"Instant token is missing. Add Instant CLI auth token in Settings or pass instant_token."}"#
+        }
+        
+        let requestedRelativePath = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
+        let relativePath = requestedRelativePath.isEmpty ? "." : requestedRelativePath
+        guard let workingDirectory = resolvePath(in: projectURL, relativePath: relativePath) else {
+            return #"{"error":"Invalid relative_path. Path must stay inside the project."}"#
+        }
+        
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: workingDirectory.path, isDirectory: &isDir), isDir.boolValue else {
+            return #"{"error":"relative_path does not exist or is not a directory."}"#
+        }
+        
+        let configuredCommand = (KeychainHelper.load(key: KeychainHelper.instantCLICommandKey) ?? KeychainHelper.defaultInstantCLICommand)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let command = configuredCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : configuredCommand
+        
+        let timeoutSeconds = min(max(args.timeoutSeconds ?? 120, 30), 1800)
+        let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
+        
+        let commandArgs = ["push", "schema", "--token", token]
+        var environment = claudeBaseEnvironment()
+        environment["INSTANT_APP_ID"] = appId
+        if let schemaPath = args.schemaFilePath?.trimmingCharacters(in: .whitespacesAndNewlines), !schemaPath.isEmpty {
+            environment["INSTANT_SCHEMA_FILE_PATH"] = schemaPath
+        }
+        if let permsPath = args.permsFilePath?.trimmingCharacters(in: .whitespacesAndNewlines), !permsPath.isEmpty {
+            environment["INSTANT_PERMS_FILE_PATH"] = permsPath
+        }
+        
+        do {
+            let (invocation, output) = try await executeVercelCommand(
+                command: command,
+                arguments: commandArgs,
+                workingDirectory: workingDirectory,
+                environment: environment,
+                timeoutSeconds: timeoutSeconds,
+                maxOutputChars: maxOutputChars,
+                sensitiveValues: [token]
+            )
+            
+            let redactedStdout = redactSensitiveValues(in: output.stdout, values: [token])
+            let redactedStderr = redactSensitiveValues(in: output.stderr, values: [token])
+            let logFile = persistProjectDatabaseCommandLog(
+                projectURL: projectURL,
+                toolName: "push_project_database_schema",
+                command: invocation.displayCommand,
+                exitCode: output.exitCode,
+                timedOut: output.timedOut,
+                stdout: redactedStdout,
+                stderr: redactedStderr
+            )
+            
+            let success = output.exitCode == 0 && !output.timedOut
+            if success {
+                databaseMetadata.schemaLastPushedAt = Date()
+                databaseMetadata.lastUpdatedAt = Date()
+                saveProjectDatabaseMetadata(databaseMetadata, projectURL: projectURL)
+            }
+            
+            let message: String
+            if success {
+                message = "Database schema push completed successfully."
+            } else if output.timedOut {
+                message = "Database schema push timed out after \(timeoutSeconds)s."
+            } else {
+                message = "Database schema push failed with exit code \(output.exitCode)."
+            }
+            
+            let result = PushProjectDatabaseSchemaResult(
+                success: success,
+                projectId: args.projectId,
+                provider: provider,
+                appId: appId,
+                command: invocation.displayCommand,
+                exitCode: output.exitCode,
+                timedOut: output.timedOut,
+                diagnosticExcerpt: success
+                    ? nil
+                    : diagnosticExcerpt(stdout: redactedStdout, stderr: redactedStderr, maxChars: min(600, maxOutputChars)),
+                logFile: logFile,
+                message: message
+            )
+            return encodeJSON(result)
+        } catch {
+            let result = PushProjectDatabaseSchemaResult(
+                success: false,
+                projectId: args.projectId,
+                provider: provider,
+                appId: appId,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                diagnosticExcerpt: truncateForToolOutput(error.localizedDescription, maxChars: min(600, maxOutputChars)),
+                logFile: nil,
+                message: "Failed to execute database schema push command."
+            )
+            return encodeJSON(result)
+        }
+    }
+    
+    private func executeSyncProjectDatabaseEnvToVercel(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(SyncProjectDatabaseEnvToVercelArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse sync_project_database_env_to_vercel arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let requestedRelativePath = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
+        let relativePath = requestedRelativePath.isEmpty ? "." : requestedRelativePath
+        
+        guard let deployDirectoryURL = resolvePath(in: projectURL, relativePath: relativePath) else {
+            return #"{"error":"Invalid relative_path. Path must stay inside the project."}"#
+        }
+        
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: deployDirectoryURL.path, isDirectory: &isDir), isDir.boolValue else {
+            return #"{"error":"relative_path does not exist or is not a directory."}"#
+        }
+        
+        let token = (KeychainHelper.load(key: KeychainHelper.vercelApiTokenKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            return #"{"error":"Vercel API token is not configured. Add it in Settings > Vercel Deployment."}"#
+        }
+        
+        let defaultProjectName = (KeychainHelper.load(key: KeychainHelper.vercelProjectNameKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        let projectLink = loadVercelProjectLink(at: deployDirectoryURL)
+        let explicitProjectName = args.projectName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let projectIdentifier =
+            projectLink?.projectId ??
+            ((explicitProjectName?.isEmpty == false) ? explicitProjectName! : (defaultProjectName.isEmpty ? nil : defaultProjectName))
+        
+        guard let projectIdentifier, !projectIdentifier.isEmpty else {
+            return #"{"error":"Could not determine Vercel project identifier. Link the folder with deploy_project_to_vercel first or pass project_name."}"#
+        }
+        
+        let teamId = (args.teamId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? args.teamId!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : projectLink?.orgId
+        
+        let includeSaved = args.includeSavedDatabaseEnv ?? true
+        let includeAdminToken = args.includeAdminToken ?? false
+        let targets = normalizeVercelTargets(args.targets)
+        let timeoutSeconds = min(max(args.timeoutSeconds ?? 30, 5), 120)
+        let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
+        
+        var envVars: [String: String] = [:]
+        if includeSaved, let db = loadProjectDatabaseMetadata(projectURL: projectURL) {
+            if db.provider == "instantdb", let appId = db.appId, !appId.isEmpty {
+                envVars["NEXT_PUBLIC_INSTANT_APP_ID"] = appId
+                envVars["INSTANT_APP_ID"] = appId
+                
+                if includeAdminToken,
+                   let adminToken = KeychainHelper.load(key: instantAdminTokenKey(projectId: args.projectId))?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !adminToken.isEmpty {
+                    envVars["INSTANT_ADMIN_TOKEN"] = adminToken
+                }
+            }
+        }
+        
+        if let provided = args.envVars {
+            for (key, value) in provided {
+                let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !normalizedKey.isEmpty else { continue }
+                envVars[normalizedKey] = value
+            }
+        }
+        
+        guard !envVars.isEmpty else {
+            return #"{"error":"No env vars to sync. Enable include_saved_database_env or provide env_vars."}"#
+        }
+        
+        let orderedKeys = envVars.keys.sorted()
+        var failedKeys: [String] = []
+        
+        for key in orderedKeys {
+            guard let value = envVars[key] else { continue }
+            do {
+                try await upsertVercelEnvVar(
+                    projectIdentifier: projectIdentifier,
+                    teamId: teamId,
+                    key: key,
+                    value: value,
+                    targets: targets,
+                    token: token,
+                    timeoutSeconds: timeoutSeconds
+                )
+            } catch {
+                print("[ToolExecutor] Failed to sync Vercel env \(key): \(error)")
+                failedKeys.append(key)
+            }
+        }
+        
+        let syncedCount = orderedKeys.count - failedKeys.count
+        let success = failedKeys.isEmpty
+        let message: String
+        if success {
+            message = "Synced \(syncedCount) environment variable(s) to Vercel."
+        } else {
+            message = "Synced \(syncedCount) env var(s), failed \(failedKeys.count). Check token/project/team and retry."
+        }
+        
+        let result = SyncProjectDatabaseEnvToVercelResult(
+            success: success,
+            projectId: args.projectId,
+            relativePath: relativePath,
+            projectIdentifier: truncateForToolOutput(projectIdentifier, maxChars: maxOutputChars),
+            targets: targets,
+            requestedCount: orderedKeys.count,
+            syncedCount: syncedCount,
+            failedKeys: failedKeys,
+            message: message
+        )
+        return encodeJSON(result)
+    }
+    
+    private func executeGenerateProjectMCPConfig(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GenerateProjectMCPConfigArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse generate_project_mcp_config arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let provider = (args.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
+            ? args.provider!.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            : "instantdb"
+        guard provider == "instantdb" else {
+            return #"{"error":"Unsupported provider. Supported providers: instantdb."}"#
+        }
+        
+        let requestedRelativePath = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetRelativePath = requestedRelativePath.isEmpty ? "." : requestedRelativePath
+        guard let targetDirectory = resolvePath(in: projectURL, relativePath: targetRelativePath) else {
+            return #"{"error":"Invalid relative_path. Path must stay inside the project."}"#
+        }
+        
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: targetDirectory.path, isDirectory: &isDir), isDir.boolValue else {
+            return #"{"error":"relative_path does not exist or is not a directory."}"#
+        }
+        
+        let mode = (args.mode?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
+            ? args.mode!.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            : "remote"
+        guard mode == "remote" || mode == "local" else {
+            return #"{"error":"mode must be 'remote' or 'local'."}"#
+        }
+        
+        let outputPath = (args.outputPath?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
+            ? args.outputPath!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : ".mcp.json"
+        
+        guard let outputURL = resolvePath(in: targetDirectory, relativePath: outputPath) else {
+            return #"{"error":"Invalid output_path. Path must stay inside the selected folder."}"#
+        }
+        
+        let serverConfig: [String: Any]
+        if mode == "remote" {
+            serverConfig = [
+                "type": "http",
+                "url": "https://mcp.instantdb.com/mcp"
+            ]
+        } else {
+            serverConfig = [
+                "command": "npx",
+                "args": ["-y", "@instantdb/mcp"]
+            ]
+        }
+        
+        let configObject: [String: Any] = [
+            "mcpServers": [
+                "instant": serverConfig
+            ]
+        ]
+        
+        do {
+            let data = try JSONSerialization.data(withJSONObject: configObject, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: outputURL, options: .atomic)
+            
+            let result = GenerateProjectMCPConfigResult(
+                success: true,
+                projectId: args.projectId,
+                provider: provider,
+                mode: mode,
+                relativePath: targetRelativePath,
+                outputPath: relativePath(from: projectURL, to: outputURL),
+                message: "MCP config generated successfully."
+            )
+            return encodeJSON(result)
+        } catch {
+            return #"{"error":"Failed to write MCP config: \#(error.localizedDescription)"}"#
+        }
+    }
+    
     private func executeFlagProjectsForDeletion(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(FlagProjectsForDeletionArguments.self, from: argsData) else {
@@ -5068,6 +5845,232 @@ extension ToolExecutor {
         )
         
         return encodeJSON(result)
+    }
+    
+    private func instantAdminTokenKey(projectId: String) -> String {
+        "instant_admin_token_\(projectId)"
+    }
+    
+    private func projectDatabaseMetadataURL(projectURL: URL) -> URL {
+        projectURL.appendingPathComponent(".project_database.json")
+    }
+    
+    private func loadProjectDatabaseMetadata(projectURL: URL) -> ProjectDatabaseMetadata? {
+        let url = projectDatabaseMetadataURL(projectURL: projectURL)
+        guard let data = try? Data(contentsOf: url) else { return nil }
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        return try? decoder.decode(ProjectDatabaseMetadata.self, from: data)
+    }
+    
+    private func saveProjectDatabaseMetadata(_ metadata: ProjectDatabaseMetadata, projectURL: URL) {
+        let url = projectDatabaseMetadataURL(projectURL: projectURL)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        encoder.dateEncodingStrategy = .iso8601
+        
+        guard let data = try? encoder.encode(metadata) else { return }
+        try? data.write(to: url, options: .atomic)
+    }
+    
+    private func parseJSONObject(in text: String) -> [String: Any]? {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        if let data = trimmed.data(using: .utf8),
+           let direct = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            return direct
+        }
+        
+        let open = trimmed.firstIndex(of: "{")
+        let close = trimmed.lastIndex(of: "}")
+        guard let open, let close, open <= close else { return nil }
+        let candidate = String(trimmed[open...close])
+        guard let data = candidate.data(using: .utf8),
+              let parsed = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            return nil
+        }
+        return parsed
+    }
+    
+    private func extractString(from object: [String: Any]?, candidatePaths: [[String]]) -> String? {
+        guard let object else { return nil }
+        
+        for path in candidatePaths {
+            var current: Any? = object
+            for segment in path {
+                guard let dict = current as? [String: Any] else {
+                    current = nil
+                    break
+                }
+                current = dict[segment]
+            }
+            
+            if let value = current as? String,
+               !value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return value.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        
+        return nil
+    }
+    
+    private struct VercelProjectLink: Codable {
+        let projectId: String?
+        let orgId: String?
+        
+        enum CodingKeys: String, CodingKey {
+            case projectId
+            case orgId
+        }
+    }
+    
+    private func loadVercelProjectLink(at directoryURL: URL) -> VercelProjectLink? {
+        let linkFileURL = directoryURL.appendingPathComponent(".vercel/project.json")
+        guard let data = try? Data(contentsOf: linkFileURL) else { return nil }
+        return try? JSONDecoder().decode(VercelProjectLink.self, from: data)
+    }
+    
+    private func normalizeVercelTargets(_ rawTargets: [String]?) -> [String] {
+        let allowed = Set(["development", "preview", "production"])
+        let defaults = ["development", "preview", "production"]
+        
+        guard let rawTargets, !rawTargets.isEmpty else { return defaults }
+        
+        var seen: Set<String> = []
+        let normalized = rawTargets
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { allowed.contains($0) }
+            .filter { seen.insert($0).inserted }
+        
+        return normalized.isEmpty ? defaults : normalized
+    }
+    
+    private struct VercelEnvUpsertRequest: Encodable {
+        let key: String
+        let value: String
+        let target: [String]
+        let type: String
+    }
+    
+    private func upsertVercelEnvVar(
+        projectIdentifier: String,
+        teamId: String?,
+        key: String,
+        value: String,
+        targets: [String],
+        token: String,
+        timeoutSeconds: Int
+    ) async throws {
+        let escapedProject = projectIdentifier.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? projectIdentifier
+        guard var components = URLComponents(string: "https://api.vercel.com/v10/projects/\(escapedProject)/env") else {
+            throw NSError(domain: "ToolExecutor", code: 1001, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to construct Vercel env API URL."
+            ])
+        }
+        
+        var queryItems = [URLQueryItem(name: "upsert", value: "true")]
+        if let teamId, !teamId.isEmpty {
+            queryItems.append(URLQueryItem(name: "teamId", value: teamId))
+        }
+        components.queryItems = queryItems
+        
+        guard let url = components.url else {
+            throw NSError(domain: "ToolExecutor", code: 1002, userInfo: [
+                NSLocalizedDescriptionKey: "Failed to resolve Vercel env API URL."
+            ])
+        }
+        
+        let payload = VercelEnvUpsertRequest(
+            key: key,
+            value: value,
+            target: targets,
+            type: "encrypted"
+        )
+        
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = TimeInterval(timeoutSeconds)
+        request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = try JSONEncoder().encode(payload)
+        
+        let (data, response) = try await URLSession.shared.data(for: request)
+        guard let httpResponse = response as? HTTPURLResponse else {
+            throw NSError(domain: "ToolExecutor", code: 1003, userInfo: [
+                NSLocalizedDescriptionKey: "Vercel env API returned a non-HTTP response."
+            ])
+        }
+        
+        guard (200...299).contains(httpResponse.statusCode) else {
+            let body = String(data: data, encoding: .utf8) ?? ""
+            throw NSError(domain: "ToolExecutor", code: httpResponse.statusCode, userInfo: [
+                NSLocalizedDescriptionKey: "Vercel env upsert failed (\(httpResponse.statusCode)) for key \(key): \(truncateForToolOutput(body, maxChars: 600))"
+            ])
+        }
+    }
+    
+    private struct ProjectDatabaseCommandLog: Codable {
+        let timestamp: Date
+        let toolName: String
+        let command: String?
+        let exitCode: Int32?
+        let timedOut: Bool?
+        let stdout: String
+        let stderr: String
+        
+        enum CodingKeys: String, CodingKey {
+            case timestamp, command, stdout, stderr
+            case toolName = "tool_name"
+            case exitCode = "exit_code"
+            case timedOut = "timed_out"
+        }
+    }
+    
+    private func persistProjectDatabaseCommandLog(
+        projectURL: URL,
+        toolName: String,
+        command: String?,
+        exitCode: Int32?,
+        timedOut: Bool?,
+        stdout: String,
+        stderr: String
+    ) -> String? {
+        let logDirectory = projectURL.appendingPathComponent(".db_runs", isDirectory: true)
+        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+        
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let filename = "\(toolName)-\(formatter.string(from: Date())).json"
+        let logURL = logDirectory.appendingPathComponent(filename)
+        
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        encoder.dateEncodingStrategy = .iso8601
+        
+        let record = ProjectDatabaseCommandLog(
+            timestamp: Date(),
+            toolName: toolName,
+            command: command,
+            exitCode: exitCode,
+            timedOut: timedOut,
+            stdout: truncateForToolOutput(stdout, maxChars: 60_000),
+            stderr: truncateForToolOutput(stderr, maxChars: 60_000)
+        )
+        
+        guard let data = try? encoder.encode(record) else { return nil }
+        guard (try? data.write(to: logURL, options: .atomic)) != nil else { return nil }
+        return relativePath(from: projectURL, to: logURL)
+    }
+    
+    private func diagnosticExcerpt(stdout: String, stderr: String, maxChars: Int) -> String {
+        let combined = (stderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? stdout : stderr)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        if combined.isEmpty {
+            return "Command failed without diagnostic output."
+        }
+        return truncateForToolOutput(combined, maxChars: maxChars)
     }
     
     private func sanitizeProjectName(_ name: String) -> String {
@@ -5637,9 +6640,13 @@ extension ToolExecutor {
         let deletedSummary = deletedFiles.isEmpty ? "None" : deletedFiles.prefix(8).joined(separator: ", ")
         let previousDescription = metadata.projectDescription ?? "None"
         
-        let promptSnippet = String(prompt.prefix(700))
-        let stdoutSnippet = String(stdout.prefix(500))
-        let stderrSnippet = String(stderr.prefix(300))
+        let safePrompt = redactSensitiveContextForModel(prompt)
+        let safeStdout = redactSensitiveContextForModel(stdout)
+        let safeStderr = redactSensitiveContextForModel(stderr)
+        
+        let promptSnippet = String(safePrompt.prefix(700))
+        let stdoutSnippet = String(safeStdout.prefix(500))
+        let stderrSnippet = String(safeStderr.prefix(300))
         
         let promptText = """
         Update this project catalog description after a Claude Code run.
@@ -5848,10 +6855,13 @@ extension ToolExecutor {
     }
     
     private func shouldIgnoreProjectPath(_ relativePath: String) -> Bool {
-        if relativePath == ".project.json" || relativePath == ".claude_last_run.json" {
+        if relativePath == ".project.json" || relativePath == ".claude_last_run.json" || relativePath == ".project_database.json" {
             return true
         }
         if relativePath.hasPrefix(".claude_runs/") {
+            return true
+        }
+        if relativePath.hasPrefix(".db_runs/") {
             return true
         }
         return false
@@ -5977,9 +6987,9 @@ extension ToolExecutor {
         maxStdoutChars: Int,
         maxStderrChars: Int
     ) -> String {
-        let prompt = run.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stdout = run.stdoutPreview.trimmingCharacters(in: .whitespacesAndNewlines)
-        let stderr = run.stderrPreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt = redactSensitiveContextForModel(run.prompt).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stdout = redactSensitiveContextForModel(run.stdoutPreview).trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = redactSensitiveContextForModel(run.stderrPreview).trimmingCharacters(in: .whitespacesAndNewlines)
         
         if prompt.isEmpty && stdout.isEmpty && stderr.isEmpty {
             return ""
@@ -6241,10 +7251,98 @@ extension ToolExecutor {
         return redacted
     }
     
+    /// Redacts common secret patterns before forwarding text to external models.
+    /// This keeps Claude/Gemini context useful while reducing accidental secret exposure.
+    private func redactSensitiveContextForModel(_ text: String) -> String {
+        guard !text.isEmpty else { return text }
+        
+        var redacted = text
+        
+        let rules: [(pattern: String, template: String, options: NSRegularExpression.Options)] = [
+            (pattern: #"-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z0-9 ]*PRIVATE KEY-----"#, template: "<redacted-private-key>", options: [.caseInsensitive]),
+            (pattern: #"(?i)(authorization\s*:\s*bearer)\s+[A-Za-z0-9._\-+/=]+"#, template: "$1 <redacted>", options: []),
+            (pattern: #"(?i)\bbearer\s+[A-Za-z0-9._\-+/=]{16,}"#, template: "Bearer <redacted>", options: []),
+            (pattern: #"([A-Za-z][A-Za-z0-9+.\-]*://[^/\s:@]+:)[^@/\s]+@"#, template: "$1<redacted>@", options: []),
+            (pattern: #"(?i)(\"[^\"]*(token|secret|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token)[^\"]*\"\s*:\s*\")([^\"]*)(\")"#, template: "$1<redacted>$4", options: []),
+            (pattern: #"(?im)\b([A-Za-z0-9_.-]*(token|secret|password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token)[A-Za-z0-9_.-]*)\b\s*([=:])\s*([^\s\"'`]+)"#, template: "$1$3<redacted>", options: []),
+            (pattern: #"\b(sk-or-v1|sk-live|sk-test)-[A-Za-z0-9_-]{16,}\b"#, template: "<redacted-token>", options: [.caseInsensitive]),
+            (pattern: #"\bgh[pousr]_[A-Za-z0-9]{20,}\b"#, template: "<redacted-token>", options: []),
+            (pattern: #"\bAIza[0-9A-Za-z_-]{20,}\b"#, template: "<redacted-google-key>", options: []),
+            (pattern: #"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\b"#, template: "<redacted-jwt>", options: [])
+        ]
+        
+        for rule in rules {
+            redacted = redactRegexMatches(
+                in: redacted,
+                pattern: rule.pattern,
+                template: rule.template,
+                options: rule.options
+            )
+        }
+        
+        return redacted
+    }
+    
+    private func redactRegexMatches(
+        in text: String,
+        pattern: String,
+        template: String,
+        options: NSRegularExpression.Options = []
+    ) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+            return text
+        }
+        
+        let range = NSRange(text.startIndex..., in: text)
+        return regex.stringByReplacingMatches(
+            in: text,
+            options: [],
+            range: range,
+            withTemplate: template
+        )
+    }
+    
     private func hasVercelProjectLink(at directoryURL: URL) -> Bool {
         let linkFileURL = directoryURL.appendingPathComponent(".vercel/project.json")
         var isDirectory: ObjCBool = false
         return FileManager.default.fileExists(atPath: linkFileURL.path, isDirectory: &isDirectory) && !isDirectory.boolValue
+    }
+    
+    /// Ensures `.vercelignore` excludes internal metadata files and common secret-bearing env files.
+    /// Creates the file if it doesn't exist, or appends missing entries if it does.
+    private func ensureVercelIgnore(at directoryURL: URL) {
+        let requiredEntries = [
+            // Internal app metadata/logs
+            ".project.json",
+            ".project_database.json",
+            ".claude_runs",
+            ".claude_last_run.json",
+            ".db_runs",
+            ".mcp.json",
+            ".vercel",
+            // Environment files often contain secrets. Keep explicit examples/templates deployable.
+            ".env",
+            ".env.*",
+            "!.env.example",
+            "!.env.sample",
+            "!.env.template",
+            "!.env*.example",
+            "!.env*.sample",
+            "!.env*.template"
+        ]
+        
+        let ignoreURL = directoryURL.appendingPathComponent(".vercelignore")
+        var existingContent = (try? String(contentsOf: ignoreURL, encoding: .utf8)) ?? ""
+        let existingLines = Set(existingContent.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) })
+        
+        let missingEntries = requiredEntries.filter { !existingLines.contains($0) }
+        guard !missingEntries.isEmpty else { return }
+        
+        if !existingContent.isEmpty && !existingContent.hasSuffix("\n") {
+            existingContent += "\n"
+        }
+        existingContent += missingEntries.joined(separator: "\n") + "\n"
+        try? existingContent.write(to: ignoreURL, atomically: true, encoding: .utf8)
     }
     
     private func extractVercelDeploymentURL(from output: String) -> String? {
