@@ -327,7 +327,8 @@ actor OpenRouterService {
         emailContext: String? = nil,
         chunkSummaries: [ConversationChunk]? = nil,
         totalChunkCount: Int = 0,
-        currentUserMessageId: UUID? = nil
+        currentUserMessageId: UUID? = nil,
+        deploymentToolsUnlockedForTurn: Bool = false
     ) async throws -> LLMResponse {
         guard !apiKey.isEmpty else {
             throw OpenRouterError.notConfigured
@@ -410,7 +411,7 @@ actor OpenRouterService {
             - Specific facts you're uncertain about
             - Any topic where fresh information would improve your answer
             - Project ZIP imports: if user wants edits to an existing project sent as a ZIP, use project tools to import it into a workspace before coding
-            - Deployment/database operations: call show_project_deployment_tools first to unlock deploy/database tools for this turn
+            - Deployment/database operations: call show_project_deployment_tools first to unlock advanced deployment/database tools for this turn
             - **Self-orchestration via reminders**: Use set_reminder not just for user requests, but proactively when YOU decide a future action would be valuable. Examples: scheduling a follow-up check, breaking complex tasks into timed steps, verifying results later, or any "I should do X later" thought. When the reminder triggers, you regain full tool access.
             - **Calendar management**: Use the calendar tools to view, add, edit, or delete events on the user's schedule
             - **Learning about the user**: Use add_to_user_context to save facts you learn. Use remove_from_user_context when info becomes outdated. Use rewrite_user_context sparingly for major cleanup. This builds your persistent memory.
@@ -428,9 +429,21 @@ actor OpenRouterService {
                 - If a ZIP appears unrelated to current projects and the user did not explicitly choose an existing project, create a new project first (name it from the ZIP/context), then import the ZIP there.
                 - Reuse an existing project only when the user clearly asks to continue that specific project.
                 - When sending websites/apps or other multi-file outputs, prefer send_project_result with package_as='zip_project' unless the user explicitly asked for individual files.
-                - Before any deployment/database operation, call show_project_deployment_tools once to unlock gated tools for this turn.
-                - When the user asks to publish/deploy a website to Vercel, use deploy_project_to_vercel after files are ready. Default to preview deployments unless the user explicitly requests production/live.
-                - For database-backed app workflows, you can use: provision_project_database -> push_project_database_schema -> sync_project_database_env_to_vercel, then optionally generate_project_mcp_config.
+                """
+                
+                if deploymentToolsUnlockedForTurn {
+                    prompt += """
+                    - Deployment/database tools are already unlocked for this turn.
+                    - When the user asks to publish/deploy a website to Vercel, use deploy_project_to_vercel after files are ready. Default to preview deployments unless the user explicitly requests production/live.
+                    - For database-backed app workflows, you can use: provision_project_database -> push_project_database_schema -> sync_project_database_env_to_vercel, then optionally generate_project_mcp_config.
+                    """
+                } else {
+                    prompt += """
+                    - Before any deployment/database operation, call show_project_deployment_tools once to unlock the advanced deployment/database tools for this turn.
+                    """
+                }
+                
+                prompt += """
                 - For project cleanup requests, use flag_projects_for_deletion to mark projects; never assume deletion is complete until the user confirms in Settings.
                 - Do not claim files/code were created unless run_claude_code reports file_changes_detected or returns created_files/modified_files.
                 """

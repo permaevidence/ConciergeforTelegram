@@ -761,10 +761,14 @@ class ConversationManager: ObservableObject {
             
             // Call LLM (with tools available for chaining)
             let llmStartTime = Date()
-            let toolsForRound: [ToolDefinition]? = AvailableTools.all(
+            var toolsForRound = AvailableTools.all(
                 includeWebSearch: !serperKey.isEmpty,
                 includeProjectDeploymentTools: deploymentToolsUnlockedForTurn
             )
+            if deploymentToolsUnlockedForTurn {
+                toolsForRound.removeAll { $0.function.name == "show_project_deployment_tools" }
+            }
+            let allowedToolNames = Set(toolsForRound.map { $0.function.name })
             let response = try await openRouterService.generateResponse(
                 messages: contextResult.messagesToSend,
                 imagesDirectory: imagesDirectory,
@@ -775,7 +779,8 @@ class ConversationManager: ObservableObject {
                 emailContext: emailContext,
                 chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
                 totalChunkCount: totalChunkCount,
-                currentUserMessageId: currentUserMessageId
+                currentUserMessageId: currentUserMessageId,
+                deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn
             )
             print("[TIMING] LLM API call took: \(String(format: "%.2f", Date().timeIntervalSince(llmStartTime)))s")
             
@@ -796,20 +801,36 @@ class ConversationManager: ObservableObject {
                 // Model wants to use more tools
                 print("[ConversationManager] Round \(round): LLM requested \(calls.count) tool(s): \(calls.map { $0.function.name })")
                 
+                let executableCalls = calls.filter { allowedToolNames.contains($0.function.name) }
+                let blockedCalls = calls.filter { !allowedToolNames.contains($0.function.name) }
+                if !blockedCalls.isEmpty {
+                    print("[ConversationManager] Round \(round): blocked \(blockedCalls.count) unavailable tool call(s): \(blockedCalls.map { $0.function.name })")
+                }
+                
                 // Send progress message to Telegram
-                if let chatId = pairedChatId {
-                    let progressMessage = getProgressMessage(for: calls)
+                if let chatId = pairedChatId, !executableCalls.isEmpty {
+                    let progressMessage = getProgressMessage(for: executableCalls)
                     try? await telegramService.sendMessage(chatId: chatId, text: progressMessage)
                 }
                 statusMessage = "Executing tools (round \(round))..."
                 
-                // Execute all tools in parallel
-                let toolResults = try await toolExecutor.executeParallel(calls)
+                // Execute available tools only. Return explicit errors for blocked/unavailable tool calls.
+                var toolResults: [ToolResultMessage] = []
+                if !executableCalls.isEmpty {
+                    let executedResults = try await toolExecutor.executeParallel(executableCalls)
+                    toolResults.append(contentsOf: executedResults)
+                }
+                if !blockedCalls.isEmpty {
+                    let blockedResults = blockedCalls.map {
+                        blockedToolResult(for: $0, deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn)
+                    }
+                    toolResults.append(contentsOf: blockedResults)
+                }
                 try Task.checkCancellation()
                 
                 print("[ConversationManager] Round \(round) tool execution complete")
                 
-                if calls.contains(where: { $0.function.name == "show_project_deployment_tools" }) {
+                if executableCalls.contains(where: { $0.function.name == "show_project_deployment_tools" }) {
                     deploymentToolsUnlockedForTurn = true
                 }
                 
@@ -837,7 +858,8 @@ class ConversationManager: ObservableObject {
             emailContext: emailContext,
             chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
             totalChunkCount: totalChunkCount,
-            currentUserMessageId: currentUserMessageId
+            currentUserMessageId: currentUserMessageId,
+            deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn
         )
         
         switch finalResponse {
@@ -852,6 +874,25 @@ class ConversationManager: ObservableObject {
                 compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
             )
         }
+    }
+    
+    private func blockedToolResult(for call: ToolCall, deploymentToolsUnlockedForTurn: Bool) -> ToolResultMessage {
+        let gatedToolNames = Set(AvailableTools.gatedProjectDeploymentTools.map { $0.function.name })
+        let requestedTool = call.function.name
+        
+        let errorMessage: String
+        if gatedToolNames.contains(requestedTool) && !deploymentToolsUnlockedForTurn {
+            errorMessage = "Tool '\(requestedTool)' is currently gated. Call show_project_deployment_tools first to unlock deployment/database tools for this turn."
+        } else if requestedTool == "show_project_deployment_tools" && deploymentToolsUnlockedForTurn {
+            errorMessage = "Tool 'show_project_deployment_tools' was already used in this turn and is no longer available. Continue with the unlocked deployment/database tools."
+        } else {
+            errorMessage = "Tool '\(requestedTool)' is not available in this turn."
+        }
+        
+        let escapedError = errorMessage
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return ToolResultMessage(toolCallId: call.id, content: #"{"error":"\#(escapedError)"}"#)
     }
     
     /// Get appropriate progress message for tool calls
