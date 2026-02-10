@@ -151,6 +151,11 @@ class ConversationManager: ObservableObject {
         isPolling = true
         statusMessage = "Polling for messages..."
         
+        // Warm up Whisper in the background when activation is enabled.
+        Task {
+            await WhisperKitService.shared.checkModelStatus()
+        }
+        
         pollingTask = Task {
             while !Task.isCancelled && isPolling {
                 do {
