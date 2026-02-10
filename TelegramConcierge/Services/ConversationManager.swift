@@ -25,6 +25,13 @@ class ConversationManager: ObservableObject {
     private var pendingReferencedDocuments: [(fileName: String, fileSize: Int)] = []
     private var pendingForwardContext: String?
     private var pendingReplyContext: String?
+    private let toolRunLogPrefix = "[TOOL RUN LOG - compact]"
+    private let maxRetainedToolRunLogs = 5
+    
+    private struct ToolAwareResponse {
+        let finalText: String
+        let compactToolLog: String?
+    }
     
     private let appFolder: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -549,10 +556,15 @@ class ConversationManager: ObservableObject {
             
             guard activeRunId == runId else { return }
             
+            if let toolLog = response.compactToolLog, !toolLog.isEmpty {
+                messages.append(Message(role: .assistant, content: toolLog))
+                pruneOldToolLogMessages()
+            }
+            
             // Add assistant message with any downloaded files tracked
-            let finalResponse = response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let finalResponse = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "I completed the requested actions."
-                : response
+                : response.finalText
             let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
             let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
             messages.append(assistantMessage)
@@ -665,12 +677,8 @@ class ConversationManager: ObservableObject {
     
     // MARK: - Tool-Aware Response Generation
     
-    private func generateResponseWithTools(currentUserMessageId: UUID) async throws -> String {
-        let startTime = Date()
+    private func generateResponseWithTools(currentUserMessageId: UUID) async throws -> ToolAwareResponse {
         try Task.checkCancellation()
-        
-        // Note: Tool logs persist across turns so users can ask about previous tool uses
-        // Logs are session-scoped and cleared on app restart
         
         // Check if tools are available
         let serperKey = KeychainHelper.load(key: KeychainHelper.serperApiKeyKey) ?? ""
@@ -770,7 +778,10 @@ class ConversationManager: ObservableObject {
                 } else {
                     print("[ConversationManager] LLM returned text response after \(round) round(s)")
                 }
-                return content
+                return ToolAwareResponse(
+                    finalText: content,
+                    compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
+                )
                 
             case .toolCalls(let assistantMessage, let calls, _):
                 // Model wants to use more tools
@@ -818,9 +829,15 @@ class ConversationManager: ObservableObject {
         
         switch finalResponse {
         case .text(let content, _):
-            return content
+            return ToolAwareResponse(
+                finalText: content,
+                compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
+            )
         case .toolCalls(_, _, _):
-            return "I completed the requested actions but had trouble summarizing the results."
+            return ToolAwareResponse(
+                finalText: "I completed the requested actions but had trouble summarizing the results.",
+                compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
+            )
         }
     }
     
@@ -878,6 +895,113 @@ class ConversationManager: ObservableObject {
         }
     }
     
+    /// Build a compact per-step tool log to persist in conversation memory
+    /// right before the final assistant response.
+    private func buildCompactToolExecutionLog(from interactions: [ToolInteraction]) -> String? {
+        guard !interactions.isEmpty else { return nil }
+        
+        var lines: [String] = [toolRunLogPrefix]
+        var stepIndex = 1
+        
+        for interaction in interactions {
+            var resultByCallId: [String: ToolResultMessage] = [:]
+            for result in interaction.results {
+                resultByCallId[result.toolCallId] = result
+            }
+            
+            for call in interaction.assistantToolCalls {
+                let outcome = summarizeToolOutcome(resultByCallId[call.id])
+                lines.append("\(stepIndex). \(call.function.name): \(outcome)")
+                stepIndex += 1
+            }
+        }
+        
+        guard stepIndex > 1 else { return nil }
+        return lines.joined(separator: "\n")
+    }
+    
+    private func summarizeToolOutcome(_ result: ToolResultMessage?) -> String {
+        guard let result else { return "no-result" }
+        
+        let fileSuffix = result.fileAttachments.isEmpty
+            ? ""
+            : " (+\(result.fileAttachments.count) file\(result.fileAttachments.count == 1 ? "" : "s"))"
+        
+        if let dict = parseJSONDictionary(from: result.content) {
+            if let error = dict["error"] as? String, !error.isEmpty {
+                return "error - \(compact(error, maxLength: 90))\(fileSuffix)"
+            }
+            
+            if let message = dict["message"] as? String, !message.isEmpty {
+                return "ok - \(compact(message, maxLength: 90))\(fileSuffix)"
+            }
+            
+            if let summary = dict["summary"] as? String, !summary.isEmpty {
+                return "ok - \(compact(summary, maxLength: 90))\(fileSuffix)"
+            }
+            
+            if let downloadedCount = dict["downloadedCount"] as? Int {
+                return "ok - downloaded \(downloadedCount)\(fileSuffix)"
+            }
+            
+            if let count = dict["count"] as? Int {
+                return "ok - count \(count)\(fileSuffix)"
+            }
+            
+            if let eventCount = dict["eventCount"] as? Int {
+                return "ok - events \(eventCount)\(fileSuffix)"
+            }
+            
+            if let success = dict["success"] as? Bool {
+                return (success ? "ok" : "failed") + fileSuffix
+            }
+            
+            return "ok\(fileSuffix)"
+        }
+        
+        let fallback = compact(result.content, maxLength: 90)
+        return (fallback.isEmpty ? "ok" : fallback) + fileSuffix
+    }
+    
+    private func parseJSONDictionary(from content: String) -> [String: Any]? {
+        guard let data = content.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data),
+              let dict = object as? [String: Any] else {
+            return nil
+        }
+        return dict
+    }
+    
+    private func compact(_ text: String, maxLength: Int) -> String {
+        let flattened = text
+            .components(separatedBy: .whitespacesAndNewlines)
+            .filter { !$0.isEmpty }
+            .joined(separator: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        guard flattened.count > maxLength else { return flattened }
+        return String(flattened.prefix(maxLength)) + "..."
+    }
+    
+    private func isToolRunLogMessage(_ message: Message) -> Bool {
+        message.role == .assistant && message.content.hasPrefix(toolRunLogPrefix)
+    }
+    
+    /// Keep only the most recent N compact tool-log messages to avoid context bloat.
+    @discardableResult
+    private func pruneOldToolLogMessages() -> Int {
+        let logIndices = messages.indices.filter { isToolRunLogMessage(messages[$0]) }
+        let excessCount = logIndices.count - maxRetainedToolRunLogs
+        guard excessCount > 0 else { return 0 }
+        
+        let indicesToRemove = logIndices.prefix(excessCount).sorted(by: >)
+        for index in indicesToRemove {
+            messages.remove(at: index)
+        }
+        
+        return excessCount
+    }
+    
     // MARK: - Reminder Processing
     
     private func checkDueReminders() async {
@@ -931,10 +1055,15 @@ class ConversationManager: ObservableObject {
             do {
                 let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id)
                 
+                if let toolLog = response.compactToolLog, !toolLog.isEmpty {
+                    messages.append(Message(role: .assistant, content: toolLog))
+                    pruneOldToolLogMessages()
+                }
+                
                 // Add assistant message (guard against empty response)
-                let finalResponse = response.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let finalResponse = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? "I completed the reminder actions."
-                    : response
+                    : response.finalText
                 let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
                 let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
                 messages.append(assistantMessage)
@@ -1189,6 +1318,10 @@ class ConversationManager: ObservableObject {
         do {
             let data = try Data(contentsOf: conversationFileURL)
             messages = try JSONDecoder().decode([Message].self, from: data)
+            // Cleanup old compact tool logs from previous runs to keep context lean.
+            if pruneOldToolLogMessages() > 0 {
+                saveConversation()
+            }
         } catch {
             print("Failed to load conversation: \(error)")
         }

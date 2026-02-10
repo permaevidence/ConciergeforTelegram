@@ -1104,11 +1104,31 @@ enum AvailableTools {
             )
         )
     )
+    
+    static let viewProjectHistory = ToolDefinition(
+        function: FunctionDefinition(
+            name: "view_project_history",
+            description: "Load recent Gemini↔Claude interaction history for a specific project workspace from past run logs. Use this when you need to explain what happened in Claude runs, debug issues, or recover context before deciding next actions. Returns the latest project run history up to a token budget.",
+            parameters: FunctionParameters(
+                properties: [
+                    "project_id": ParameterProperty(
+                        type: "string",
+                        description: "Project ID from list_projects."
+                    ),
+                    "max_tokens": ParameterProperty(
+                        type: "integer",
+                        description: "Optional token budget for history context (default 10000, range 500-20000)."
+                    )
+                ],
+                required: ["project_id"]
+            )
+        )
+    )
 
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this as the primary code-building tool for project implementation tasks. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
+            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this as the primary code-building tool for project implementation tasks. Automatically injects recent project-specific Gemini↔Claude run history (capped) so Claude can continue prior work. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1271,7 +1291,7 @@ enum AvailableTools {
     
     /// Non-email tools that do not depend on web search credentials
     static var coreToolsWithoutWebSearch: [ToolDefinition] {
-        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, runClaudeCode, sendProjectResult, deployProjectToVercel, flagProjectsForDeletion]
+        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult, deployProjectToVercel, flagProjectsForDeletion]
     }
     
     /// All available tools - dynamically selects email tools and optionally web search

@@ -336,6 +336,9 @@ actor OpenRouterService {
         // Build API messages
         var apiMessages: [OpenRouterAPIMessage] = []
         
+        // Truncate messages to fit within token budget
+        let truncatedMessages = truncateMessagesToTokenLimit(messages, maxTokens: maxContextTokens)
+        
         // Add system message with date/time context and tool awareness
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
@@ -399,7 +402,6 @@ actor OpenRouterService {
             if let chunks = chunkSummaries, !chunks.isEmpty {
                 prompt += formatChunkSummaries(chunks, totalChunkCount: totalChunkCount)
             }
-            
             
             prompt += """
             You have access to tools that can help you answer questions. Use them when appropriate, especially for:
@@ -469,7 +471,6 @@ actor OpenRouterService {
                 prompt += formatChunkSummaries(chunks, totalChunkCount: totalChunkCount)
             }
             
-            
             prompt += "\n\n🕐 **Reminder: Current time is exactly \(currentDateTime) (\(timezone))**"
             systemPrompt = prompt
         }
@@ -478,9 +479,6 @@ actor OpenRouterService {
             role: "system",
             content: .text(systemPrompt)
         ))
-        
-        // Truncate messages to fit within token budget
-        let truncatedMessages = truncateMessagesToTokenLimit(messages, maxTokens: maxContextTokens)
         
         // Date formatters for timestamps
         let timeFormatter = DateFormatter()

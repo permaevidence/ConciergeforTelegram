@@ -167,6 +167,9 @@ actor ToolExecutor {
         case "add_project_files":
             content = await executeAddProjectFiles(call)
             
+        case "view_project_history":
+            content = await executeViewProjectHistory(call)
+            
         case "run_claude_code":
             content = await executeRunClaudeCode(call)
             
@@ -3421,6 +3424,16 @@ struct RunClaudeCodeArguments: Codable {
     }
 }
 
+struct ViewProjectHistoryArguments: Codable {
+    let projectId: String
+    let maxTokens: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+        case maxTokens = "max_tokens"
+    }
+}
+
 struct AddProjectFilesArguments: Codable {
     let projectId: String
     let documentFilenames: [String]
@@ -3784,6 +3797,8 @@ private struct ClaudeRunResult: Codable {
     let modifiedFiles: [String]
     let deletedFiles: [String]
     let fileChangesDetected: Bool
+    let historyTurnsIncluded: Int
+    let historyTokensEstimate: Int
     let projectDescription: String?
     let projectLastEditedAt: String?
     let stdout: String
@@ -3802,9 +3817,27 @@ private struct ClaudeRunResult: Codable {
         case modifiedFiles = "modified_files"
         case deletedFiles = "deleted_files"
         case fileChangesDetected = "file_changes_detected"
+        case historyTurnsIncluded = "history_turns_included"
+        case historyTokensEstimate = "history_tokens_estimate"
         case projectDescription = "project_description"
         case projectLastEditedAt = "project_last_edited_at"
         case logFile = "log_file"
+    }
+}
+
+private struct ClaudeProjectHistoryResult: Codable {
+    let success: Bool
+    let projectId: String
+    let historyTurnsIncluded: Int
+    let historyTokensEstimate: Int
+    let history: String
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success, history, message
+        case projectId = "project_id"
+        case historyTurnsIncluded = "history_turns_included"
+        case historyTokensEstimate = "history_tokens_estimate"
     }
 }
 
@@ -3819,6 +3852,12 @@ private struct ClaudeExecutionOutput {
     let timedOut: Bool
     let stdout: String
     let stderr: String
+}
+
+private struct ClaudePromptContext {
+    let prompt: String
+    let historyTurnsIncluded: Int
+    let historyTokensEstimate: Int
 }
 
 private struct SendProjectResultOutput: Codable {
@@ -4264,6 +4303,37 @@ extension ToolExecutor {
         return encodeJSON(result)
     }
     
+    private func executeViewProjectHistory(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ViewProjectHistoryArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse view_project_history arguments"}"#
+        }
+        
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+        
+        let maxTokens = min(max(args.maxTokens ?? 10_000, 500), 20_000)
+        guard let historyContext = buildProjectHistoryContext(
+            projectURL: projectURL,
+            projectId: args.projectId,
+            maxTokens: maxTokens
+        ) else {
+            return #"{"error":"No Claude run history found for this project yet."}"#
+        }
+        
+        let result = ClaudeProjectHistoryResult(
+            success: true,
+            projectId: args.projectId,
+            historyTurnsIncluded: historyContext.historyTurnsIncluded,
+            historyTokensEstimate: historyContext.historyTokensEstimate,
+            history: historyContext.prompt,
+            message: "Loaded recent project run history."
+        )
+        
+        return encodeJSON(result)
+    }
+    
     private func executeRunClaudeCode(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(RunClaudeCodeArguments.self, from: argsData) else {
@@ -4299,11 +4369,16 @@ extension ToolExecutor {
         let configuredTimeout = Int(KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? "") ?? Int(KeychainHelper.defaultClaudeCodeTimeout) ?? 300
         let timeoutSeconds = min(max(args.timeoutSeconds ?? configuredTimeout, 30), 3600)
         let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
+        let promptContext = buildPromptWithProjectHistory(
+            projectURL: projectURL,
+            projectId: args.projectId,
+            currentPrompt: args.prompt
+        )
         
         let preSnapshot = snapshotProjectFiles(projectURL: projectURL)
         let startTime = Date()
         let baseEnvironment = claudeBaseEnvironment()
-        let invocations = buildClaudeInvocations(command: command, cliArgs: parsedArgs, prompt: args.prompt)
+        let invocations = buildClaudeInvocations(command: command, cliArgs: parsedArgs, prompt: promptContext.prompt)
         
         guard !invocations.isEmpty else {
             return #"{"error":"No valid Claude Code command invocation was generated. Check Claude Code settings."}"#
@@ -4454,6 +4529,8 @@ extension ToolExecutor {
             modifiedFiles: modifiedFiles,
             deletedFiles: deletedFiles,
             fileChangesDetected: fileChangesDetected,
+            historyTurnsIncluded: promptContext.historyTurnsIncluded,
+            historyTokensEstimate: promptContext.historyTokensEstimate,
             projectDescription: updatedMetadata?.projectDescription,
             projectLastEditedAt: updatedMetadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
             stdout: finalExecution.stdout,
@@ -5778,6 +5855,176 @@ extension ToolExecutor {
             return true
         }
         return false
+    }
+    
+    private func buildProjectHistoryContext(
+        projectURL: URL,
+        projectId: String,
+        maxTokens: Int
+    ) -> ClaudePromptContext? {
+        let maxHistoryTokens = max(maxTokens, 500)
+        let maxHistoryCharacters = maxHistoryTokens * 4
+        let maxPromptCharsPerTurn = 1_400
+        let maxStdoutCharsPerTurn = 2_200
+        let maxStderrCharsPerTurn = 700
+        
+        let runHistory = loadProjectRunHistory(projectURL: projectURL)
+        guard !runHistory.isEmpty else { return nil }
+        
+        var selectedHistorySections: [String] = []
+        var usedChars = 0
+        
+        for run in runHistory.reversed() {
+            let section = formatProjectHistorySection(
+                run: run,
+                maxPromptChars: maxPromptCharsPerTurn,
+                maxStdoutChars: maxStdoutCharsPerTurn,
+                maxStderrChars: maxStderrCharsPerTurn
+            )
+            
+            guard !section.isEmpty else { continue }
+            if usedChars + section.count > maxHistoryCharacters {
+                break
+            }
+            
+            selectedHistorySections.append(section)
+            usedChars += section.count
+        }
+        
+        guard !selectedHistorySections.isEmpty else { return nil }
+        
+        let chronologicalHistory = selectedHistorySections.reversed().joined(separator: "\n\n")
+        let historyBlock = """
+        === RECENT PROJECT HISTORY (\(projectId), oldest to newest) ===
+        \(chronologicalHistory)
+        === END PROJECT HISTORY ===
+        """
+        
+        return ClaudePromptContext(
+            prompt: historyBlock,
+            historyTurnsIncluded: selectedHistorySections.count,
+            historyTokensEstimate: usedChars / 4
+        )
+    }
+    
+    private func buildPromptWithProjectHistory(
+        projectURL: URL,
+        projectId: String,
+        currentPrompt: String
+    ) -> ClaudePromptContext {
+        guard let historyContext = buildProjectHistoryContext(
+            projectURL: projectURL,
+            projectId: projectId,
+            maxTokens: 10_000
+        ) else {
+            return ClaudePromptContext(
+                prompt: currentPrompt,
+                historyTurnsIncluded: 0,
+                historyTokensEstimate: 0
+            )
+        }
+        
+        let wrappedPrompt = """
+        You are continuing work on project "\(projectId)".
+        Use this recent Gemini-to-Claude run history as project context, but prioritize the current task.
+        
+        \(historyContext.prompt)
+        
+        === CURRENT TASK ===
+        \(currentPrompt)
+        """
+        
+        return ClaudePromptContext(
+            prompt: wrappedPrompt,
+            historyTurnsIncluded: historyContext.historyTurnsIncluded,
+            historyTokensEstimate: historyContext.historyTokensEstimate
+        )
+    }
+    
+    private func loadProjectRunHistory(projectURL: URL) -> [ClaudeRunRecord] {
+        let runsDirectory = projectURL.appendingPathComponent(".claude_runs", isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: runsDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return []
+        }
+        
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+        
+        guard let runURLs = try? FileManager.default.contentsOfDirectory(
+            at: runsDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+        
+        var runs: [ClaudeRunRecord] = []
+        for runURL in runURLs where runURL.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: runURL),
+                  let run = try? decoder.decode(ClaudeRunRecord.self, from: data) else {
+                continue
+            }
+            runs.append(run)
+        }
+        
+        return runs.sorted { $0.timestamp < $1.timestamp }
+    }
+    
+    private func formatProjectHistorySection(
+        run: ClaudeRunRecord,
+        maxPromptChars: Int,
+        maxStdoutChars: Int,
+        maxStderrChars: Int
+    ) -> String {
+        let prompt = run.prompt.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stdout = run.stdoutPreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = run.stderrPreview.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        if prompt.isEmpty && stdout.isEmpty && stderr.isEmpty {
+            return ""
+        }
+        
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+        let timestamp = dateFormatter.string(from: run.timestamp)
+        
+        let promptExcerpt = snippetForProjectHistory(prompt, maxChars: maxPromptChars)
+        let stdoutExcerpt = stdout.isEmpty ? "[no stdout]" : snippetForProjectHistory(stdout, maxChars: maxStdoutChars)
+        let stderrExcerpt = stderr.isEmpty ? "[no stderr]" : snippetForProjectHistory(stderr, maxChars: maxStderrChars)
+        
+        var fileSummaryParts: [String] = []
+        if !run.createdFiles.isEmpty {
+            fileSummaryParts.append("created: \(run.createdFiles.prefix(6).joined(separator: ", "))")
+        }
+        if !run.modifiedFiles.isEmpty {
+            fileSummaryParts.append("modified: \(run.modifiedFiles.prefix(6).joined(separator: ", "))")
+        }
+        if !run.deletedFiles.isEmpty {
+            fileSummaryParts.append("deleted: \(run.deletedFiles.prefix(6).joined(separator: ", "))")
+        }
+        let fileSummary = fileSummaryParts.isEmpty ? "none" : fileSummaryParts.joined(separator: " | ")
+        
+        return """
+        [\(timestamp)] exit=\(run.exitCode) timed_out=\(run.timedOut ? "yes" : "no") changes=\(fileSummary)
+        Gemini prompt:
+        \(promptExcerpt)
+        Claude stdout:
+        \(stdoutExcerpt)
+        Claude stderr:
+        \(stderrExcerpt)
+        """
+    }
+    
+    private func snippetForProjectHistory(_ text: String, maxChars: Int) -> String {
+        guard maxChars > 0 else { return "" }
+        let compact = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: #"\n{3,}"#, with: "\n\n", options: .regularExpression)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        guard compact.count > maxChars else { return compact }
+        return String(compact.prefix(maxChars)) + "\n...[truncated]..."
     }
     
     private var claudeConfigDirectory: URL {
