@@ -1438,26 +1438,6 @@ enum AvailableTools {
         )
     )
     
-    static let flagProjectsForDeletion = ToolDefinition(
-        function: FunctionDefinition(
-            name: "flag_projects_for_deletion",
-            description: "Flag one or more Claude project workspaces for deletion review in Settings. This does NOT delete any files. The user must confirm deletion manually in 'Browse Claude Projects'.",
-            parameters: FunctionParameters(
-                properties: [
-                    "project_ids": ParameterProperty(
-                        type: "string",
-                        description: "Project IDs from list_projects. Accepts JSON array string, CSV string, or a single ID."
-                    ),
-                    "reason": ParameterProperty(
-                        type: "string",
-                        description: "Optional short reason shown in settings (e.g., 'Superseded by new project')."
-                    )
-                ],
-                required: ["project_ids"]
-            )
-        )
-    )
-    
     // MARK: - Tool Arrays
     
     /// IMAP email tools (8 tools - used when email_mode is "imap")
@@ -1472,7 +1452,7 @@ enum AvailableTools {
     
     /// Non-email tools that do not depend on web search credentials
     static var coreToolsWithoutWebSearch: [ToolDefinition] {
-        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult, flagProjectsForDeletion]
+        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
     }
     
     static var gatedProjectDeploymentTools: [ToolDefinition] {

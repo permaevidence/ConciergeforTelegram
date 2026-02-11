@@ -926,7 +926,7 @@ class ConversationManager: ObservableObject {
             return "🧩 Generating MCP configuration..."
         } else if toolNames.contains("run_claude_code") {
             return "🤖 Running Claude Code..."
-        } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") || toolNames.contains("flag_projects_for_deletion") {
+        } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") {
             return "📁 Managing project workspace..."
         } else if toolNames.contains("send_project_result") {
             return "📤 Sending project result..."
@@ -1435,12 +1435,12 @@ class ConversationManager: ObservableObject {
         print("[ConversationManager] All memory deleted")
     }
     
-    /// Reload all data from disk after Soul restore
+    /// Reload all data from disk after Mind restore
     /// This refreshes the conversation and archive service to pick up restored data
-    func reloadAfterSoulRestore() async {
+    func reloadAfterMindRestore() async {
         loadConversation()
         await archiveService.reloadFromDisk()
-        print("[ConversationManager] Reloaded data after Soul restore")
+        print("[ConversationManager] Reloaded data after Mind restore")
     }
     
     // MARK: - Helpers

@@ -145,7 +145,7 @@ actor ConversationArchiveService {
     }
     
     /// Reload chunk index and pending index from disk
-    /// Call this after Soul restore to pick up the restored data
+    /// Call this after Mind restore to pick up the restored data
     func reloadFromDisk() {
         loadIndex()
         loadPendingIndex()

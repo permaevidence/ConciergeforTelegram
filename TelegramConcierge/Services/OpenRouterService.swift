@@ -444,7 +444,7 @@ actor OpenRouterService {
                 }
                 
                 prompt += """
-                - For project cleanup requests, use flag_projects_for_deletion to mark projects; never assume deletion is complete until the user confirms in Settings.
+                - For project cleanup requests, instruct the user to open the Claude projects folder in Finder from the main app view and delete folders manually; do not claim deletion was completed by tools.
                 - Do not claim files/code were created unless run_claude_code reports file_changes_detected or returns created_files/modified_files.
                 """
             }

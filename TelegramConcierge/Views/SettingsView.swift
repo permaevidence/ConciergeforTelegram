@@ -77,7 +77,6 @@ struct SettingsView: View {
     
     // Context viewer
     @State private var showingContextViewer: Bool = false
-    @State private var showingClaudeProjectsBrowser: Bool = false
     
     // Archive settings
     @State private var archiveChunkSize: String = ""
@@ -87,14 +86,14 @@ struct SettingsView: View {
     @State private var showingDeleteContextConfirmation: Bool = false
     @State private var showingChunkSizeSaved: Bool = false
     
-    // Soul export/import
-    @State private var isExportingSoul: Bool = false
-    @State private var isImportingSoul: Bool = false
-    @State private var soulExportSuccess: String?
-    @State private var soulExportError: String?
+    // Mind export/import
+    @State private var isExportingMind: Bool = false
+    @State private var isImportingMind: Bool = false
+    @State private var mindExportSuccess: String?
+    @State private var mindExportError: String?
     @State private var showingRestoreConfirmation: Bool = false
     @State private var pendingImportURL: URL?
-    @State private var showingSoulFilePicker: Bool = false
+    @State private var showingMindFilePicker: Bool = false
     
     // Clear contacts
     @State private var showingClearContactsConfirmation: Bool = false
@@ -305,15 +304,6 @@ struct SettingsView: View {
                     saveClaudeCodeSection()
                 }
                 
-                Button {
-                    showingClaudeProjectsBrowser = true
-                } label: {
-                    HStack {
-                        Image(systemName: "folder")
-                        Text("Browse Claude Projects")
-                    }
-                }
-                .buttonStyle(.bordered)
             } header: {
                 Label("Claude Code", systemImage: "terminal")
             }
@@ -502,30 +492,30 @@ struct SettingsView: View {
                 
                 HStack(spacing: 12) {
                     Button {
-                        exportSoul()
+                        exportMind()
                     } label: {
                         HStack {
-                            if isExportingSoul {
+                            if isExportingMind {
                                 ProgressView()
                                     .scaleEffect(0.7)
                             } else {
                                 Image(systemName: "arrow.down.doc")
                             }
-                            Text("Download Soul")
+                            Text("Download Mind")
                         }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isExportingSoul || isImportingSoul)
+                    .disabled(isExportingMind || isImportingMind)
                     
                     Button {
-                        print("[SettingsView] Restore Soul button tapped, opening NSOpenPanel")
+                        print("[SettingsView] Restore Mind button tapped, opening NSOpenPanel")
                         Task {
                             let openPanel = NSOpenPanel()
                             openPanel.allowedContentTypes = [.item]
                             openPanel.allowsMultipleSelection = false
                             openPanel.canChooseDirectories = false
-                            openPanel.title = "Select Soul Backup"
-                            openPanel.message = "Choose a .soul file to restore"
+                            openPanel.title = "Select Mind Backup"
+                            openPanel.message = "Choose a .mind file to restore"
                             
                             let response = await openPanel.beginSheetModal(for: NSApp.mainWindow ?? NSWindow())
                             
@@ -544,26 +534,26 @@ struct SettingsView: View {
                                 }
                             } catch {
                                 await MainActor.run {
-                                    soulExportError = "Failed to read file: \(error.localizedDescription)"
+                                    mindExportError = "Failed to read file: \(error.localizedDescription)"
                                 }
                             }
                         }
                     } label: {
                         HStack {
-                            if isImportingSoul {
+                            if isImportingMind {
                                 ProgressView()
                                     .scaleEffect(0.7)
                             } else {
                                 Image(systemName: "arrow.up.doc")
                             }
-                            Text("Restore Soul")
+                            Text("Restore Mind")
                         }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isExportingSoul || isImportingSoul)
+                    .disabled(isExportingMind || isImportingMind)
                 }
                 
-                if let success = soulExportSuccess {
+                if let success = mindExportSuccess {
                     HStack {
                         Image(systemName: "checkmark.circle.fill")
                             .foregroundColor(.green)
@@ -573,7 +563,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                if let error = soulExportError {
+                if let error = mindExportError {
                     HStack {
                         Image(systemName: "xmark.circle.fill")
                             .foregroundColor(.red)
@@ -583,7 +573,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                Text("Download Soul exports your conversation history, memory chunks, files, contacts, reminders, calendar, and persona settings. API keys are NOT included for security.")
+                Text("Download Mind exports your conversation history, memory chunks, files, contacts, reminders, calendar, and persona settings. API keys are NOT included for security.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -652,7 +642,7 @@ struct SettingsView: View {
                     }
                 }
                 
-                Text("Export or import your calendar events separately. The calendar is also included in Soul exports.")
+                Text("Export or import your calendar events separately. The calendar is also included in Mind exports.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -694,9 +684,6 @@ struct SettingsView: View {
             ContextViewerView()
                 .environmentObject(conversationManager)
         }
-        .sheet(isPresented: $showingClaudeProjectsBrowser) {
-            ClaudeProjectsBrowserView()
-        }
         .alert("Delete All Memory?", isPresented: $showingDeleteMemoryConfirmation) {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
@@ -711,7 +698,7 @@ struct SettingsView: View {
             Text("This will permanently delete all conversation history, archived chunks, summaries, user context, and reminders. Calendar and contacts will be preserved. This action cannot be undone.")
         }
         .fileImporter(
-            isPresented: $showingSoulFilePicker,
+            isPresented: $showingMindFilePicker,
             allowedContentTypes: [.item],
             allowsMultipleSelection: false
         ) { result in
@@ -719,7 +706,7 @@ struct SettingsView: View {
             case .success(let urls):
                 guard let url = urls.first else { return }
                 guard url.startAccessingSecurityScopedResource() else {
-                    soulExportError = "Unable to access file"
+                    mindExportError = "Unable to access file"
                     return
                 }
                 defer { url.stopAccessingSecurityScopedResource() }
@@ -732,24 +719,24 @@ struct SettingsView: View {
                     pendingImportURL = tempURL
                     showingRestoreConfirmation = true
                 } catch {
-                    soulExportError = "Failed to read file: \(error.localizedDescription)"
+                    mindExportError = "Failed to read file: \(error.localizedDescription)"
                 }
                 
             case .failure(let error):
-                soulExportError = "Failed to select file: \(error.localizedDescription)"
+                mindExportError = "Failed to select file: \(error.localizedDescription)"
             }
         }
-        .alert("Restore Soul?", isPresented: $showingRestoreConfirmation) {
+        .alert("Restore Mind?", isPresented: $showingRestoreConfirmation) {
             Button("Cancel", role: .cancel) {
                 pendingImportURL = nil
             }
             Button("Restore", role: .destructive) {
                 if let url = pendingImportURL {
-                    importSoul(from: url)
+                    importMind(from: url)
                 }
             }
         } message: {
-            Text("This will replace all your current data with the imported soul. Your existing conversation, files, and settings will be overwritten. This cannot be undone.")
+            Text("This will replace all your current data with the imported mind. Your existing conversation, files, and settings will be overwritten. This cannot be undone.")
         }
         .fileImporter(
             isPresented: $showingCalendarFilePicker,
@@ -1801,70 +1788,70 @@ struct SettingsView: View {
         }
     }
     
-    // MARK: - Soul Export/Import
+    // MARK: - Mind Export/Import
     
-    private func exportSoul() {
-        isExportingSoul = true
-        soulExportSuccess = nil
-        soulExportError = nil
+    private func exportMind() {
+        isExportingMind = true
+        mindExportSuccess = nil
+        mindExportError = nil
         
         Task {
             do {
                 // Create save panel
                 let savePanel = NSSavePanel()
                 savePanel.allowedContentTypes = [.data]
-                savePanel.nameFieldStringValue = "TelegramConcierge_Soul.\(SoulExportService.fileExtension)"
-                savePanel.title = "Export Soul"
-                savePanel.message = "Choose where to save your soul backup"
+                savePanel.nameFieldStringValue = "TelegramConcierge_Mind.\(MindExportService.fileExtension)"
+                savePanel.title = "Export Mind"
+                savePanel.message = "Choose where to save your mind backup"
                 
                 let response = await savePanel.beginSheetModal(for: NSApp.mainWindow ?? NSWindow())
                 
                 guard response == .OK, let url = savePanel.url else {
                     await MainActor.run {
-                        isExportingSoul = false
+                        isExportingMind = false
                     }
                     return
                 }
                 
-                try await SoulExportService.shared.exportSoul(to: url)
+                try await MindExportService.shared.exportMind(to: url)
                 
                 await MainActor.run {
-                    soulExportSuccess = "Soul exported successfully!"
-                    isExportingSoul = false
+                    mindExportSuccess = "Mind exported successfully!"
+                    isExportingMind = false
                     
                     // Clear success message after 5 seconds
                     DispatchQueue.main.asyncAfter(deadline: .now() + 5) {
-                        soulExportSuccess = nil
+                        mindExportSuccess = nil
                     }
                 }
             } catch {
                 await MainActor.run {
-                    soulExportError = "Export failed: \(error.localizedDescription)"
-                    isExportingSoul = false
+                    mindExportError = "Export failed: \(error.localizedDescription)"
+                    isExportingMind = false
                 }
             }
         }
     }
     
-    private func importSoul(from url: URL) {
-        isImportingSoul = true
-        soulExportSuccess = nil
-        soulExportError = nil
+    private func importMind(from url: URL) {
+        isImportingMind = true
+        mindExportSuccess = nil
+        mindExportError = nil
         pendingImportURL = nil
         
         Task {
             do {
-                try await SoulExportService.shared.importSoul(from: url)
+                try await MindExportService.shared.importMind(from: url)
                 
                 // Reload conversation and archives to pick up restored data
-                await conversationManager.reloadAfterSoulRestore()
+                await conversationManager.reloadAfterMindRestore()
                 
                 // Clean up temp file
                 try? FileManager.default.removeItem(at: url)
                 
                 await MainActor.run {
-                    soulExportSuccess = "Soul restored successfully!"
-                    isImportingSoul = false
+                    mindExportSuccess = "Mind restored successfully!"
+                    isImportingMind = false
                     
                     // Refresh persona settings after import
                     assistantName = KeychainHelper.load(key: KeychainHelper.assistantNameKey) ?? ""
@@ -1877,8 +1864,8 @@ struct SettingsView: View {
                 try? FileManager.default.removeItem(at: url)
                 
                 await MainActor.run {
-                    soulExportError = "Import failed: \(error.localizedDescription)"
-                    isImportingSoul = false
+                    mindExportError = "Import failed: \(error.localizedDescription)"
+                    isImportingMind = false
                 }
             }
         }

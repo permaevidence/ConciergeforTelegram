@@ -30,7 +30,6 @@
 		A1000011282D4F0100000001 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000012282D4F0100000001 /* KeychainHelper.swift */; };
 		A1000013282D4F0100000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000014282D4F0100000001 /* SettingsView.swift */; };
 		A1000015282D4F0100000001 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000016282D4F0100000001 /* MessageBubbleView.swift */; };
-		A1B2C3D4E5F60718293A4B5C /* ClaudeProjectsBrowserView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1B2C3D4E5F60718293A4B5D /* ClaudeProjectsBrowserView.swift */; };
 		A20FA62FAD25E07335060F6F /* WebOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA0AE409F8E6598E75DFDF72 /* WebOrchestrator.swift */; };
 		A494EEEA1729398C6C50A56F /* ToolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC662244A7AAD92235CE193B /* ToolModels.swift */; };
 		C2B87AA65DC778516C459184 /* ConversationArchiveModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = 788EABC6659EB6C669DBACA3 /* ConversationArchiveModels.swift */; };
@@ -42,7 +41,8 @@
 		DF3114E0259D2473CAE34DDF /* CalendarEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 0B883CAF85B587CFB8951D59 /* CalendarEvent.swift */; };
 		F968F82FBFCB478DF1BD23F6 /* DocumentGeneratorService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5A93EA054D5A31889F2D4564 /* DocumentGeneratorService.swift */; };
 		GEMINIIMG012345678901234A /* GeminiImageService.swift in Sources */ = {isa = PBXBuildFile; fileRef = GEMINIIMG012345678901234B /* GeminiImageService.swift */; };
-		SOULEXP0123456789ABCDEF1 /* SoulExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = SOULEXP0123456789ABCDEF2 /* SoulExportService.swift */; };
+		MINDEXP0123456789ABCDEF1 /* MindExportService.swift in Sources */ = {isa = PBXBuildFile; fileRef = MINDEXP0123456789ABCDEF2 /* MindExportService.swift */; };
+		PROJECTZIP0123456789ABCD1 /* ProjectsZipAutoExtractor.swift in Sources */ = {isa = PBXBuildFile; fileRef = PROJECTZIP0123456789ABCD2 /* ProjectsZipAutoExtractor.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -67,7 +67,6 @@
 		A1000014282D4F0100000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
 		A1000016282D4F0100000001 /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
 		A1000017282D4F0100000001 /* TelegramConcierge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TelegramConcierge.entitlements; sourceTree = "<group>"; };
-		A1B2C3D4E5F60718293A4B5D /* ClaudeProjectsBrowserView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeProjectsBrowserView.swift; sourceTree = "<group>"; };
 		AD50E4C9FE60DE1DEB6071AF /* WebOrchestrator+Helpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "WebOrchestrator+Helpers.swift"; sourceTree = "<group>"; };
 		BADE3E4558F8DFD065AE6A26 /* DocumentModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = DocumentModels.swift; sourceTree = "<group>"; };
 		CONTACT01234567890ABCDEF2 /* Contact.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = Contact.swift; sourceTree = "<group>"; };
@@ -81,7 +80,8 @@
 		F819F46CC6EAA2842A19FB51 /* ConversationArchiveService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConversationArchiveService.swift; sourceTree = "<group>"; };
 		FC662244A7AAD92235CE193B /* ToolModels.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ToolModels.swift; sourceTree = "<group>"; };
 		GEMINIIMG012345678901234B /* GeminiImageService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GeminiImageService.swift; sourceTree = "<group>"; };
-		SOULEXP0123456789ABCDEF2 /* SoulExportService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SoulExportService.swift; sourceTree = "<group>"; };
+		MINDEXP0123456789ABCDEF2 /* MindExportService.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MindExportService.swift; sourceTree = "<group>"; };
+		PROJECTZIP0123456789ABCD2 /* ProjectsZipAutoExtractor.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ProjectsZipAutoExtractor.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -146,7 +146,8 @@
 				5A93EA054D5A31889F2D4564 /* DocumentGeneratorService.swift */,
 				D2B3D8D014FCCF0BC929CA79 /* GmailService.swift */,
 				F6F41BFCEF3C81A6A0A64255 /* FileDescriptionService.swift */,
-				SOULEXP0123456789ABCDEF2 /* SoulExportService.swift */,
+				MINDEXP0123456789ABCDEF2 /* MindExportService.swift */,
+				PROJECTZIP0123456789ABCD2 /* ProjectsZipAutoExtractor.swift */,
 			);
 			path = Services;
 			sourceTree = "<group>";
@@ -158,7 +159,6 @@
 				A1000014282D4F0100000001 /* SettingsView.swift */,
 				A1000016282D4F0100000001 /* MessageBubbleView.swift */,
 				CONTEXTVIEW0123456789ABC2 /* ContextViewerView.swift */,
-				A1B2C3D4E5F60718293A4B5D /* ClaudeProjectsBrowserView.swift */,
 			);
 			path = Views;
 			sourceTree = "<group>";
@@ -270,7 +270,6 @@
 				A1000011282D4F0100000001 /* KeychainHelper.swift in Sources */,
 				A1000013282D4F0100000001 /* SettingsView.swift in Sources */,
 				A1000015282D4F0100000001 /* MessageBubbleView.swift in Sources */,
-				A1B2C3D4E5F60718293A4B5C /* ClaudeProjectsBrowserView.swift in Sources */,
 				A494EEEA1729398C6C50A56F /* ToolModels.swift in Sources */,
 				A20FA62FAD25E07335060F6F /* WebOrchestrator.swift in Sources */,
 				603CFC4690F84C64979D3048 /* WebOrchestrator+Helpers.swift in Sources */,
@@ -291,7 +290,8 @@
 				F968F82FBFCB478DF1BD23F6 /* DocumentGeneratorService.swift in Sources */,
 				CC2E2FEA08D0E88323DCC140 /* GmailService.swift in Sources */,
 				31B7CF7E140CC51F1318A043 /* FileDescriptionService.swift in Sources */,
-				SOULEXP0123456789ABCDEF1 /* SoulExportService.swift in Sources */,
+				MINDEXP0123456789ABCDEF1 /* MindExportService.swift in Sources */,
+				PROJECTZIP0123456789ABCD1 /* ProjectsZipAutoExtractor.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

@@ -144,7 +144,7 @@ Back in Telegram Concierge, the **Claude Code** section has these fields:
 | **Use Claude Code for document generation** | Off | When enabled, Gemini uses Claude project tools instead of the legacy `generate_document` tool for PDFs, spreadsheets, and text deliverables. |
 
 > [!TIP]
-> You can also click **"Browse Claude Projects"** to see the working directories Claude Code uses for generated files.
+> To view Claude Code working directories, click the **folder icon** in the main chat header (next to the Settings gear). This opens the projects folder directly in Finder, where you can delete project folders manually when needed.
 
 ---
 

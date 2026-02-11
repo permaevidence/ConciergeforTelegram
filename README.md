@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 # Telegram Concierge
 
 A native macOS AI assistant that lives inside a Telegram bot you control. It reads and sends emails, searches the web, generates images, manages your calendar, transcribes voice messages, runs macOS Shortcuts, delegates coding tasks to Claude Code, and remembers everything — powered by any LLM available through OpenRouter.
@@ -24,7 +23,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 - **Crash-safe archival** — pending chunks survive app restarts
 - **Semantic search** — the AI can search its own memory for past conversations
 - **User context** — learns facts about you over time and persists them across sessions
-- **Soul export/import** — full data portability: download or restore your entire assistant state as a `.soul` file
+- **Mind export/import** — full data portability: download or restore your entire assistant state as a `.mind` file
 
 ### 📧 Email
 - **Gmail API** *(recommended)* — fast, efficient, thread-aware email with OAuth2
@@ -113,7 +112,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 │ WebOrchestrator      │ GeminiImageService        │
 │ DocumentService      │ DocumentGeneratorService  │
 │ ContactsService      │ WhisperKitService         │
-│ SoulExportService    │ Claude Code (subprocess)  │
+│ MindExportService    │ Claude Code (subprocess)  │
 │ macOS Shortcuts      │ User Context Management   │
 └──────────────────────────────────────────────────┘
 ```
@@ -183,7 +182,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 </details>
 
 <details>
-<summary><strong>💻 Claude Code (7 tools)</strong></summary>
+<summary><strong>💻 Claude Code (6 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
@@ -194,9 +193,11 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 | `add_project_files` | Copy local files into a project |
 | `run_claude_code` | Execute Claude Code with a prompt in a project |
 | `send_project_result` | Send project files via Telegram or email |
-| `flag_projects_for_deletion` | Mark projects for cleanup |
 
 </details>
+
+> [!TIP]
+> To inspect Claude Code workspaces on disk, use the folder button in the main chat header (`ContentView`). It opens the projects folder directly in Finder, where you can also delete project folders manually.
 
 <details>
 <summary><strong>🧠 Memory & Context (4 tools)</strong></summary>
@@ -259,14 +260,13 @@ TelegramConcierge/
 │   ├── ReminderService.swift       # Reminder scheduling
 │   ├── DocumentService.swift       # Document storage
 │   ├── DocumentGeneratorService.swift  # PDF/spreadsheet/text generation
-│   ├── SoulExportService.swift     # Full-state data portability
+│   ├── MindExportService.swift     # Full-state data portability
 │   └── FileDescriptionService.swift    # AI-generated file descriptions
 ├── Views/
 │   ├── ContentView.swift           # Main chat interface
 │   ├── SettingsView.swift          # Configuration panel
 │   ├── MessageBubbleView.swift     # Chat bubble with file previews
-│   ├── ContextViewerView.swift     # Debug: view full Gemini context
-│   └── ClaudeProjectsBrowserView.swift  # Browse Claude project files
+│   └── ContextViewerView.swift     # Debug: view full Gemini context
 └── Utilities/
     └── KeychainHelper.swift        # Secure credential storage
 ```
@@ -351,7 +351,3 @@ This project is open source and available under the [MIT License](LICENSE).
 - [Serper](https://serper.dev) — Google Search API
 - [Jina AI](https://jina.ai) — web content extraction
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) — agentic coding CLI by Anthropic
-=======
-# ConciergeforTelegram
-A MacOS assistant that runs at home and you can message via Telegram
->>>>>>> 7835b83b8f212c8a2a3bd8403ca7c25afe66a5a3

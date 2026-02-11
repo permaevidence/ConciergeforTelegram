@@ -194,9 +194,6 @@ actor ToolExecutor {
         case "generate_project_mcp_config":
             content = await executeGenerateProjectMCPConfig(call)
             
-        case "flag_projects_for_deletion":
-            content = await executeFlagProjectsForDeletion(call)
-            
         case "add_to_user_context":
             content = await executeAddToUserContext(call)
             
@@ -3702,53 +3699,14 @@ struct GenerateProjectMCPConfigArguments: Codable {
     }
 }
 
-struct FlagProjectsForDeletionArguments: Codable {
-    let projectIds: [String]
-    let reason: String?
-    
-    enum CodingKeys: String, CodingKey {
-        case projectIds = "project_ids"
-        case reason
-    }
-    
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        reason = try container.decodeIfPresent(String.self, forKey: .reason)
-        
-        if let array = try? container.decode([String].self, forKey: .projectIds) {
-            projectIds = array
-        } else if let raw = (try? container.decode(String.self, forKey: .projectIds))?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !raw.isEmpty {
-            if let data = raw.data(using: .utf8),
-               let parsed = try? JSONDecoder().decode([String].self, from: data) {
-                projectIds = parsed
-            } else {
-                let csv = raw
-                    .split(separator: ",")
-                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-                    .filter { !$0.isEmpty }
-                projectIds = csv
-            }
-        } else {
-            throw DecodingError.dataCorruptedError(
-                forKey: .projectIds,
-                in: container,
-                debugDescription: "project_ids must be an array, JSON array string, CSV string, or single ID"
-            )
-        }
-    }
-}
-
 private struct ClaudeProjectMetadata: Codable {
     let id: String
     let name: String
     let createdAt: Date
     let initialNotes: String?
     var projectDescription: String?
+    var projectDescriptionSource: String?
     var lastEditedAt: Date?
-    var flaggedForDeletion: Bool?
-    var deletionFlaggedAt: Date?
-    var deletionFlagReason: String?
 }
 
 private struct ClaudeRunRecord: Codable {
@@ -3771,6 +3729,13 @@ private struct ProjectSnapshotEntry {
     let modifiedAt: Date
 }
 
+private struct ProjectDiscoveryContentSummary {
+    let scannedFileCount: Int
+    let reachedScanLimit: Bool
+    let topExtensions: [String]
+    let topAreas: [String]
+}
+
 private struct ClaudeProjectListItem: Codable {
     let id: String
     let name: String
@@ -3779,9 +3744,6 @@ private struct ClaudeProjectListItem: Codable {
     let fileCount: Int
     let lastRunAt: String?
     let lastEditedAt: String?
-    let flaggedForDeletion: Bool
-    let deletionFlaggedAt: String?
-    let deletionFlagReason: String?
     
     enum CodingKeys: String, CodingKey {
         case id, name, description
@@ -3789,9 +3751,6 @@ private struct ClaudeProjectListItem: Codable {
         case fileCount = "file_count"
         case lastRunAt = "last_run_at"
         case lastEditedAt = "last_edited_at"
-        case flaggedForDeletion = "flagged_for_deletion"
-        case deletionFlaggedAt = "deletion_flagged_at"
-        case deletionFlagReason = "deletion_flag_reason"
     }
 }
 
@@ -3804,37 +3763,6 @@ private struct ClaudeProjectListResult: Codable {
     enum CodingKeys: String, CodingKey {
         case success, projects, message
         case projectCount = "project_count"
-    }
-}
-
-private struct FlaggedProjectResultItem: Codable {
-    let id: String
-    let name: String
-    let alreadyFlagged: Bool
-    let deletionFlaggedAt: String
-    let reason: String?
-    
-    enum CodingKeys: String, CodingKey {
-        case id, name, reason
-        case alreadyFlagged = "already_flagged"
-        case deletionFlaggedAt = "deletion_flagged_at"
-    }
-}
-
-private struct FlagProjectsForDeletionResult: Codable {
-    let success: Bool
-    let requestedCount: Int
-    let flaggedCount: Int
-    let missingProjectIds: [String]
-    let flaggedProjects: [FlaggedProjectResultItem]
-    let message: String
-    
-    enum CodingKeys: String, CodingKey {
-        case success, message
-        case requestedCount = "requested_count"
-        case flaggedCount = "flagged_count"
-        case missingProjectIds = "missing_project_ids"
-        case flaggedProjects = "flagged_projects"
     }
 }
 
@@ -4195,22 +4123,21 @@ extension ToolExecutor {
         do {
             try FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
             
-            var metadata = ClaudeProjectMetadata(
-                id: projectId,
-                name: args.projectName.trimmingCharacters(in: .whitespacesAndNewlines),
-                createdAt: Date(),
-                initialNotes: args.initialNotes,
-                projectDescription: nil,
-                lastEditedAt: nil,
-                flaggedForDeletion: nil,
-                deletionFlaggedAt: nil,
-                deletionFlagReason: nil
-            )
+                var metadata = ClaudeProjectMetadata(
+                    id: projectId,
+                    name: args.projectName.trimmingCharacters(in: .whitespacesAndNewlines),
+                    createdAt: Date(),
+                    initialNotes: args.initialNotes,
+                    projectDescription: nil,
+                    projectDescriptionSource: nil,
+                    lastEditedAt: nil
+                )
             
-            metadata.projectDescription = await generateProjectDescriptionOnCreate(
-                projectName: metadata.name,
-                initialNotes: metadata.initialNotes
-            )
+                metadata.projectDescription = await generateProjectDescriptionOnCreate(
+                    projectName: metadata.name,
+                    initialNotes: metadata.initialNotes
+                )
+                metadata.projectDescriptionSource = "create_generated"
             let metadataURL = projectURL.appendingPathComponent(".project.json")
             let metadataData = try JSONEncoder().encode(metadata)
             try metadataData.write(to: metadataURL)
@@ -4261,21 +4188,30 @@ extension ToolExecutor {
                     continue
                 }
                 
-                let metadata = loadProjectMetadata(projectURL: url)
+                var metadata = ensureProjectMetadata(projectURL: url)
+                let hasDescription = !(metadata.projectDescription?
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                    .isEmpty ?? true)
+                if !hasDescription {
+                    metadata.projectDescription = buildDiscoveryProjectDescription(
+                        projectURL: url,
+                        projectName: metadata.name
+                    )
+                    metadata.projectDescriptionSource = "discovery_scan"
+                    saveProjectMetadata(metadata, projectURL: url)
+                }
                 let runRecord = loadLastRunRecord(projectURL: url)
                 let attrs = try? fileManager.attributesOfItem(atPath: url.path)
-                let createdAt = metadata?.createdAt ?? (attrs?[.creationDate] as? Date) ?? Date()
+                let createdAt = (attrs?[.creationDate] as? Date) ?? metadata.createdAt
+                let lastActivityAt = metadata.lastEditedAt ?? createdAt
                 let item = ClaudeProjectListItem(
-                    id: metadata?.id ?? url.lastPathComponent,
-                    name: metadata?.name ?? url.lastPathComponent,
-                    description: metadata?.projectDescription,
+                    id: metadata.id,
+                    name: metadata.name,
+                    description: metadata.projectDescription,
                     createdAt: isoFormatter.string(from: createdAt),
                     fileCount: countProjectFiles(projectURL: url),
                     lastRunAt: runRecord.map { isoFormatter.string(from: $0.timestamp) },
-                    lastEditedAt: metadata?.lastEditedAt.map { isoFormatter.string(from: $0) },
-                    flaggedForDeletion: metadata?.flaggedForDeletion ?? false,
-                    deletionFlaggedAt: metadata?.deletionFlaggedAt.map { isoFormatter.string(from: $0) },
-                    deletionFlagReason: metadata?.deletionFlagReason
+                    lastEditedAt: isoFormatter.string(from: lastActivityAt)
                 )
                 projects.append(item)
             }
@@ -5782,71 +5718,6 @@ extension ToolExecutor {
         }
     }
     
-    private func executeFlagProjectsForDeletion(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(FlagProjectsForDeletionArguments.self, from: argsData) else {
-            return #"{"error":"Failed to parse flag_projects_for_deletion arguments"}"#
-        }
-        
-        let rawReason = args.reason?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let reason = (rawReason?.isEmpty == false) ? rawReason : nil
-        
-        var seen: Set<String> = []
-        let requestedProjectIDs = args.projectIds
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
-            .filter { seen.insert($0).inserted }
-        
-        guard !requestedProjectIDs.isEmpty else {
-            return #"{"error":"project_ids is empty. Use list_projects first."}"#
-        }
-        
-        var missingProjectIDs: [String] = []
-        var flaggedProjects: [FlaggedProjectResultItem] = []
-        
-        for projectID in requestedProjectIDs {
-            guard let projectURL = resolveProjectDirectory(projectId: projectID) else {
-                missingProjectIDs.append(projectID)
-                continue
-            }
-            
-            var metadata = loadProjectMetadata(projectURL: projectURL) ??
-                makeFallbackProjectMetadata(projectURL: projectURL, projectId: projectID)
-            let alreadyFlagged = metadata.flaggedForDeletion ?? false
-            let flaggedAt = Date()
-            
-            metadata.flaggedForDeletion = true
-            metadata.deletionFlaggedAt = flaggedAt
-            if reason != nil {
-                metadata.deletionFlagReason = reason
-            }
-            saveProjectMetadata(metadata, projectURL: projectURL)
-            
-            flaggedProjects.append(
-                FlaggedProjectResultItem(
-                    id: metadata.id,
-                    name: metadata.name,
-                    alreadyFlagged: alreadyFlagged,
-                    deletionFlaggedAt: isoFormatter.string(from: flaggedAt),
-                    reason: metadata.deletionFlagReason
-                )
-            )
-        }
-        
-        let result = FlagProjectsForDeletionResult(
-            success: !flaggedProjects.isEmpty,
-            requestedCount: requestedProjectIDs.count,
-            flaggedCount: flaggedProjects.count,
-            missingProjectIds: missingProjectIDs,
-            flaggedProjects: flaggedProjects,
-            message: flaggedProjects.isEmpty
-                ? "No projects were flagged. Verify project IDs with list_projects."
-                : "Flagged \(flaggedProjects.count) project(s) for user-confirmed deletion in Settings."
-        )
-        
-        return encodeJSON(result)
-    }
-    
     private func instantAdminTokenKey(projectId: String) -> String {
         "instant_admin_token_\(projectId)"
     }
@@ -6161,7 +6032,11 @@ extension ToolExecutor {
     private func resolveProjectDirectory(projectId: String) -> URL? {
         let trimmed = projectId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty,
-              trimmed.range(of: #"^[A-Za-z0-9._-]+$"#, options: .regularExpression) != nil else {
+              trimmed != ".",
+              trimmed != "..",
+              !trimmed.contains("/"),
+              !trimmed.contains("\\"),
+              !trimmed.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) else {
             return nil
         }
         
@@ -6174,6 +6049,18 @@ extension ToolExecutor {
             return nil
         }
         
+        var metadata = ensureProjectMetadata(projectURL: projectURL)
+        let hasDescription = !(metadata.projectDescription?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty ?? true)
+        if !hasDescription {
+            metadata.projectDescription = buildDiscoveryProjectDescription(
+                projectURL: projectURL,
+                projectName: metadata.name
+            )
+            metadata.projectDescriptionSource = "discovery_scan"
+            saveProjectMetadata(metadata, projectURL: projectURL)
+        }
         return projectURL
     }
     
@@ -6528,7 +6415,26 @@ extension ToolExecutor {
     private func loadProjectMetadata(projectURL: URL) -> ClaudeProjectMetadata? {
         let metadataURL = projectURL.appendingPathComponent(".project.json")
         guard let data = try? Data(contentsOf: metadataURL) else { return nil }
-        return try? JSONDecoder().decode(ClaudeProjectMetadata.self, from: data)
+        
+        let decoder = JSONDecoder()
+        if let metadata = try? decoder.decode(ClaudeProjectMetadata.self, from: data) {
+            return metadata
+        }
+        
+        let isoDecoder = JSONDecoder()
+        isoDecoder.dateDecodingStrategy = .iso8601
+        return try? isoDecoder.decode(ClaudeProjectMetadata.self, from: data)
+    }
+    
+    private func ensureProjectMetadata(projectURL: URL) -> ClaudeProjectMetadata {
+        if let metadata = loadProjectMetadata(projectURL: projectURL) {
+            return metadata
+        }
+        
+        let folderName = projectURL.lastPathComponent
+        let metadata = makeFallbackProjectMetadata(projectURL: projectURL, projectId: folderName)
+        saveProjectMetadata(metadata, projectURL: projectURL)
+        return metadata
     }
     
     private func makeFallbackProjectMetadata(projectURL: URL, projectId: String) -> ClaudeProjectMetadata {
@@ -6540,10 +6446,8 @@ extension ToolExecutor {
             createdAt: createdAt,
             initialNotes: nil,
             projectDescription: nil,
-            lastEditedAt: nil,
-            flaggedForDeletion: nil,
-            deletionFlaggedAt: nil,
-            deletionFlagReason: nil
+            projectDescriptionSource: nil,
+            lastEditedAt: nil
         )
     }
     
@@ -6564,13 +6468,17 @@ extension ToolExecutor {
         stderr: String,
         fileChangesDetected: Bool
     ) async -> ClaudeProjectMetadata? {
-        guard var metadata = loadProjectMetadata(projectURL: projectURL) else { return nil }
+        var metadata = loadProjectMetadata(projectURL: projectURL) ??
+            makeFallbackProjectMetadata(projectURL: projectURL, projectId: projectId)
         
         if fileChangesDetected {
             metadata.lastEditedAt = Date()
         }
         
-        let shouldRegenerateDescription = fileChangesDetected || (metadata.projectDescription?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ?? true)
+        let currentDescription = metadata.projectDescription?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let hasDiscoveryDescription = metadata.projectDescriptionSource == "discovery_scan" ||
+            isLikelyDiscoveryGeneratedDescription(currentDescription)
+        let shouldRegenerateDescription = fileChangesDetected || currentDescription.isEmpty || hasDiscoveryDescription
         
         if shouldRegenerateDescription {
             if let generatedDescription = await generateProjectDescriptionAfterRun(
@@ -6584,7 +6492,8 @@ extension ToolExecutor {
                 fileChangesDetected: fileChangesDetected
             ) {
                 metadata.projectDescription = generatedDescription
-            } else if fileChangesDetected || (metadata.projectDescription?.isEmpty ?? true) {
+                metadata.projectDescriptionSource = "llm_after_run"
+            } else if fileChangesDetected || currentDescription.isEmpty || hasDiscoveryDescription {
                 metadata.projectDescription = fallbackProjectDescription(
                     projectName: metadata.name,
                     initialNotes: metadata.initialNotes,
@@ -6592,6 +6501,7 @@ extension ToolExecutor {
                     createdFiles: createdFiles,
                     modifiedFiles: modifiedFiles
                 )
+                metadata.projectDescriptionSource = "heuristic_after_run"
             }
         }
         
@@ -6779,6 +6689,101 @@ extension ToolExecutor {
             return squashed
         }
         return String(squashed.prefix(177)) + "..."
+    }
+
+    private func isLikelyDiscoveryGeneratedDescription(_ description: String) -> Bool {
+        let lowered = description.lowercased()
+        return lowered.contains(" files;") && lowered.contains("types:") && lowered.contains("areas:")
+    }
+
+    private func buildDiscoveryProjectDescription(
+        projectURL: URL,
+        projectName: String
+    ) -> String {
+        let summary = summarizeProjectContentsForDiscovery(projectURL: projectURL)
+
+        guard summary.scannedFileCount > 0 else {
+            return trimProjectDescription("Project '\(projectName)' workspace (empty folder).")
+        }
+
+        let countLabel = summary.reachedScanLimit
+            ? "\(summary.scannedFileCount)+ files"
+            : "\(summary.scannedFileCount) files"
+        var parts: [String] = [countLabel]
+
+        if !summary.topExtensions.isEmpty {
+            parts.append("types: \(summary.topExtensions.joined(separator: ", "))")
+        }
+        if !summary.topAreas.isEmpty {
+            parts.append("areas: \(summary.topAreas.joined(separator: ", "))")
+        }
+
+        return trimProjectDescription("Project '\(projectName)' with \(parts.joined(separator: "; ")).")
+    }
+
+    private func summarizeProjectContentsForDiscovery(projectURL: URL) -> ProjectDiscoveryContentSummary {
+        let scanLimit = 400
+        guard let enumerator = FileManager.default.enumerator(
+            at: projectURL,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles, .skipsPackageDescendants]
+        ) else {
+            return ProjectDiscoveryContentSummary(
+                scannedFileCount: 0,
+                reachedScanLimit: false,
+                topExtensions: [],
+                topAreas: []
+            )
+        }
+
+        var scannedFileCount = 0
+        var reachedScanLimit = false
+        var extensionCounts: [String: Int] = [:]
+        var areaCounts: [String: Int] = [:]
+
+        for case let url as URL in enumerator {
+            let relative = relativePath(from: projectURL, to: url)
+            if shouldIgnoreProjectPath(relative) { continue }
+
+            guard let values = try? url.resourceValues(forKeys: [.isRegularFileKey]),
+                  values.isRegularFile == true else {
+                continue
+            }
+
+            scannedFileCount += 1
+            if scannedFileCount > scanLimit {
+                reachedScanLimit = true
+                scannedFileCount = scanLimit
+                break
+            }
+
+            let ext = url.pathExtension.lowercased()
+            let normalizedExt = ext.isEmpty ? "no-ext" : ext
+            extensionCounts[normalizedExt, default: 0] += 1
+
+            let components = relative.split(separator: "/", omittingEmptySubsequences: true)
+            let area = components.count > 1 ? String(components[0]) : "root"
+            areaCounts[area, default: 0] += 1
+        }
+
+        func topLabels(from counts: [String: Int], limit: Int) -> [String] {
+            counts
+                .sorted { lhs, rhs in
+                    if lhs.value != rhs.value { return lhs.value > rhs.value }
+                    return lhs.key < rhs.key
+                }
+                .prefix(limit)
+                .map { key, value in
+                    value > 1 ? "\(key)(\(value))" : key
+                }
+        }
+
+        return ProjectDiscoveryContentSummary(
+            scannedFileCount: scannedFileCount,
+            reachedScanLimit: reachedScanLimit,
+            topExtensions: topLabels(from: extensionCounts, limit: 3),
+            topAreas: topLabels(from: areaCounts, limit: 3)
+        )
     }
     
     private func countProjectFiles(projectURL: URL) -> Int {

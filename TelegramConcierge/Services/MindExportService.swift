@@ -1,18 +1,18 @@
 import Foundation
 
-// MARK: - Soul Export Service
+// MARK: - Mind Export Service
 
 /// Handles exporting and importing all user data for portability
-actor SoulExportService {
-    static let shared = SoulExportService()
+actor MindExportService {
+    static let shared = MindExportService()
     
     // MARK: - Configuration
     
     /// Version for forward compatibility
     private let exportVersion = "1.0"
     
-    /// File extension for soul exports
-    static let fileExtension = "soul"
+    /// File extension for mind exports
+    static let fileExtension = "mind"
     
     /// Base app folder
     private let appFolder: URL = {
@@ -26,7 +26,7 @@ actor SoulExportService {
     
     /// Export all user data to a ZIP file at the specified destination
     /// - Returns: URL to the exported file
-    func exportSoul(to destination: URL) async throws {
+    func exportMind(to destination: URL) async throws {
         let fm = FileManager.default
         
         // Create a temporary directory for assembly
@@ -76,13 +76,13 @@ actor SoulExportService {
             try fm.copyItem(at: calendarSource, to: tempDir.appendingPathComponent("calendar.json"))
         }
         
-        // 8. Create soul_config.json with Keychain and UserDefaults data
-        let config = buildSoulConfig()
+        // 8. Create mind_config.json with Keychain and UserDefaults data
+        let config = buildMindConfig()
         let encoder = JSONEncoder()
         encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
         encoder.dateEncodingStrategy = .iso8601
         let configData = try encoder.encode(config)
-        try configData.write(to: tempDir.appendingPathComponent("soul_config.json"))
+        try configData.write(to: tempDir.appendingPathComponent("mind_config.json"))
         
         // 8. Create ZIP archive using native macOS zip command
         // Remove existing file if present
@@ -92,14 +92,14 @@ actor SoulExportService {
         
         try await createZipArchive(from: tempDir, to: destination)
         
-        print("[SoulExportService] Exported soul to: \(destination.path)")
+        print("[MindExportService] Exported mind to: \(destination.path)")
     }
     
     // MARK: - Import
     
-    /// Import user data from a soul file
-    /// - Parameter source: URL to the .soul file
-    func importSoul(from source: URL) async throws {
+    /// Import user data from a mind file
+    /// - Parameter source: URL to the .mind file
+    func importMind(from source: URL) async throws {
         let fm = FileManager.default
         
         // Create a temporary directory for extraction
@@ -166,17 +166,29 @@ actor SoulExportService {
             try fm.copyItem(at: calendarSource, to: calendarDest)
         }
         
-        // 8. Restore soul_config.json settings
-        let configSource = tempDir.appendingPathComponent("soul_config.json")
-        if fm.fileExists(atPath: configSource.path) {
+        // 8. Restore mind_config.json settings
+        // Fallback to any *_config.json for backward/forward compatibility.
+        let preferredConfigSource = tempDir.appendingPathComponent("mind_config.json")
+        let configSource: URL?
+        if fm.fileExists(atPath: preferredConfigSource.path) {
+            configSource = preferredConfigSource
+        } else {
+            let fallback = try? fm.contentsOfDirectory(at: tempDir, includingPropertiesForKeys: nil)
+                .filter { $0.lastPathComponent.hasSuffix("_config.json") }
+                .sorted { $0.lastPathComponent < $1.lastPathComponent }
+                .first
+            configSource = fallback
+        }
+        
+        if let configSource {
             let configData = try Data(contentsOf: configSource)
             let decoder = JSONDecoder()
             decoder.dateDecodingStrategy = .iso8601
-            let config = try decoder.decode(SoulConfig.self, from: configData)
-            try restoreSoulConfig(config)
+            let config = try decoder.decode(MindConfig.self, from: configData)
+            try restoreMindConfig(config)
         }
         
-        print("[SoulExportService] Imported soul from: \(source.path)")
+        print("[MindExportService] Imported mind from: \(source.path)")
     }
     
     // MARK: - ZIP Operations (using native macOS commands)
@@ -203,7 +215,7 @@ actor SoulExportService {
         if process.terminationStatus != 0 {
             let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw SoulExportError.zipFailed(errorMessage)
+            throw MindExportError.zipFailed(errorMessage)
         }
         
         // Copy from temp to destination (this uses the security-scoped access granted by NSSavePanel)
@@ -224,13 +236,13 @@ actor SoulExportService {
         if process.terminationStatus != 0 {
             let errorData = pipe.fileHandleForReading.readDataToEndOfFile()
             let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw SoulExportError.unzipFailed(errorMessage)
+            throw MindExportError.unzipFailed(errorMessage)
         }
     }
     
-    // MARK: - Soul Config
+    // MARK: - Mind Config
     
-    private struct SoulConfig: Codable {
+    private struct MindConfig: Codable {
         let version: String
         let exportDate: Date
         let persona: PersonaConfig
@@ -244,7 +256,7 @@ actor SoulExportService {
         let structuredUserContext: String?
     }
     
-    private func buildSoulConfig() -> SoulConfig {
+    private func buildMindConfig() -> MindConfig {
         // Load persona settings from Keychain
         let persona = PersonaConfig(
             assistantName: KeychainHelper.load(key: KeychainHelper.assistantNameKey),
@@ -260,7 +272,7 @@ actor SoulExportService {
             fileDescriptions = descriptions
         }
         
-        return SoulConfig(
+        return MindConfig(
             version: exportVersion,
             exportDate: Date(),
             persona: persona,
@@ -268,7 +280,7 @@ actor SoulExportService {
         )
     }
     
-    private func restoreSoulConfig(_ config: SoulConfig) throws {
+    private func restoreMindConfig(_ config: MindConfig) throws {
         // Restore persona settings to Keychain
         if let assistantName = config.persona.assistantName {
             try KeychainHelper.save(key: KeychainHelper.assistantNameKey, value: assistantName)
@@ -294,7 +306,7 @@ actor SoulExportService {
 
 // MARK: - Errors
 
-enum SoulExportError: LocalizedError {
+enum MindExportError: LocalizedError {
     case zipFailed(String)
     case unzipFailed(String)
     
