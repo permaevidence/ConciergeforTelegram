@@ -118,6 +118,21 @@ struct SerperSearchResp: Decodable {
 
 struct ExcerptOut: Decodable { let excerpts: [String] }
 
+struct RelevantAssetOut: Decodable {
+    struct Link: Decodable {
+        let text: String?
+        let url: String?
+    }
+
+    struct Image: Decodable {
+        let caption: String?
+        let url: String?
+    }
+
+    let links: [Link]?
+    let images: [Image]?
+}
+
 // MARK: - Web Context Types
 struct WebContext: Codable {
     var queries_used: [QueryRecord]
@@ -175,7 +190,48 @@ struct WebPAA: Codable { let question: String?; let snippet: String?; let title:
 struct WebTop: Codable { let title: String?; let link: String?; let source: String?; let date: String?
     init(_ x: SerperSearchResp.Top) { title = x.title; link = x.link; source = x.source; date = x.date }
 }
-struct ScrapedDoc: Codable { let url: String; let source: String; let title: String?; let excerpts: [String]; let retrievedAtStep: Int }
+struct ScrapedDoc: Codable {
+    let url: String
+    let source: String
+    let title: String?
+    let excerpts: [String]
+    let links: [ExtractedLink]
+    let images: [ExtractedImage]
+    let retrievedAtStep: Int
+
+    enum CodingKeys: String, CodingKey {
+        case url, source, title, excerpts, links, images, retrievedAtStep
+    }
+
+    init(
+        url: String,
+        source: String,
+        title: String?,
+        excerpts: [String],
+        links: [ExtractedLink] = [],
+        images: [ExtractedImage] = [],
+        retrievedAtStep: Int
+    ) {
+        self.url = url
+        self.source = source
+        self.title = title
+        self.excerpts = excerpts
+        self.links = links
+        self.images = images
+        self.retrievedAtStep = retrievedAtStep
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        self.url = try container.decode(String.self, forKey: .url)
+        self.source = try container.decode(String.self, forKey: .source)
+        self.title = try container.decodeIfPresent(String.self, forKey: .title)
+        self.excerpts = try container.decodeIfPresent([String].self, forKey: .excerpts) ?? []
+        self.links = try container.decodeIfPresent([ExtractedLink].self, forKey: .links) ?? []
+        self.images = try container.decodeIfPresent([ExtractedImage].self, forKey: .images) ?? []
+        self.retrievedAtStep = try container.decode(Int.self, forKey: .retrievedAtStep)
+    }
+}
 
 // MARK: - URL Reading Types (for view_url tool)
 
@@ -527,7 +583,7 @@ final class WebOrchestrator {
                 group.addTask {
                     do {
                         try Task.checkCancellation()
-                        return try await self.scrapeAndExcerpt(url: req.url, focus: req.focus, atStep: atStep)
+                        return try await self.scrapeAndExtract(url: req.url, focus: req.focus, atStep: atStep)
                     } catch { return nil }
                 }
             }
@@ -711,26 +767,53 @@ final class WebOrchestrator {
         return Array(images.prefix(20)) // Limit to 20 images
     }
     
-    private func scrapeAndExcerpt(url: String, focus: String, atStep: Int) async throws -> ScrapedDoc {
-        let (maybeTitle, rawContent) = try await fetchWithJinaReader(originalURL: url)
+    private func scrapeAndExtract(url: String, focus: String, atStep: Int) async throws -> ScrapedDoc {
+        let (maybeTitle, rawContent) = try await fetchWithJinaReader(originalURL: url, includeImageCaptions: true)
         let host = URL(string: url)?.host?.lowercased() ?? ""
-        
+
         if rawContent.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            return ScrapedDoc(url: url, source: host, title: maybeTitle, excerpts: [], retrievedAtStep: atStep)
+            return ScrapedDoc(url: url, source: host, title: maybeTitle, excerpts: [], links: [], images: [], retrievedAtStep: atStep)
         }
-        
+
+        let candidateLinks = extractLinksFromMarkdown(rawContent)
+        let candidateImages = extractImageReferences(rawContent)
+        let relevantAssets = try? await extractRelevantLinksAndImages(
+            page: rawContent,
+            focus: focus,
+            candidateLinks: candidateLinks,
+            candidateImages: candidateImages
+        )
+        let relevantLinks = relevantAssets?.links ?? []
+        let relevantImages = relevantAssets?.images ?? []
+
         if rawContent.count <= excerptThreshold {
-            return ScrapedDoc(url: url, source: host, title: maybeTitle, excerpts: [rawContent], retrievedAtStep: atStep)
+            return ScrapedDoc(
+                url: url,
+                source: host,
+                title: maybeTitle,
+                excerpts: [rawContent],
+                links: relevantLinks,
+                images: relevantImages,
+                retrievedAtStep: atStep
+            )
         }
-        
+
         if rawContent.count <= chunkSizeChars {
             let ex = try await extractExcerpts(page: rawContent, focus: focus)
-            return ScrapedDoc(url: url, source: host, title: maybeTitle, excerpts: ex, retrievedAtStep: atStep)
+            return ScrapedDoc(
+                url: url,
+                source: host,
+                title: maybeTitle,
+                excerpts: ex,
+                links: relevantLinks,
+                images: relevantImages,
+                retrievedAtStep: atStep
+            )
         }
-        
+
         let chunks = makeChunks(for: rawContent, chunk: chunkSizeChars, maxChunks: maxChunksForExtraction, overlap: chunkOverlapChars)
         var allExcerpts: [String] = []
-        
+
         for chunk in chunks {
             do {
                 let ex = try await extractExcerpts(page: chunk, focus: focus)
@@ -738,8 +821,16 @@ final class WebOrchestrator {
             } catch is CancellationError { throw CancellationError() }
             catch { /* continue */ }
         }
-        
-        return ScrapedDoc(url: url, source: host, title: maybeTitle, excerpts: dedupeExcerpts(allExcerpts), retrievedAtStep: atStep)
+
+        return ScrapedDoc(
+            url: url,
+            source: host,
+            title: maybeTitle,
+            excerpts: dedupeExcerpts(allExcerpts),
+            links: relevantLinks,
+            images: relevantImages,
+            retrievedAtStep: atStep
+        )
     }
     
     private func extractExcerpts(page: String, focus: String) async throws -> [String] {
@@ -761,18 +852,139 @@ final class WebOrchestrator {
               let out = try? JSONDecoder().decode(ExcerptOut.self, from: d) else { return [] }
         return out.excerpts
     }
+
+    private func extractRelevantLinksAndImages(
+        page: String,
+        focus: String,
+        candidateLinks: [ExtractedLink],
+        candidateImages: [ExtractedImage]
+    ) async throws -> (links: [ExtractedLink], images: [ExtractedImage]) {
+        guard !candidateLinks.isEmpty || !candidateImages.isEmpty else { return ([], []) }
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        let linksJSON = String(
+            data: (try? encoder.encode(candidateLinks)) ?? Data("[]".utf8),
+            encoding: .utf8
+        ) ?? "[]"
+        let imagesJSON = String(
+            data: (try? encoder.encode(candidateImages)) ?? Data("[]".utf8),
+            encoding: .utf8
+        ) ?? "[]"
+
+        let sys = """
+        You extract focus-relevant page assets from provided candidates.
+        Return STRICT JSON only in this schema:
+        {
+          "links": [{ "text": "...", "url": "https://..." }],
+          "images": [{ "caption": "...", "url": "https://..." | null }]
+        }
+
+        Rules:
+        - Select only items relevant to FOCUS.
+        - Use only URLs and items that appear in candidates; do not invent.
+        - Keep URLs exact.
+        - Return at most 8 links and 8 images.
+        """
+
+        let msgs: [ORChatReq.Msg] = [
+            .init(role: "system", content: sys),
+            .init(
+                role: "user",
+                content: """
+                FOCUS:
+                \(focus)
+
+                CANDIDATE_LINKS_JSON:
+                \(linksJSON)
+
+                CANDIDATE_IMAGES_JSON:
+                \(imagesJSON)
+
+                PAGE_CONTEXT:
+                \(page.prefixing(60000))
+                """
+            )
+        ]
+
+        let raw = try await callOpenRouter(
+            model: ORModel.excerpts,
+            messages: msgs,
+            maxTokens: 8000,
+            reasoning: makeReasoning(ReasoningSettings.excerpts)
+        )
+
+        guard let d = extractFirstJSONObjectData(from: raw),
+              let out = try? JSONDecoder().decode(RelevantAssetOut.self, from: d) else {
+            return ([], [])
+        }
+
+        let linkLookup: [String: ExtractedLink] = Dictionary(
+            candidateLinks.map { ($0.url, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let imageURLPairs: [(String, ExtractedImage)] = candidateImages.compactMap { image in
+            guard let url = image.url else { return nil }
+            return (url, image)
+        }
+        let imageURLLookup: [String: ExtractedImage] = Dictionary(
+            imageURLPairs,
+            uniquingKeysWith: { first, _ in first }
+        )
+        let imageCaptionLookup: [String: ExtractedImage] = Dictionary(
+            candidateImages.map { ($0.caption.lowercased(), $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+
+        let modelLinks = out.links ?? []
+        let modelImages = out.images ?? []
+
+        let filteredLinks = modelLinks.compactMap { item -> ExtractedLink? in
+            guard let url = item.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !url.isEmpty,
+                  let candidate = linkLookup[url] else { return nil }
+            let text = item.text?.trimmingCharacters(in: .whitespacesAndNewlines)
+            let resolvedText: String
+            if let text, !text.isEmpty {
+                resolvedText = text
+            } else {
+                resolvedText = candidate.text
+            }
+            return ExtractedLink(text: resolvedText, url: candidate.url)
+        }
+
+        let filteredImages = modelImages.compactMap { item -> ExtractedImage? in
+            let caption = item.caption?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if let rawURL = item.url?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !rawURL.isEmpty,
+               let candidate = imageURLLookup[rawURL] {
+                return ExtractedImage(caption: caption.isEmpty ? candidate.caption : caption, url: candidate.url)
+            }
+
+            if !caption.isEmpty, let candidate = imageCaptionLookup[caption.lowercased()] {
+                return candidate
+            }
+
+            return nil
+        }
+
+        return (
+            links: dedupeLinks(filteredLinks).prefix(8).map { $0 },
+            images: dedupeImages(filteredImages).prefix(8).map { $0 }
+        )
+    }
     
     private func generateFinalAnswer(currentQuestion: String, webContextJSON: String, scratchpad: String, historyPairs: [(user: String, assistant: String)]) async throws -> String {
         let sys = """
         **Today is: \(nowStamp())**
-        You are a helpful assistant. Use the provided WEB_CONTEXT_JSON and RESEARCH_JOURNEY to answer the user's question concisely.
+        Use the provided WEB_CONTEXT_JSON and RESEARCH_JOURNEY to answer the question concisely.
+        Provide sources with URLs so the information you provide can be verified.
         
         Requirements:
-        - Reply in the user's language
         - Prefer authoritative, recent sources
         - If sources conflict, note briefly
         - Keep answer concise, add "Sources" list at end
-        - ALWAYS wrap URLs in angle brackets: <https://example.com>
         - Do NOT invent citations
         """
         
@@ -827,6 +1039,27 @@ final class WebOrchestrator {
         var out: [String] = []
         for x in arr {
             let key = x.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !key.isEmpty, seen.insert(key).inserted { out.append(x) }
+        }
+        return out
+    }
+
+    private func dedupeLinks(_ arr: [ExtractedLink]) -> [ExtractedLink] {
+        var seen = Set<String>()
+        var out: [ExtractedLink] = []
+        for x in arr {
+            let key = x.url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+            if !key.isEmpty, seen.insert(key).inserted { out.append(x) }
+        }
+        return out
+    }
+
+    private func dedupeImages(_ arr: [ExtractedImage]) -> [ExtractedImage] {
+        var seen = Set<String>()
+        var out: [ExtractedImage] = []
+        for x in arr {
+            let key = (x.url?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())
+                ?? "caption:\(x.caption.trimmingCharacters(in: .whitespacesAndNewlines).lowercased())"
             if !key.isEmpty, seen.insert(key).inserted { out.append(x) }
         }
         return out
