@@ -733,8 +733,10 @@ actor OpenRouterService {
                 // Add assistant's tool call message
                 apiMessages.append(OpenRouterAPIMessage(
                     role: "assistant",
-                    content: nil,
-                    toolCalls: interaction.assistantToolCalls
+                    content: interaction.assistantMessage.content.map { .text($0) },
+                    toolCalls: interaction.assistantMessage.toolCalls,
+                    reasoning: interaction.assistantMessage.reasoning,
+                    reasoningDetails: interaction.assistantMessage.reasoningDetails
                 ))
                 
                 // Add tool results (text only - files will be added separately)
@@ -869,7 +871,9 @@ actor OpenRouterService {
             return .toolCalls(
                 assistantMessage: AssistantToolCallMessage(
                     content: choice.message.content,
-                    toolCalls: toolCalls
+                    toolCalls: toolCalls,
+                    reasoning: choice.message.reasoning,
+                    reasoningDetails: choice.message.reasoningDetails
                 ),
                 calls: toolCalls,
                 promptTokens: promptTokens
@@ -1046,7 +1050,7 @@ actor OpenRouterService {
 // MARK: - Tool Interaction (for follow-up calls)
 
 struct ToolInteraction {
-    let assistantToolCalls: [ToolCall]
+    let assistantMessage: AssistantToolCallMessage
     let results: [ToolResultMessage]
 }
 
@@ -1073,19 +1077,32 @@ struct OpenRouterAPIMessage: Codable {
     let content: MessageContent?
     var toolCalls: [ToolCall]?
     var toolCallId: String?
+    var reasoning: JSONValue?
+    var reasoningDetails: JSONValue?
     
     enum CodingKeys: String, CodingKey {
         case role
         case content
         case toolCalls = "tool_calls"
         case toolCallId = "tool_call_id"
+        case reasoning
+        case reasoningDetails = "reasoning_details"
     }
     
-    init(role: String, content: MessageContent?, toolCalls: [ToolCall]? = nil, toolCallId: String? = nil) {
+    init(
+        role: String,
+        content: MessageContent?,
+        toolCalls: [ToolCall]? = nil,
+        toolCallId: String? = nil,
+        reasoning: JSONValue? = nil,
+        reasoningDetails: JSONValue? = nil
+    ) {
         self.role = role
         self.content = content
         self.toolCalls = toolCalls
         self.toolCallId = toolCallId
+        self.reasoning = reasoning
+        self.reasoningDetails = reasoningDetails
     }
 }
 
@@ -1199,11 +1216,15 @@ struct OpenRouterResponseMessage: Codable {
     let role: String
     let content: String?
     let toolCalls: [ToolCall]?
+    let reasoning: JSONValue?
+    let reasoningDetails: JSONValue?
     
     enum CodingKeys: String, CodingKey {
         case role
         case content
         case toolCalls = "tool_calls"
+        case reasoning
+        case reasoningDetails = "reasoning_details"
     }
 }
 

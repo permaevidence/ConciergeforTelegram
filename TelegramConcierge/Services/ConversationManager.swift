@@ -815,6 +815,7 @@ class ConversationManager: ObservableObject {
                 statusMessage = "Executing tools (round \(round))..."
                 
                 // Execute available tools only. Return explicit errors for blocked/unavailable tool calls.
+                // Then reorder results to match the assistant's tool call order for deterministic follow-up prompts.
                 var toolResults: [ToolResultMessage] = []
                 if !executableCalls.isEmpty {
                     let executedResults = try await toolExecutor.executeParallel(executableCalls)
@@ -828,6 +829,18 @@ class ConversationManager: ObservableObject {
                 }
                 try Task.checkCancellation()
                 
+                var orderedToolResults: [ToolResultMessage] = []
+                var remainingToolResults = toolResults
+                for call in assistantMessage.toolCalls {
+                    if let index = remainingToolResults.firstIndex(where: { $0.toolCallId == call.id }) {
+                        orderedToolResults.append(remainingToolResults.remove(at: index))
+                    }
+                }
+                if !remainingToolResults.isEmpty {
+                    print("[ConversationManager] Round \(round): appending \(remainingToolResults.count) unmatched tool result(s) after ordered results")
+                    orderedToolResults.append(contentsOf: remainingToolResults)
+                }
+                
                 print("[ConversationManager] Round \(round) tool execution complete")
                 
                 if executableCalls.contains(where: { $0.function.name == "show_project_deployment_tools" }) {
@@ -836,8 +849,8 @@ class ConversationManager: ObservableObject {
                 
                 // Add this interaction to the chain
                 let interaction = ToolInteraction(
-                    assistantToolCalls: assistantMessage.toolCalls,
-                    results: toolResults
+                    assistantMessage: assistantMessage,
+                    results: orderedToolResults
                 )
                 toolInteractions.append(interaction)
                 
@@ -973,7 +986,7 @@ class ConversationManager: ObservableObject {
                 resultByCallId[result.toolCallId] = result
             }
             
-            for call in interaction.assistantToolCalls {
+            for call in interaction.assistantMessage.toolCalls {
                 let outcome = summarizeToolOutcome(resultByCallId[call.id])
                 lines.append("\(stepIndex). \(call.function.name): \(outcome)")
                 stepIndex += 1

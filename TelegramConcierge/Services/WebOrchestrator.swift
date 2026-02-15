@@ -982,7 +982,7 @@ final class WebOrchestrator {
         Provide sources with URLs so the information you provide can be verified.
         
         Requirements:
-        - Prefer authoritative, recent sources
+        - Prefer recent sources when appropriate
         - If sources conflict, note briefly
         - Keep answer concise, add "Sources" list at end
         - Do NOT invent citations
