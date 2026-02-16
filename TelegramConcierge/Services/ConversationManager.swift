@@ -913,16 +913,15 @@ class ConversationManager: ObservableObject {
         let toolNames = Set(calls.map { $0.function.name })
         
         // Check for calendar operations
-        let hasCalendarOp = toolNames.contains("view_calendar") ||
-                           toolNames.contains("add_calendar_event") ||
-                           toolNames.contains("edit_calendar_event") ||
-                           toolNames.contains("delete_calendar_event")
+        let hasCalendarOp = toolNames.contains("manage_calendar")
+        let hasReminderOp = toolNames.contains("manage_reminders")
+        let hasContactOp = toolNames.contains("manage_contacts")
         
         // Check for email operations
         let hasEmailOp = toolNames.contains("read_emails") || toolNames.contains("search_emails") || toolNames.contains("send_email") || toolNames.contains("reply_email") || toolNames.contains("forward_email")
         
-        if toolNames.contains("web_search") && toolNames.contains("set_reminder") {
-            return "🔍 Searching the web and setting reminder..."
+        if toolNames.contains("web_search") && hasReminderOp {
+            return "🔍 Searching the web and managing reminders..."
         } else if toolNames.contains("web_search") && hasCalendarOp {
             return "🔍📅 Searching the web and managing calendar..."
         } else if toolNames.contains("web_search") {
@@ -945,14 +944,12 @@ class ConversationManager: ObservableObject {
             return "📤 Sending project result..."
         } else if toolNames.contains("deploy_project_to_vercel") {
             return "🚀 Deploying project to Vercel..."
-        } else if toolNames.contains("set_reminder") {
-            return "⏰ Setting reminder..."
-        } else if toolNames.contains("list_reminders") {
-            return "📋 Checking reminders..."
-        } else if toolNames.contains("delete_reminder") {
-            return "🗑️ Deleting reminder..."
+        } else if hasReminderOp {
+            return "⏰ Managing reminders..."
         } else if hasCalendarOp {
             return "📅 Managing calendar..."
+        } else if hasContactOp {
+            return "👥 Managing contacts..."
         } else if toolNames.contains("search_emails") {
             return "🔎 Searching emails..."
         } else if toolNames.contains("read_emails") {

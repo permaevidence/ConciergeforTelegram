@@ -69,6 +69,8 @@ struct SettingsView: View {
     @State private var userContext: String = ""
     @State private var structuredUserContext: String = ""
     @State private var isStructuredContextExpanded: Bool = false
+    @State private var isEditingStructuredContext: Bool = false
+    @State private var structuredContextDraft: String = ""
     @State private var isStructuring: Bool = false
     @State private var structuringError: String?
     
@@ -675,9 +677,15 @@ struct SettingsView: View {
             loadSettings()
             // Always refresh user context from Keychain (Gemini may have changed it via tools)
             structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+            structuredContextDraft = structuredUserContext
             Task {
                 await WhisperKitService.shared.checkModelStatus()
                 calendarEventCount = await CalendarService.shared.totalEventCount()
+            }
+        }
+        .onChange(of: structuredUserContext) { newValue in
+            if !isEditingStructuredContext {
+                structuredContextDraft = newValue
             }
         }
         .sheet(isPresented: $showingContextViewer) {
@@ -692,6 +700,8 @@ struct SettingsView: View {
                     // Clear local state to reflect deletion
                     userContext = ""
                     structuredUserContext = ""
+                    structuredContextDraft = ""
+                    isEditingStructuredContext = false
                 }
             }
         } message: {
@@ -876,6 +886,12 @@ struct SettingsView: View {
             .disabled(userContext.isEmpty || openRouterApiKey.isEmpty || isStructuring)
             
             if !structuredUserContext.isEmpty {
+                Button(isEditingStructuredContext ? "Editing..." : "Edit Context") {
+                    beginStructuredContextEdit()
+                }
+                .buttonStyle(.bordered)
+                .disabled(isEditingStructuredContext)
+
                 Button("Delete Context") {
                     showingDeleteContextConfirmation = true
                 }
@@ -892,7 +908,9 @@ struct SettingsView: View {
             Button("Cancel", role: .cancel) { }
             Button("Delete", role: .destructive) {
                 structuredUserContext = ""
+                structuredContextDraft = ""
                 userContext = ""
+                isEditingStructuredContext = false
                 try? KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: "")
                 try? KeychainHelper.save(key: KeychainHelper.userContextKey, value: "")
             }
@@ -912,11 +930,38 @@ struct SettingsView: View {
         
         if !structuredUserContext.isEmpty {
             DisclosureGroup(isExpanded: $isStructuredContextExpanded) {
-                Text(structuredUserContext)
-                    .font(.caption)
-                    .padding(8)
-                    .background(Color.green.opacity(0.1))
-                    .cornerRadius(5)
+                if isEditingStructuredContext {
+                    VStack(alignment: .leading, spacing: 8) {
+                        TextEditor(text: $structuredContextDraft)
+                            .frame(minHeight: 140)
+                            .font(.body)
+                            .overlay(
+                                RoundedRectangle(cornerRadius: 5)
+                                    .stroke(Color.gray.opacity(0.3), lineWidth: 1)
+                            )
+
+                        HStack {
+                            Button("Save Changes") {
+                                saveStructuredContextEdits()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(structuredContextDraft == structuredUserContext)
+
+                            Button("Cancel") {
+                                cancelStructuredContextEdit()
+                            }
+                            .buttonStyle(.bordered)
+
+                            Spacer()
+                        }
+                    }
+                } else {
+                    Text(structuredUserContext)
+                        .font(.caption)
+                        .padding(8)
+                        .background(Color.green.opacity(0.1))
+                        .cornerRadius(5)
+                }
             } label: {
                 Text("User Context (used in prompts):")
                     .font(.caption)
@@ -1314,6 +1359,7 @@ struct SettingsView: View {
         userName = KeychainHelper.load(key: KeychainHelper.userNameKey) ?? ""
         userContext = KeychainHelper.load(key: KeychainHelper.userContextKey) ?? ""
         structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+        structuredContextDraft = structuredUserContext
         
         // Load archive settings (show custom value only; default stays as placeholder)
         if let savedChunkSize = KeychainHelper.load(key: KeychainHelper.archiveChunkSizeKey),
@@ -1609,6 +1655,39 @@ struct SettingsView: View {
         try? KeychainHelper.save(key: KeychainHelper.assistantNameKey, value: assistantName)
         try? KeychainHelper.save(key: KeychainHelper.userNameKey, value: userName)
     }
+
+    private func beginStructuredContextEdit() {
+        structuredContextDraft = structuredUserContext
+        isStructuredContextExpanded = true
+        isEditingStructuredContext = true
+        structuringError = nil
+    }
+
+    private func cancelStructuredContextEdit() {
+        structuredContextDraft = structuredUserContext
+        isEditingStructuredContext = false
+    }
+
+    private func saveStructuredContextEdits() {
+        let maxContextCharacters = 20000
+        var updatedContext = structuredContextDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+        var wasTruncated = false
+
+        if updatedContext.count > maxContextCharacters {
+            updatedContext = String(updatedContext.prefix(maxContextCharacters))
+            wasTruncated = true
+        }
+
+        do {
+            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
+            structuredUserContext = updatedContext
+            structuredContextDraft = updatedContext
+            isEditingStructuredContext = false
+            structuringError = wasTruncated ? "Context exceeded 20,000 characters and was truncated." : nil
+        } catch {
+            structuringError = "Failed to save edited context: \(error.localizedDescription)"
+        }
+    }
     
     private func saveTelegramSection() {
         try? KeychainHelper.save(key: KeychainHelper.telegramBotTokenKey, value: telegramToken)
@@ -1858,6 +1937,8 @@ struct SettingsView: View {
                     userName = KeychainHelper.load(key: KeychainHelper.userNameKey) ?? ""
                     userContext = KeychainHelper.load(key: KeychainHelper.userContextKey) ?? ""
                     structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+                    structuredContextDraft = structuredUserContext
+                    isEditingStructuredContext = false
                 }
             } catch {
                 // Clean up temp file
@@ -1972,7 +2053,9 @@ struct SettingsView: View {
                 )
                 await MainActor.run {
                     structuredUserContext = structured
+                    structuredContextDraft = structured
                     userContext = ""
+                    isEditingStructuredContext = false
                     try? KeychainHelper.save(key: KeychainHelper.userContextKey, value: "")
                     try? KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: structured)
                     isStructuring = false

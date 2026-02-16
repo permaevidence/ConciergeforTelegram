@@ -88,26 +88,11 @@ actor ToolExecutor {
         case "web_search":
             content = try await executeWebSearch(call)
             
-        case "set_reminder":
-            content = try await executeSetReminder(call)
+        case "manage_reminders":
+            content = try await executeManageReminders(call)
             
-        case "list_reminders":
-            content = await executeListReminders(call)
-            
-        case "delete_reminder":
-            content = await executeDeleteReminder(call)
-            
-        case "view_calendar":
-            content = await executeViewCalendar(call)
-            
-        case "add_calendar_event":
-            content = await executeAddCalendarEvent(call)
-            
-        case "edit_calendar_event":
-            content = await executeEditCalendarEvent(call)
-            
-        case "delete_calendar_event":
-            content = await executeDeleteCalendarEvent(call)
+        case "manage_calendar":
+            content = await executeManageCalendar(call)
             
         case "view_conversation_chunk":
             content = await executeViewConversationChunk(call)
@@ -138,14 +123,8 @@ actor ToolExecutor {
         case "get_email_thread":
             content = await executeGetEmailThread(call)
             
-        case "find_contact":
-            content = await executeFindContact(call)
-            
-        case "add_contact":
-            content = await executeAddContact(call)
-            
-        case "list_contacts":
-            content = await executeListContacts(call)
+        case "manage_contacts":
+            content = await executeManageContacts(call)
             
         // generate_image is handled in the special multimodal injection switch above
             
@@ -194,14 +173,8 @@ actor ToolExecutor {
         case "generate_project_mcp_config":
             content = await executeGenerateProjectMCPConfig(call)
             
-        case "add_to_user_context":
-            content = await executeAddToUserContext(call)
-            
-        case "remove_from_user_context":
-            content = await executeRemoveFromUserContext(call)
-            
-        case "rewrite_user_context":
-            content = await executeRewriteUserContext(call)
+        case "edit_user_context":
+            content = await executeEditUserContext(call)
             
         case "generate_document":
             content = await executeGenerateDocument(call)
@@ -269,270 +242,288 @@ actor ToolExecutor {
         }
     }
     
-    private func executeSetReminder(_ call: ToolCall) async throws -> String {
-        // Parse arguments
+    private func executeManageReminders(_ call: ToolCall) async throws -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(SetReminderArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse set_reminder arguments\"}"
+              let args = try? JSONDecoder().decode(ManageRemindersArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse manage_reminders arguments"}"#
         }
-        
-        // Parse ISO 8601 datetime
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        
-        // Try with fractional seconds first, then without
-        var triggerDate: Date?
-        triggerDate = formatter.date(from: args.triggerDatetime)
-        if triggerDate == nil {
-            formatter.formatOptions = [.withInternetDateTime]
-            triggerDate = formatter.date(from: args.triggerDatetime)
-        }
-        
-        guard let date = triggerDate else {
-            return "{\"error\": \"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T09:00:00+01:00')\"}"
-        }
-        
-        // Validate it's in the future
-        guard date > Date() else {
-            return "{\"error\": \"Reminder datetime must be in the future\"}"
-        }
-        
-        // Parse recurrence if provided
-        var recurrence: RecurrenceType? = nil
-        if let recurrenceStr = args.recurrence?.lowercased() {
-            switch recurrenceStr {
-            case "daily":
-                recurrence = .daily
-            case "weekly":
-                recurrence = .weekly
-            case "monthly":
-                recurrence = .monthly
-            default:
-                // Check for "every_X_minutes" pattern
-                if recurrenceStr.hasPrefix("every_") && recurrenceStr.hasSuffix("_minutes") {
-                    let numberPart = recurrenceStr
-                        .replacingOccurrences(of: "every_", with: "")
-                        .replacingOccurrences(of: "_minutes", with: "")
-                    if let minutes = Int(numberPart), minutes > 0 {
-                        recurrence = .custom(minutes: minutes)
+
+        let action = args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch action {
+        case "set":
+            guard let triggerDatetime = args.triggerDatetime,
+                  let prompt = args.prompt,
+                  !triggerDatetime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  !prompt.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return #"{"error":"For action 'set', trigger_datetime and prompt are required"}"#
+            }
+
+            let formatter = ISO8601DateFormatter()
+            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+            var triggerDate = formatter.date(from: triggerDatetime)
+            if triggerDate == nil {
+                formatter.formatOptions = [.withInternetDateTime]
+                triggerDate = formatter.date(from: triggerDatetime)
+            }
+
+            guard let date = triggerDate else {
+                return #"{"error":"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T09:00:00+01:00')"}"#
+            }
+
+            guard date > Date() else {
+                return #"{"error":"Reminder datetime must be in the future"}"#
+            }
+
+            let recurrence = parseRecurrenceType(args.recurrence)
+
+            let reminder = await ReminderService.shared.addReminder(triggerDate: date, prompt: prompt, recurrence: recurrence)
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .full
+            dateFormatter.timeStyle = .short
+            var message = "Reminder successfully scheduled"
+            if let rec = recurrence {
+                message += " (recurring: \(rec.description))"
+            }
+            let result = SetReminderResult(
+                success: true,
+                reminderId: reminder.id.uuidString,
+                scheduledFor: dateFormatter.string(from: date),
+                message: message
+            )
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return #"{"success":true,"message":"Reminder scheduled"}"#
+
+        case "list":
+            let reminders = await ReminderService.shared.getPendingReminders()
+            if reminders.isEmpty {
+                return #"{"success": true, "count": 0, "reminders": [], "message": "No pending reminders"}"#
+            }
+
+            let dateFormatter = DateFormatter()
+            dateFormatter.dateStyle = .medium
+            dateFormatter.timeStyle = .short
+
+            var jsonEntries: [String] = []
+            for reminder in reminders {
+                let idStr = reminder.id.uuidString
+                let triggerDT = ISO8601DateFormatter().string(from: reminder.triggerDate)
+                let triggerReadable = dateFormatter.string(from: reminder.triggerDate)
+                let promptEscaped = reminder.prompt
+                    .replacingOccurrences(of: "\\", with: "\\\\")
+                    .replacingOccurrences(of: "\"", with: "\\\"")
+                    .replacingOccurrences(of: "\n", with: "\\n")
+
+                var entryFields = [
+                    "\"id\": \"\(idStr)\"",
+                    "\"trigger_datetime\": \"\(triggerDT)\"",
+                    "\"trigger_datetime_readable\": \"\(triggerReadable)\"",
+                    "\"prompt\": \"\(promptEscaped)\""
+                ]
+
+                if let rec = reminder.recurrence {
+                    entryFields.append("\"recurrence\": \"\(rec.description)\"")
+                }
+                jsonEntries.append("{\(entryFields.joined(separator: ", "))}")
+            }
+
+            let remindersJson = jsonEntries.joined(separator: ", ")
+            return "{\"success\": true, \"count\": \(reminders.count), \"reminders\": [\(remindersJson)], \"message\": \"Found \(reminders.count) pending reminder(s)\"}"
+
+        case "delete":
+            let pendingReminders = await ReminderService.shared.getPendingReminders()
+            var targetIDs: [String] = []
+            var deleteMode = "single"
+
+            if args.deleteAll == true {
+                targetIDs = pendingReminders.map { $0.id.uuidString }
+                deleteMode = "all"
+            } else if args.deleteRecurring == true {
+                if let recurrenceRaw = args.recurrence?.trimmingCharacters(in: .whitespacesAndNewlines),
+                   !recurrenceRaw.isEmpty,
+                   parseRecurrenceType(recurrenceRaw) == nil {
+                    return #"{"error":"Invalid recurrence filter for delete_recurring. Use daily, weekly, monthly, or every_X_minutes."}"#
+                }
+
+                let recurrenceFilter = parseRecurrenceType(args.recurrence)
+                targetIDs = pendingReminders.filter { reminder in
+                    guard let recurrence = reminder.recurrence else { return false }
+                    if let recurrenceFilter {
+                        return recurrence == recurrenceFilter
                     }
+                    return true
+                }.map { $0.id.uuidString }
+                deleteMode = "recurring"
+            } else if let reminderIds = args.reminderIds, !reminderIds.isEmpty {
+                targetIDs = reminderIds
+                deleteMode = "batch"
+            } else if let reminderId = args.reminderId, !reminderId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                targetIDs = [reminderId]
+                deleteMode = "single"
+            } else {
+                return #"{"error":"For action 'delete', provide one of: reminder_id, reminder_ids, delete_all=true, or delete_recurring=true"}"#
+            }
+
+            let normalizedTargetIDs = Array(NSOrderedSet(array: targetIDs.map {
+                $0.trimmingCharacters(in: .whitespacesAndNewlines)
+            }.filter { !$0.isEmpty })) as? [String] ?? []
+
+            if normalizedTargetIDs.isEmpty {
+                return #"{"error":"No valid reminder IDs provided for deletion"}"#
+            }
+
+            var deletedCount = 0
+            var notFoundCount = 0
+            var invalidIDs: [String] = []
+
+            for idString in normalizedTargetIDs {
+                guard let uuid = UUID(uuidString: idString) else {
+                    invalidIDs.append(idString)
+                    continue
+                }
+                let success = await ReminderService.shared.deleteReminder(id: uuid)
+                if success {
+                    deletedCount += 1
+                } else {
+                    notFoundCount += 1
                 }
             }
-        }
-        
-        // Create the reminder
-        let reminder = await ReminderService.shared.addReminder(triggerDate: date, prompt: args.prompt, recurrence: recurrence)
-        
-        // Format response
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateStyle = .full
-        dateFormatter.timeStyle = .short
-        
-        var message = "Reminder successfully scheduled"
-        if let rec = recurrence {
-            message += " (recurring: \(rec.description))"
-        }
-        
-        let result = SetReminderResult(
-            success: true,
-            reminderId: reminder.id.uuidString,
-            scheduledFor: dateFormatter.string(from: date),
-            message: message
-        )
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{\"success\": true, \"message\": \"Reminder scheduled\"}"
-    }
-    
-    private func executeListReminders(_ call: ToolCall) async -> String {
-        let reminders = await ReminderService.shared.getPendingReminders()
-        
-        if reminders.isEmpty {
-            return #"{"success": true, "count": 0, "reminders": [], "message": "No pending reminders"}"#
-        }
-        
-        let dateFormatter = DateFormatter()
-        dateFormatter.dateStyle = .medium
-        dateFormatter.timeStyle = .short
-        
-        // Build JSON entries for each reminder directly
-        var jsonEntries: [String] = []
-        for reminder in reminders {
-            let idStr = reminder.id.uuidString
-            let triggerDT = ISO8601DateFormatter().string(from: reminder.triggerDate)
-            let triggerReadable = dateFormatter.string(from: reminder.triggerDate)
-            let promptEscaped = reminder.prompt
-                .replacingOccurrences(of: "\\", with: "\\\\")
-                .replacingOccurrences(of: "\"", with: "\\\"")
-                .replacingOccurrences(of: "\n", with: "\\n")
-            
-            var entryFields = [
-                "\"id\": \"\(idStr)\"",
-                "\"trigger_datetime\": \"\(triggerDT)\"",
-                "\"trigger_datetime_readable\": \"\(triggerReadable)\"",
-                "\"prompt\": \"\(promptEscaped)\""
-            ]
-            
-            if let rec = reminder.recurrence {
-                entryFields.append("\"recurrence\": \"\(rec.description)\"")
+
+            if deleteMode == "single" && normalizedTargetIDs.count == 1 && invalidIDs.isEmpty {
+                if deletedCount == 1 {
+                    return #"{"success":true,"message":"Reminder deleted successfully","deleted_count":1}"#
+                }
+                return #"{"error":"Reminder not found with the specified ID"}"#
             }
-            
-            jsonEntries.append("{\(entryFields.joined(separator: ", "))}")
-        }
-        
-        let remindersJson = jsonEntries.joined(separator: ", ")
-        return "{\"success\": true, \"count\": \(reminders.count), \"reminders\": [\(remindersJson)], \"message\": \"Found \(reminders.count) pending reminder(s)\"}"
-    }
-    
-    private func executeDeleteReminder(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(DeleteReminderArguments.self, from: argsData) else {
-            return #"{"error": "Failed to parse delete_reminder arguments"}"#
-        }
-        
-        guard let reminderId = UUID(uuidString: args.reminderId) else {
-            return #"{"error": "Invalid reminder_id format. Must be a valid UUID."}"#
-        }
-        
-        let success = await ReminderService.shared.deleteReminder(id: reminderId)
-        
-        if success {
-            return #"{"success": true, "message": "Reminder deleted successfully"}"#
-        } else {
-            return #"{"error": "Reminder not found with the specified ID"}"#
+
+            let invalidIDsJSON = invalidIDs
+                .map { "\"\($0.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: "\"", with: "\\\""))\"" }
+                .joined(separator: ", ")
+            let message = "Deleted \(deletedCount) reminder(s). \(notFoundCount) not found. \(invalidIDs.count) invalid ID(s)."
+            return """
+            {"success": true, "mode": "\(deleteMode)", "deleted_count": \(deletedCount), "not_found_count": \(notFoundCount), "invalid_ids": [\(invalidIDsJSON)], "message": "\(message)"}
+            """
+
+        default:
+            return #"{"error":"Invalid action. Supported actions: set, list, delete"}"#
         }
     }
     // MARK: - Calendar Tool Implementations
     
-    private func executeViewCalendar(_ call: ToolCall) async -> String {
-        // Parse arguments (optional)
-        var includePast = false
-        if let argsData = call.function.arguments.data(using: .utf8),
-           let args = try? JSONDecoder().decode(ViewCalendarArguments.self, from: argsData) {
-            includePast = args.includePast ?? false
-        }
-        
-        let events = await CalendarService.shared.getEvents(includePast: includePast)
-        
-        let formatter = DateFormatter()
-        formatter.dateStyle = .medium
-        formatter.timeStyle = .short
-        
-        let eventList = events.map { event -> CalendarEventResponse in
-            CalendarEventResponse(
-                id: event.id.uuidString,
-                title: event.title,
-                datetime: formatter.string(from: event.datetime),
-                datetimeISO: ISO8601DateFormatter().string(from: event.datetime),
-                notes: event.notes,
-                isPast: event.datetime < Date()
-            )
-        }
-        
-        let result = ViewCalendarResult(
-            success: true,
-            eventCount: eventList.count,
-            events: eventList,
-            message: eventList.isEmpty ? "No events found" : "Found \(eventList.count) event(s)"
-        )
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{\"success\": true, \"eventCount\": 0, \"events\": []}"
-    }
-    
-    private func executeAddCalendarEvent(_ call: ToolCall) async -> String {
+    private func executeManageCalendar(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(AddCalendarEventArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse add_calendar_event arguments\"}"
+              let args = try? JSONDecoder().decode(ManageCalendarArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse manage_calendar arguments"}"#
         }
-        
-        // Parse ISO 8601 datetime
-        guard let eventDate = parseISO8601Date(args.datetime) else {
-            return "{\"error\": \"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')\"}"
-        }
-        
-        let event = await CalendarService.shared.addEvent(
-            title: args.title,
-            datetime: eventDate,
-            notes: args.notes
-        )
-        
-        let formatter = DateFormatter()
-        formatter.dateStyle = .full
-        formatter.timeStyle = .short
-        
-        let result = AddCalendarEventResult(
-            success: true,
-            eventId: event.id.uuidString,
-            scheduledFor: formatter.string(from: eventDate),
-            message: "Event '\(args.title)' successfully added to calendar"
-        )
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{\"success\": true, \"message\": \"Event added\"}"
-    }
-    
-    private func executeEditCalendarEvent(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(EditCalendarEventArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse edit_calendar_event arguments\"}"
-        }
-        
-        guard let eventId = UUID(uuidString: args.eventId) else {
-            return "{\"error\": \"Invalid event_id format. Must be a valid UUID.\"}"
-        }
-        
-        // Parse datetime if provided
-        var newDatetime: Date? = nil
-        if let datetimeString = args.datetime {
-            guard let parsed = parseISO8601Date(datetimeString) else {
-                return "{\"error\": \"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')\"}"
+
+        let action = args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch action {
+        case "view":
+            let includePast = args.includePast ?? false
+            let events = await CalendarService.shared.getEvents(includePast: includePast)
+
+            let formatter = DateFormatter()
+            formatter.dateStyle = .medium
+            formatter.timeStyle = .short
+
+            let eventList = events.map { event -> CalendarEventResponse in
+                CalendarEventResponse(
+                    id: event.id.uuidString,
+                    title: event.title,
+                    datetime: formatter.string(from: event.datetime),
+                    datetimeISO: ISO8601DateFormatter().string(from: event.datetime),
+                    notes: event.notes,
+                    isPast: event.datetime < Date()
+                )
             }
-            newDatetime = parsed
-        }
-        
-        let success = await CalendarService.shared.updateEvent(
-            id: eventId,
-            title: args.title,
-            datetime: newDatetime,
-            notes: args.notes
-        )
-        
-        if success {
-            return "{\"success\": true, \"message\": \"Event updated successfully\"}"
-        } else {
-            return "{\"error\": \"Event not found with the specified ID\"}"
-        }
-    }
-    
-    private func executeDeleteCalendarEvent(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(DeleteCalendarEventArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse delete_calendar_event arguments\"}"
-        }
-        
-        guard let eventId = UUID(uuidString: args.eventId) else {
-            return "{\"error\": \"Invalid event_id format. Must be a valid UUID.\"}"
-        }
-        
-        let success = await CalendarService.shared.deleteEvent(id: eventId)
-        
-        if success {
-            return "{\"success\": true, \"message\": \"Event deleted successfully\"}"
-        } else {
-            return "{\"error\": \"Event not found with the specified ID\"}"
+
+            let result = ViewCalendarResult(
+                success: true,
+                eventCount: eventList.count,
+                events: eventList,
+                message: eventList.isEmpty ? "No events found" : "Found \(eventList.count) event(s)"
+            )
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return #"{"success":true,"eventCount":0,"events":[]}"#
+
+        case "add":
+            guard let title = args.title, !title.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+                  let datetime = args.datetime, !datetime.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return #"{"error":"For action 'add', title and datetime are required"}"#
+            }
+            guard let eventDate = parseISO8601Date(datetime) else {
+                return #"{"error":"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')"}"#
+            }
+
+            let event = await CalendarService.shared.addEvent(
+                title: title,
+                datetime: eventDate,
+                notes: args.notes
+            )
+
+            let formatter = DateFormatter()
+            formatter.dateStyle = .full
+            formatter.timeStyle = .short
+
+            let result = AddCalendarEventResult(
+                success: true,
+                eventId: event.id.uuidString,
+                scheduledFor: formatter.string(from: eventDate),
+                message: "Event '\(title)' successfully added to calendar"
+            )
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return #"{"success":true,"message":"Event added"}"#
+
+        case "edit":
+            guard let eventId = args.eventId, let eventUUID = UUID(uuidString: eventId) else {
+                return #"{"error":"For action 'edit', event_id must be a valid UUID"}"#
+            }
+
+            var newDatetime: Date? = nil
+            if let datetimeString = args.datetime {
+                guard let parsed = parseISO8601Date(datetimeString) else {
+                    return #"{"error":"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')"}"#
+                }
+                newDatetime = parsed
+            }
+
+            let success = await CalendarService.shared.updateEvent(
+                id: eventUUID,
+                title: args.title,
+                datetime: newDatetime,
+                notes: args.notes
+            )
+            if success {
+                return #"{"success":true,"message":"Event updated successfully"}"#
+            }
+            return #"{"error":"Event not found with the specified ID"}"#
+
+        case "delete":
+            guard let eventId = args.eventId, let eventUUID = UUID(uuidString: eventId) else {
+                return #"{"error":"For action 'delete', event_id must be a valid UUID"}"#
+            }
+
+            let success = await CalendarService.shared.deleteEvent(id: eventUUID)
+            if success {
+                return #"{"success":true,"message":"Event deleted successfully"}"#
+            }
+            return #"{"error":"Event not found with the specified ID"}"#
+
+        default:
+            return #"{"error":"Invalid action. Supported actions: view, add, edit, delete"}"#
         }
     }
     
@@ -546,6 +537,32 @@ actor ToolExecutor {
         }
         formatter.formatOptions = [.withInternetDateTime]
         return formatter.date(from: string)
+    }
+
+    private func parseRecurrenceType(_ rawValue: String?) -> RecurrenceType? {
+        guard let rawValue = rawValue?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              !rawValue.isEmpty else {
+            return nil
+        }
+
+        switch rawValue {
+        case "daily":
+            return .daily
+        case "weekly":
+            return .weekly
+        case "monthly":
+            return .monthly
+        default:
+            if rawValue.hasPrefix("every_") && rawValue.hasSuffix("_minutes") {
+                let numberPart = rawValue
+                    .replacingOccurrences(of: "every_", with: "")
+                    .replacingOccurrences(of: "_minutes", with: "")
+                if let minutes = Int(numberPart), minutes > 0 {
+                    return .custom(minutes: minutes)
+                }
+            }
+            return nil
+        }
     }
     
     // MARK: - Conversation History Viewing
@@ -637,119 +654,136 @@ actor ToolExecutor {
     
     private let maxContextCharacters = 20000 // ~5000 tokens
     
-    private func executeAddToUserContext(_ call: ToolCall) async -> String {
+    private func executeEditUserContext(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(AddToUserContextArguments.self, from: argsData) else {
-            return #"{"error": "Failed to parse add_to_user_context arguments"}"#
+              let args = try? JSONDecoder().decode(EditUserContextArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse edit_user_context arguments"}"#
         }
         
-        let newFact = args.fact.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !newFact.isEmpty else {
-            return #"{"error": "Fact cannot be empty"}"#
-        }
-        
-        // Load existing context
         let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
-        
-        // Append new fact
-        var updatedContext: String
-        if existingContext.isEmpty {
-            updatedContext = newFact
-        } else {
-            updatedContext = existingContext + "\n" + newFact
+        let action = args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let allMatches = args.allMatches ?? true
+        let caseSensitive = args.caseSensitive ?? false
+        var updatedContext = existingContext
+        var changedCount = 0
+        var actionMessage = ""
+
+        switch action {
+        case "append":
+            let content = (args.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !content.isEmpty else {
+                return #"{"error": "For action 'append', 'content' cannot be empty"}"#
+            }
+            updatedContext = existingContext.isEmpty ? content : existingContext + "\n" + content
+            changedCount = 1
+            actionMessage = "Appended content to user context"
+
+        case "delete":
+            let target = args.target ?? ""
+            guard !target.isEmpty else {
+                return #"{"error": "For action 'delete', 'target' cannot be empty"}"#
+            }
+            let replaceResult = replaceText(
+                in: existingContext,
+                target: target,
+                replacement: "",
+                replaceAll: allMatches,
+                caseSensitive: caseSensitive
+            )
+            guard let result = replaceResult.result else {
+                return #"{"error": "Failed to apply delete operation"}"#
+            }
+            updatedContext = result
+            changedCount = replaceResult.matchCount
+            actionMessage = changedCount == 0 ? "No matches found for delete target" : "Deleted \(changedCount) match(es) from user context"
+
+        case "replace":
+            let target = args.target ?? ""
+            guard !target.isEmpty else {
+                return #"{"error": "For action 'replace', 'target' cannot be empty"}"#
+            }
+            guard let replacement = args.replacement else {
+                return #"{"error": "For action 'replace', 'replacement' is required"}"#
+            }
+            let replaceResult = replaceText(
+                in: existingContext,
+                target: target,
+                replacement: replacement,
+                replaceAll: allMatches,
+                caseSensitive: caseSensitive
+            )
+            guard let result = replaceResult.result else {
+                return #"{"error": "Failed to apply replace operation"}"#
+            }
+            updatedContext = result
+            changedCount = replaceResult.matchCount
+            actionMessage = changedCount == 0 ? "No matches found for replace target" : "Replaced \(changedCount) match(es) in user context"
+
+        case "rewrite":
+            guard let content = args.content else {
+                return #"{"error": "For action 'rewrite', 'content' is required"}"#
+            }
+            updatedContext = content
+            changedCount = 1
+            actionMessage = "User context rewritten successfully"
+
+        default:
+            return #"{"error": "Invalid action. Supported actions: append, delete, replace, rewrite"}"#
         }
-        
-        // Check length limit
-        if updatedContext.count > maxContextCharacters {
-            return #"{"error": "Cannot add fact: context would exceed 5000 token limit. Use remove_from_user_context to clean up old facts first, or use rewrite_user_context to reorganize."}"#
-        }
-        
-        // Save
-        do {
-            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
-            let tokenEstimate = updatedContext.count / 4
-            let remainingTokens = (maxContextCharacters - updatedContext.count) / 4
-            return """
-            {"success": true, "message": "Fact added to user context", "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
-            """
-        } catch {
-            return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
-        }
-    }
-    
-    private func executeRemoveFromUserContext(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(RemoveFromUserContextArguments.self, from: argsData) else {
-            return #"{"error": "Failed to parse remove_from_user_context arguments"}"#
-        }
-        
-        let keywords = args.keywords.lowercased()
-        guard !keywords.isEmpty else {
-            return #"{"error": "Keywords cannot be empty"}"#
-        }
-        
-        // Load existing context
-        guard let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey),
-              !existingContext.isEmpty else {
-            return #"{"error": "User context is empty, nothing to remove"}"#
-        }
-        
-        // Split by lines and filter out lines containing keywords
-        let lines = existingContext.components(separatedBy: "\n")
-        let filteredLines = lines.filter { !$0.lowercased().contains(keywords) }
-        
-        let removedCount = lines.count - filteredLines.count
-        if removedCount == 0 {
-            return #"{"success": true, "message": "No lines matched the keywords, nothing removed", "removed_count": 0}"#
-        }
-        
-        let updatedContext = filteredLines.joined(separator: "\n")
-        
-        // Save
-        do {
-            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
-            let tokenEstimate = updatedContext.count / 4
-            let remainingTokens = (maxContextCharacters - updatedContext.count) / 4
-            return """
-            {"success": true, "message": "Removed \(removedCount) line(s) containing '\\(args.keywords)'", "removed_count": \(removedCount), "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
-            """
-        } catch {
-            return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
-        }
-    }
-    
-    private func executeRewriteUserContext(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(RewriteUserContextArguments.self, from: argsData) else {
-            return #"{"error": "Failed to parse rewrite_user_context arguments"}"#
-        }
-        
-        var contextToSave = args.newContext
+
         var wasTruncated = false
-        
-        if contextToSave.count > maxContextCharacters {
-            contextToSave = String(contextToSave.prefix(maxContextCharacters))
+        if updatedContext.count > maxContextCharacters {
+            updatedContext = String(updatedContext.prefix(maxContextCharacters))
             wasTruncated = true
-            print("[ToolExecutor] User context truncated from \(args.newContext.count) to \(maxContextCharacters) characters")
         }
-        
-        // Save
+
         do {
-            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: contextToSave)
-            
-            let tokenEstimate = contextToSave.count / 4
-            let remainingTokens = (maxContextCharacters - contextToSave.count) / 4
-            var message = "User context rewritten successfully"
+            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
+
+            let tokenEstimate = updatedContext.count / 4
+            let remainingTokens = (maxContextCharacters - updatedContext.count) / 4
+            var message = actionMessage
             if wasTruncated {
                 message += ". Note: truncated to fit 5000 token limit."
             }
-            
+
             return """
-            {"success": true, "message": "\(message)", "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
+            {"success": true, "action": "\(action)", "message": "\(message)", "changed_count": \(changedCount), "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
             """
         } catch {
             return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
         }
+    }
+
+    private func replaceText(
+        in text: String,
+        target: String,
+        replacement: String,
+        replaceAll: Bool,
+        caseSensitive: Bool
+    ) -> (result: String?, matchCount: Int) {
+        guard !target.isEmpty else { return (text, 0) }
+
+        let pattern = NSRegularExpression.escapedPattern(for: target)
+        let options: NSRegularExpression.Options = caseSensitive ? [] : [.caseInsensitive]
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+            return (nil, 0)
+        }
+
+        let fullRange = NSRange(text.startIndex..., in: text)
+        let matches = regex.matches(in: text, options: [], range: fullRange)
+        guard !matches.isEmpty else { return (text, 0) }
+
+        let template = NSRegularExpression.escapedTemplate(for: replacement)
+        if replaceAll {
+            let mutable = NSMutableString(string: text)
+            regex.replaceMatches(in: mutable, options: [], range: NSRange(location: 0, length: mutable.length), withTemplate: template)
+            return (mutable as String, matches.count)
+        }
+
+        let firstRange = matches[0].range
+        let result = regex.stringByReplacingMatches(in: text, options: [], range: firstRange, withTemplate: template)
+        return (result, 1)
     }
     
 }
@@ -809,15 +843,54 @@ struct WebSearchArguments: Codable {
     let query: String
 }
 
-struct SetReminderArguments: Codable {
-    let triggerDatetime: String
-    let prompt: String
+struct ManageRemindersArguments: Codable {
+    let action: String
+    let triggerDatetime: String?
+    let prompt: String?
     let recurrence: String?
+    let reminderId: String?
+    let reminderIds: [String]?
+    let deleteAll: Bool?
+    let deleteRecurring: Bool?
     
     enum CodingKeys: String, CodingKey {
+        case action
         case triggerDatetime = "trigger_datetime"
         case prompt
         case recurrence
+        case reminderId = "reminder_id"
+        case reminderIds = "reminder_ids"
+        case deleteAll = "delete_all"
+        case deleteRecurring = "delete_recurring"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(String.self, forKey: .action)
+        triggerDatetime = try container.decodeIfPresent(String.self, forKey: .triggerDatetime)
+        prompt = try container.decodeIfPresent(String.self, forKey: .prompt)
+        recurrence = try container.decodeIfPresent(String.self, forKey: .recurrence)
+        reminderId = try container.decodeIfPresent(String.self, forKey: .reminderId)
+        deleteAll = try container.decodeIfPresent(Bool.self, forKey: .deleteAll)
+        deleteRecurring = try container.decodeIfPresent(Bool.self, forKey: .deleteRecurring)
+
+        if let array = try? container.decodeIfPresent([String].self, forKey: .reminderIds) {
+            reminderIds = array
+        } else if let raw = (try? container.decodeIfPresent(String.self, forKey: .reminderIds))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                reminderIds = parsed
+            } else {
+                let csv = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                reminderIds = csv.isEmpty ? nil : csv
+            }
+        } else {
+            reminderIds = nil
+        }
     }
 }
 
@@ -828,27 +901,21 @@ struct SetReminderResult: Codable {
     let message: String
 }
 
-struct DeleteReminderArguments: Codable {
-    let reminderId: String
+struct EditUserContextArguments: Codable {
+    let action: String
+    let content: String?
+    let target: String?
+    let replacement: String?
+    let allMatches: Bool?
+    let caseSensitive: Bool?
     
     enum CodingKeys: String, CodingKey {
-        case reminderId = "reminder_id"
-    }
-}
-
-struct AddToUserContextArguments: Codable {
-    let fact: String
-}
-
-struct RemoveFromUserContextArguments: Codable {
-    let keywords: String
-}
-
-struct RewriteUserContextArguments: Codable {
-    let newContext: String
-    
-    enum CodingKeys: String, CodingKey {
-        case newContext = "new_context"
+        case action
+        case content
+        case target
+        case replacement
+        case allMatches = "all_matches"
+        case caseSensitive = "case_sensitive"
     }
 }
 
@@ -856,37 +923,21 @@ struct RewriteUserContextArguments: Codable {
 
 // MARK: - Calendar Tool Argument Types
 
-struct ViewCalendarArguments: Codable {
+struct ManageCalendarArguments: Codable {
+    let action: String
     let includePast: Bool?
-    
-    enum CodingKeys: String, CodingKey {
-        case includePast = "include_past"
-    }
-}
-
-struct AddCalendarEventArguments: Codable {
-    let title: String
-    let datetime: String
-    let notes: String?
-}
-
-struct EditCalendarEventArguments: Codable {
-    let eventId: String
+    let eventId: String?
     let title: String?
     let datetime: String?
     let notes: String?
     
     enum CodingKeys: String, CodingKey {
+        case action
+        case includePast = "include_past"
         case eventId = "event_id"
-        case title, datetime, notes
-    }
-}
-
-struct DeleteCalendarEventArguments: Codable {
-    let eventId: String
-    
-    enum CodingKeys: String, CodingKey {
-        case eventId = "event_id"
+        case title
+        case datetime
+        case notes
     }
 }
 
@@ -1343,17 +1394,77 @@ struct ForwardEmailArguments: Codable {
 
 // MARK: - Document Tool Types
 
+struct ListDocumentsArguments: Codable {
+    let limit: Int?
+    let cursor: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case limit
+        case cursor
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        if let intLimit = try? container.decodeIfPresent(Int.self, forKey: .limit) {
+            limit = intLimit
+        } else if let stringLimit = try? container.decodeIfPresent(String.self, forKey: .limit),
+                  let parsed = Int(stringLimit.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            limit = parsed
+        } else {
+            limit = nil
+        }
+        
+        if let stringCursor = try? container.decodeIfPresent(String.self, forKey: .cursor) {
+            cursor = stringCursor
+        } else if let intCursor = try? container.decodeIfPresent(Int.self, forKey: .cursor) {
+            cursor = String(intCursor)
+        } else {
+            cursor = nil
+        }
+    }
+}
+
 struct ListDocumentsResult: Codable {
     let success: Bool
     let documentCount: Int
+    let returnedCount: Int
+    let hasMore: Bool
+    let nextCursor: String?
+    let order: String
+    let cursorUsed: String?
     let documents: [DocumentInfo]
     let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success
+        case documentCount
+        case returnedCount = "returned_count"
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+        case order
+        case cursorUsed = "cursor_used"
+        case documents
+        case message
+    }
 }
 
 struct DocumentInfo: Codable {
     let filename: String
     let sizeKB: Int
     let type: String
+    let createdAt: String
+    let lastOpenedAt: String?
+    let createdAtSource: String
+    
+    enum CodingKeys: String, CodingKey {
+        case filename
+        case sizeKB
+        case type
+        case createdAt = "created_at"
+        case lastOpenedAt = "last_opened_at"
+        case createdAtSource = "created_at_source"
+    }
 }
 
 struct SendEmailWithAttachmentArguments: Codable {
@@ -1407,35 +1518,174 @@ extension ToolExecutor {
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder
     }
+
+    private var documentsLastOpenedIndexURL: URL {
+        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let folder = appSupport.appendingPathComponent("TelegramConcierge", isDirectory: true)
+        try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        return folder.appendingPathComponent("documents_last_opened.json")
+    }
+
+    private func loadDocumentsLastOpenedIndex() -> [String: Int64] {
+        guard let data = try? Data(contentsOf: documentsLastOpenedIndexURL) else { return [:] }
+        return (try? JSONDecoder().decode([String: Int64].self, from: data)) ?? [:]
+    }
+
+    private func saveDocumentsLastOpenedIndex(_ index: [String: Int64]) {
+        guard let data = try? JSONEncoder().encode(index) else { return }
+        try? data.write(to: documentsLastOpenedIndexURL, options: .atomic)
+    }
+
+    private func recordDocumentOpened(filename: String, openedAt: Date = Date()) {
+        var index = loadDocumentsLastOpenedIndex()
+        index[filename] = Int64((openedAt.timeIntervalSince1970 * 1000.0).rounded())
+        saveDocumentsLastOpenedIndex(index)
+    }
     
     func executeListDocuments(_ call: ToolCall) async -> String {
         let fileManager = FileManager.default
+        let defaultLimit = 40
+        let maxLimit = 100
+        
+        var limit = defaultLimit
+        var pageOffset = 0
+        var cursorUsed: String?
+        
+        let rawArguments = call.function.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rawArguments.isEmpty && rawArguments != "{}" {
+            guard let argsData = rawArguments.data(using: .utf8),
+                  let args = try? JSONDecoder().decode(ListDocumentsArguments.self, from: argsData) else {
+                return "{\"error\": \"Failed to parse list_documents arguments\"}"
+            }
+            
+            if let requestedLimit = args.limit {
+                limit = min(max(requestedLimit, 1), maxLimit)
+            }
+            
+            if let rawCursor = args.cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCursor.isEmpty {
+                guard let parsedOffset = parseListDocumentsCursor(rawCursor) else {
+                    return "{\"error\": \"Invalid cursor '\(rawCursor)'. Use next_cursor from the previous list_documents response.\"}"
+                }
+                pageOffset = parsedOffset
+                cursorUsed = rawCursor
+            }
+        }
         
         do {
-            let files = try fileManager.contentsOfDirectory(at: documentsDirectory, includingPropertiesForKeys: [.fileSizeKey])
+            let files = try fileManager.contentsOfDirectory(
+                at: documentsDirectory,
+                includingPropertiesForKeys: [.isRegularFileKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey]
+            )
+            var lastOpenedByFilename = loadDocumentsLastOpenedIndex()
             
-            var documents: [DocumentInfo] = []
+            struct IndexedDocument {
+                let info: DocumentInfo
+                let sortDate: Date
+                let hasLastOpened: Bool
+            }
+            
+            let isoFormatter = ISO8601DateFormatter()
+            isoFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+            isoFormatter.formatOptions = [.withInternetDateTime]
+            
+            var indexedDocuments: [IndexedDocument] = []
             for file in files {
                 // Skip hidden files
                 guard !file.lastPathComponent.hasPrefix(".") else { continue }
                 
+                let resourceValues = try? file.resourceValues(forKeys: [.isRegularFileKey, .fileSizeKey, .creationDateKey, .contentModificationDateKey])
+                if let isRegularFile = resourceValues?.isRegularFile, !isRegularFile {
+                    continue
+                }
+                
                 let attrs = try? fileManager.attributesOfItem(atPath: file.path)
-                let size = (attrs?[.size] as? Int) ?? 0
+                let size = resourceValues?.fileSize ?? (attrs?[.size] as? Int) ?? 0
                 let sizeKB = size / 1024
                 let ext = file.pathExtension.lowercased()
                 
-                documents.append(DocumentInfo(
+                let createdAt = resourceValues?.creationDate ?? (attrs?[.creationDate] as? Date)
+                let modifiedAt = resourceValues?.contentModificationDate ?? (attrs?[.modificationDate] as? Date)
+                let epoch = Date(timeIntervalSince1970: 0)
+                
+                let createdAtEffective: Date
+                let createdAtSource: String
+                if let createdAt {
+                    createdAtEffective = createdAt
+                    createdAtSource = "creation_date"
+                } else if let modifiedAt {
+                    createdAtEffective = modifiedAt
+                    createdAtSource = "modification_date"
+                } else {
+                    createdAtEffective = epoch
+                    createdAtSource = "epoch_fallback"
+                }
+                
+                let lastOpenedUnixMs = lastOpenedByFilename[file.lastPathComponent]
+                let lastOpenedDate = lastOpenedUnixMs.map { Date(timeIntervalSince1970: Double($0) / 1000.0) }
+                
+                let documentInfo = DocumentInfo(
                     filename: file.lastPathComponent,
                     sizeKB: sizeKB,
-                    type: ext.isEmpty ? "unknown" : ext
-                ))
+                    type: ext.isEmpty ? "unknown" : ext,
+                    createdAt: isoFormatter.string(from: createdAtEffective),
+                    lastOpenedAt: lastOpenedDate.map { isoFormatter.string(from: $0) },
+                    createdAtSource: createdAtSource
+                )
+                
+                indexedDocuments.append(
+                    IndexedDocument(
+                        info: documentInfo,
+                        sortDate: lastOpenedDate ?? createdAtEffective,
+                        hasLastOpened: lastOpenedDate != nil
+                    )
+                )
+            }
+            
+            let knownFilenames = Set(indexedDocuments.map(\.info.filename))
+            let cleanedIndex = lastOpenedByFilename.filter { knownFilenames.contains($0.key) }
+            if cleanedIndex.count != lastOpenedByFilename.count {
+                lastOpenedByFilename = cleanedIndex
+                saveDocumentsLastOpenedIndex(cleanedIndex)
+            }
+            
+            indexedDocuments.sort { lhs, rhs in
+                if lhs.hasLastOpened != rhs.hasLastOpened {
+                    return lhs.hasLastOpened
+                }
+                if lhs.sortDate != rhs.sortDate {
+                    return lhs.sortDate > rhs.sortDate
+                }
+                return lhs.info.filename.localizedCaseInsensitiveCompare(rhs.info.filename) == .orderedAscending
+            }
+            
+            let totalDocuments = indexedDocuments.count
+            let start = min(max(pageOffset, 0), totalDocuments)
+            let end = min(start + limit, totalDocuments)
+            let pageDocuments = Array(indexedDocuments[start..<end]).map(\.info)
+            let hasMore = end < totalDocuments
+            let nextCursor = hasMore ? String(end) : nil
+            
+            let message: String
+            if totalDocuments == 0 {
+                message = "No documents found"
+            } else if pageDocuments.isEmpty {
+                message = "No documents found for cursor \(pageOffset). Use a smaller cursor to see available pages."
+            } else if let nextCursor {
+                message = "Showing \(pageDocuments.count) of \(totalDocuments) documents (most recently opened first; fallback newest created). Use cursor '\(nextCursor)' for the next page."
+            } else {
+                message = "Showing \(pageDocuments.count) of \(totalDocuments) documents (most recently opened first; fallback newest created). Reached the end of history."
             }
             
             let result = ListDocumentsResult(
                 success: true,
-                documentCount: documents.count,
-                documents: documents,
-                message: documents.isEmpty ? "No documents found" : "Found \(documents.count) document(s)"
+                documentCount: totalDocuments,
+                returnedCount: pageDocuments.count,
+                hasMore: hasMore,
+                nextCursor: nextCursor,
+                order: "last_opened_desc_then_created_at_desc",
+                cursorUsed: cursorUsed,
+                documents: pageDocuments,
+                message: message
             )
             
             let encoder = JSONEncoder()
@@ -1443,10 +1693,29 @@ extension ToolExecutor {
             if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
                 return json
             }
-            return "{\"success\": true, \"documentCount\": \(documents.count)}"
+            return "{\"success\": true, \"documentCount\": \(totalDocuments)}"
         } catch {
             return "{\"error\": \"Failed to list documents: \(error.localizedDescription)\"}"
         }
+    }
+
+    private func parseListDocumentsCursor(_ cursor: String) -> Int? {
+        let trimmed = cursor.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        if let offset = Int(trimmed), offset >= 0 {
+            return offset
+        }
+        
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("offset:") {
+            let value = trimmed.dropFirst("offset:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let offset = Int(value), offset >= 0 {
+                return offset
+            }
+        }
+        
+        return nil
     }
     
     func executeReadDocument(_ call: ToolCall) async -> ToolResultMessage {
@@ -1462,6 +1731,7 @@ extension ToolExecutor {
         
         do {
             let data = try Data(contentsOf: documentURL)
+            recordDocumentOpened(filename: args.documentFilename)
             
             // Determine MIME type from extension
             let ext = documentURL.pathExtension.lowercased()
@@ -1559,6 +1829,9 @@ extension ToolExecutor {
             )
             
             if success {
+                for filename in args.documentFilenames {
+                    recordDocumentOpened(filename: filename)
+                }
                 let filenames = args.documentFilenames.joined(separator: ", ")
                 let result = SendEmailResult(
                     success: true,
@@ -2205,115 +2478,122 @@ extension ToolExecutor {
     
     // MARK: - Contact Tool Execution
     
-    func executeFindContact(_ call: ToolCall) async -> String {
+    func executeManageContacts(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(FindContactArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse find_contact arguments\"}"
+              let args = try? JSONDecoder().decode(ManageContactsArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse manage_contacts arguments"}"#
         }
-        
-        let contacts = await ContactsService.shared.searchContacts(query: args.query)
-        
-        let contactResponses = contacts.prefix(20).map { contact in
-            ContactResponse(
-                id: contact.id.uuidString,
-                firstName: contact.firstName,
-                lastName: contact.lastName,
-                fullName: contact.fullName,
-                email: contact.email,
-                phone: contact.phone,
-                organization: contact.organization
+
+        let action = args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        switch action {
+        case "find":
+            guard let query = args.query, !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return #"{"error":"For action 'find', query is required"}"#
+            }
+
+            let contacts = await ContactsService.shared.searchContacts(query: query)
+            let contactResponses = contacts.prefix(20).map { contact in
+                ContactResponse(
+                    id: contact.id.uuidString,
+                    firstName: contact.firstName,
+                    lastName: contact.lastName,
+                    fullName: contact.fullName,
+                    email: contact.email,
+                    phone: contact.phone,
+                    organization: contact.organization
+                )
+            }
+
+            let result = FindContactResult(
+                success: true,
+                contactCount: contactResponses.count,
+                contacts: Array(contactResponses),
+                message: contactResponses.isEmpty ? "No contacts found matching '\(query)'" : "Found \(contactResponses.count) contact(s) matching '\(query)'"
             )
-        }
-        
-        let result = FindContactResult(
-            success: true,
-            contactCount: contactResponses.count,
-            contacts: Array(contactResponses),
-            message: contactResponses.isEmpty ? "No contacts found matching '\(args.query)'" : "Found \(contactResponses.count) contact(s) matching '\(args.query)'"
-        )
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{\"success\": true, \"contactCount\": \(contactResponses.count)}"
-    }
-    
-    func executeAddContact(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(AddContactArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse add_contact arguments\"}"
-        }
-        
-        let contact = await ContactsService.shared.addContact(
-            firstName: args.firstName,
-            lastName: args.lastName,
-            email: args.email,
-            phone: args.phone,
-            organization: args.organization
-        )
-        
-        let result = AddContactResult(
-            success: true,
-            contactId: contact.id.uuidString,
-            fullName: contact.fullName,
-            message: "Contact '\(contact.fullName)' added successfully"
-        )
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{\"success\": true, \"message\": \"Contact added\"}"
-    }
-    
-    func executeListContacts(_ call: ToolCall) async -> String {
-        let contacts = await ContactsService.shared.getAllContacts()
-        
-        let contactResponses = contacts.prefix(50).map { contact in
-            ContactResponse(
-                id: contact.id.uuidString,
-                firstName: contact.firstName,
-                lastName: contact.lastName,
-                fullName: contact.fullName,
-                email: contact.email,
-                phone: contact.phone,
-                organization: contact.organization
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"contactCount\": \(contactResponses.count)}"
+
+        case "add":
+            guard let firstName = args.firstName,
+                  !firstName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+                return #"{"error":"For action 'add', first_name is required"}"#
+            }
+
+            let contact = await ContactsService.shared.addContact(
+                firstName: firstName,
+                lastName: args.lastName,
+                email: args.email,
+                phone: args.phone,
+                organization: args.organization
             )
+
+            let result = AddContactResult(
+                success: true,
+                contactId: contact.id.uuidString,
+                fullName: contact.fullName,
+                message: "Contact '\(contact.fullName)' added successfully"
+            )
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return #"{"success":true,"message":"Contact added"}"#
+
+        case "list":
+            let contacts = await ContactsService.shared.getAllContacts()
+            let contactResponses = contacts.prefix(50).map { contact in
+                ContactResponse(
+                    id: contact.id.uuidString,
+                    firstName: contact.firstName,
+                    lastName: contact.lastName,
+                    fullName: contact.fullName,
+                    email: contact.email,
+                    phone: contact.phone,
+                    organization: contact.organization
+                )
+            }
+
+            let result = ListContactsResult(
+                success: true,
+                totalCount: contacts.count,
+                contacts: Array(contactResponses),
+                message: contacts.isEmpty ? "No contacts found. Import contacts via Settings or use manage_contacts with action='add' to create one." : "Showing \(contactResponses.count) of \(contacts.count) contact(s)"
+            )
+
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return "{\"success\": true, \"totalCount\": \(contacts.count)}"
+
+        default:
+            return #"{"error":"Invalid action. Supported actions: find, add, list"}"#
         }
-        
-        let result = ListContactsResult(
-            success: true,
-            totalCount: contacts.count,
-            contacts: Array(contactResponses),
-            message: contacts.isEmpty ? "No contacts found. Import contacts via Settings or use add_contact to create one." : "Showing \(contactResponses.count) of \(contacts.count) contact(s)"
-        )
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
-            return json
-        }
-        return "{\"success\": true, \"totalCount\": \(contacts.count)}"
     }
 }
 
 // MARK: - Contact Tool Argument Types
 
-struct FindContactArguments: Codable {
-    let query: String
-}
-
-struct AddContactArguments: Codable {
-    let firstName: String
+struct ManageContactsArguments: Codable {
+    let action: String
+    let query: String?
+    let firstName: String?
     let lastName: String?
     let email: String?
     let phone: String?
     let organization: String?
     
     enum CodingKeys: String, CodingKey {
+        case action
+        case query
         case firstName = "first_name"
         case lastName = "last_name"
         case email, phone, organization
@@ -3248,6 +3528,7 @@ extension ToolExecutor {
         
         do {
             let documentData = try Data(contentsOf: documentURL)
+            recordDocumentOpened(filename: args.documentFilename)
             
             // Determine MIME type from extension
             let ext = documentURL.pathExtension.lowercased()
@@ -3736,6 +4017,37 @@ private struct ProjectDiscoveryContentSummary {
     let topAreas: [String]
 }
 
+private struct ListProjectsArguments: Codable {
+    let limit: Int?
+    let cursor: String?
+    
+    enum CodingKeys: String, CodingKey {
+        case limit
+        case cursor
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        if let intLimit = try? container.decodeIfPresent(Int.self, forKey: .limit) {
+            limit = intLimit
+        } else if let stringLimit = try? container.decodeIfPresent(String.self, forKey: .limit),
+                  let parsed = Int(stringLimit.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            limit = parsed
+        } else {
+            limit = nil
+        }
+        
+        if let stringCursor = try? container.decodeIfPresent(String.self, forKey: .cursor) {
+            cursor = stringCursor
+        } else if let intCursor = try? container.decodeIfPresent(Int.self, forKey: .cursor) {
+            cursor = String(intCursor)
+        } else {
+            cursor = nil
+        }
+    }
+}
+
 private struct ClaudeProjectListItem: Codable {
     let id: String
     let name: String
@@ -3743,26 +4055,35 @@ private struct ClaudeProjectListItem: Codable {
     let createdAt: String
     let fileCount: Int
     let lastRunAt: String?
-    let lastEditedAt: String?
+    let lastModifiedAt: String
     
     enum CodingKeys: String, CodingKey {
         case id, name, description
         case createdAt = "created_at"
         case fileCount = "file_count"
         case lastRunAt = "last_run_at"
-        case lastEditedAt = "last_edited_at"
+        case lastModifiedAt = "last_modified_at"
     }
 }
 
 private struct ClaudeProjectListResult: Codable {
     let success: Bool
     let projectCount: Int
+    let returnedCount: Int
+    let hasMore: Bool
+    let nextCursor: String?
+    let order: String
+    let cursorUsed: String?
     let projects: [ClaudeProjectListItem]
     let message: String
     
     enum CodingKeys: String, CodingKey {
-        case success, projects, message
+        case success, projects, message, order
         case projectCount = "project_count"
+        case returnedCount = "returned_count"
+        case hasMore = "has_more"
+        case nextCursor = "next_cursor"
+        case cursorUsed = "cursor_used"
     }
 }
 
@@ -4173,6 +4494,32 @@ extension ToolExecutor {
     
     private func executeListProjects(_ call: ToolCall) async -> String {
         let fileManager = FileManager.default
+        let defaultLimit = 20
+        let maxLimit = 100
+        
+        var limit = defaultLimit
+        var pageOffset = 0
+        var cursorUsed: String?
+        
+        let rawArguments = call.function.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !rawArguments.isEmpty && rawArguments != "{}" {
+            guard let argsData = rawArguments.data(using: .utf8),
+                  let args = try? JSONDecoder().decode(ListProjectsArguments.self, from: argsData) else {
+                return #"{"error":"Failed to parse list_projects arguments"}"#
+            }
+            
+            if let requestedLimit = args.limit {
+                limit = min(max(requestedLimit, 1), maxLimit)
+            }
+            
+            if let rawCursor = args.cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCursor.isEmpty {
+                guard let parsedOffset = parseListDocumentsCursor(rawCursor) else {
+                    return #"{"error":"Invalid cursor '\#(rawCursor)'. Use next_cursor from the previous list_projects response."}"#
+                }
+                pageOffset = parsedOffset
+                cursorUsed = rawCursor
+            }
+        }
         
         do {
             let urls = try fileManager.contentsOfDirectory(
@@ -4181,7 +4528,13 @@ extension ToolExecutor {
                 options: [.skipsHiddenFiles]
             )
             
-            var projects: [ClaudeProjectListItem] = []
+            struct IndexedProject {
+                let item: ClaudeProjectListItem
+                let createdAt: Date
+                let lastModifiedAt: Date
+            }
+            
+            var indexedProjects: [IndexedProject] = []
             for url in urls {
                 var isDir: ObjCBool = false
                 guard fileManager.fileExists(atPath: url.path, isDirectory: &isDir), isDir.boolValue else {
@@ -4201,9 +4554,13 @@ extension ToolExecutor {
                     saveProjectMetadata(metadata, projectURL: url)
                 }
                 let runRecord = loadLastRunRecord(projectURL: url)
+                let resourceValues = try? url.resourceValues(forKeys: [.contentModificationDateKey])
                 let attrs = try? fileManager.attributesOfItem(atPath: url.path)
                 let createdAt = (attrs?[.creationDate] as? Date) ?? metadata.createdAt
-                let lastActivityAt = metadata.lastEditedAt ?? createdAt
+                let directoryModifiedAt = resourceValues?.contentModificationDate ?? (attrs?[.modificationDate] as? Date)
+                let lastModifiedAt = [metadata.lastEditedAt, directoryModifiedAt, createdAt]
+                    .compactMap { $0 }
+                    .max() ?? createdAt
                 let item = ClaudeProjectListItem(
                     id: metadata.id,
                     name: metadata.name,
@@ -4211,20 +4568,49 @@ extension ToolExecutor {
                     createdAt: isoFormatter.string(from: createdAt),
                     fileCount: countProjectFiles(projectURL: url),
                     lastRunAt: runRecord.map { isoFormatter.string(from: $0.timestamp) },
-                    lastEditedAt: isoFormatter.string(from: lastActivityAt)
+                    lastModifiedAt: isoFormatter.string(from: lastModifiedAt)
                 )
-                projects.append(item)
+                indexedProjects.append(IndexedProject(item: item, createdAt: createdAt, lastModifiedAt: lastModifiedAt))
             }
             
-            projects.sort { $0.createdAt > $1.createdAt }
+            indexedProjects.sort { lhs, rhs in
+                if lhs.lastModifiedAt != rhs.lastModifiedAt {
+                    return lhs.lastModifiedAt > rhs.lastModifiedAt
+                }
+                if lhs.createdAt != rhs.createdAt {
+                    return lhs.createdAt > rhs.createdAt
+                }
+                return lhs.item.name.localizedCaseInsensitiveCompare(rhs.item.name) == .orderedAscending
+            }
+            
+            let totalProjects = indexedProjects.count
+            let start = min(max(pageOffset, 0), totalProjects)
+            let end = min(start + limit, totalProjects)
+            let pageProjects = Array(indexedProjects[start..<end]).map(\.item)
+            let hasMore = end < totalProjects
+            let nextCursor = hasMore ? String(end) : nil
+            
+            let message: String
+            if totalProjects == 0 {
+                message = "No projects found. Use create_project to create a workspace."
+            } else if pageProjects.isEmpty {
+                message = "No projects found for cursor \(pageOffset). Use a smaller cursor to see available pages."
+            } else if let nextCursor {
+                message = "Showing \(pageProjects.count) of \(totalProjects) projects sorted by last_modified_at (newest first). Use cursor '\(nextCursor)' for the next page."
+            } else {
+                message = "Showing \(pageProjects.count) of \(totalProjects) projects sorted by last_modified_at (newest first). Reached the end."
+            }
             
             let result = ClaudeProjectListResult(
                 success: true,
-                projectCount: projects.count,
-                projects: projects,
-                message: projects.isEmpty
-                    ? "No projects found. Use create_project to create a workspace."
-                    : "Found \(projects.count) project(s)."
+                projectCount: totalProjects,
+                returnedCount: pageProjects.count,
+                hasMore: hasMore,
+                nextCursor: nextCursor,
+                order: "last_modified_at_desc",
+                cursorUsed: cursorUsed,
+                projects: pageProjects,
+                message: message
             )
             return encodeJSON(result)
         } catch {

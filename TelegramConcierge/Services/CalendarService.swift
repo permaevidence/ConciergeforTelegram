@@ -284,7 +284,7 @@ actor CalendarService {
         var result = lines.joined(separator: "\n")
         let maxChars = maxTokens * charsPerToken
         if result.count > maxChars {
-            result = String(result.prefix(maxChars - 50)) + "\n... [calendar truncated, use view_calendar for full details]"
+            result = String(result.prefix(maxChars - 50)) + "\n... [calendar truncated, use manage_calendar with action='view' for full details]"
         }
         
         return result
@@ -345,4 +345,3 @@ actor CalendarService {
         events.count
     }
 }
-

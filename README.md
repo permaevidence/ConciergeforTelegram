@@ -175,7 +175,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 | Tool | Description |
 |------|-------------|
 | `read_document` | Read/analyze any stored document (PDF, images, etc.) |
-| `list_documents` | List all stored documents |
+| `list_documents` | List stored documents by recent usage with pagination (`limit`, `cursor`) |
 | `generate_document` | Generate PDF, spreadsheet, or text documents |
 | `send_document_to_chat` | Send a document file to the Telegram chat |
 
@@ -187,7 +187,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 | Tool | Description |
 |------|-------------|
 | `create_project` | Create a new Claude Code project workspace |
-| `list_projects` | List all project workspaces |
+| `list_projects` | List project workspaces by recent modification with pagination (`limit`, `cursor`) |
 | `browse_project` | View project file tree |
 | `read_project_file` | Read a file from a project |
 | `add_project_files` | Copy local files into a project |

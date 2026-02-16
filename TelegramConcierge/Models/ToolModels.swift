@@ -219,139 +219,84 @@ enum AvailableTools {
         )
     )
     
-    static let setReminder = ToolDefinition(
+    static let manageReminders = ToolDefinition(
         function: FunctionDefinition(
-            name: "set_reminder",
-            description: "Schedule a future prompt to yourself. This is your primary tool for self-orchestration and agentic workflows. Use it for: (1) User-requested reminders (\"remind me to...\"), (2) Delayed actions you decide are needed (\"I'll check stock prices at market close\"), (3) Multi-step workflows where subsequent steps need time gaps, (4) Follow-up tasks where you want to verify something later, (5) Any time you think \"I should do X later\" — schedule it. The prompt you write becomes a message to your future self, injected into the conversation at trigger time with full tool access. Supports recurring reminders.",
+            name: "manage_reminders",
+            description: "Single reminder tool. Use action='set' to schedule, action='list' to view pending reminders, and action='delete' to cancel one or many reminders.",
             parameters: FunctionParameters(
                 properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Reminder action: 'set', 'list', or 'delete'."
+                    ),
                     "trigger_datetime": ParameterProperty(
                         type: "string",
-                        description: "ISO 8601 datetime string (e.g., '2026-02-01T09:00:00+01:00') when the reminder should trigger. Must be in the future."
+                        description: "Required for action='set'. ISO 8601 datetime string in the future."
                     ),
                     "prompt": ParameterProperty(
                         type: "string",
-                        description: "Detailed instructions for your future self. Include: what action to take, full context from the current conversation, any user preferences mentioned, and the expected outcome. You will have full tool access when this triggers, so you can web search, send emails, check calendar, or even set another reminder."
+                        description: "Required for action='set'. Reminder instructions."
                     ),
                     "recurrence": ParameterProperty(
                         type: "string",
-                        description: "Optional. Make this a recurring reminder. Values: 'daily', 'weekly', 'monthly', or 'every_X_minutes' (e.g., 'every_30_minutes' for every half hour). If omitted, reminder fires only once."
-                    )
-                ],
-                required: ["trigger_datetime", "prompt"]
-            )
-        )
-    )
-    
-    static let listReminders = ToolDefinition(
-        function: FunctionDefinition(
-            name: "list_reminders",
-            description: "List all pending (not yet triggered) reminders. Shows reminder ID, scheduled time, prompt text, and recurrence if set. Use when user asks 'what reminders do I have?' or you need to find a reminder ID to delete.",
-            parameters: FunctionParameters(
-                properties: [:],
-                required: []
-            )
-        )
-    )
-    
-    static let deleteReminder = ToolDefinition(
-        function: FunctionDefinition(
-            name: "delete_reminder",
-            description: "Delete/cancel a reminder by its ID. Use list_reminders first to get the reminder ID. Use when user wants to cancel a scheduled reminder.",
-            parameters: FunctionParameters(
-                properties: [
+                        description: "Optional for action='set'. 'daily', 'weekly', 'monthly', or 'every_X_minutes'. Also optional for action='delete' when delete_recurring=true to filter which recurring reminders to delete."
+                    ),
                     "reminder_id": ParameterProperty(
                         type: "string",
-                        description: "The UUID of the reminder to delete (get this from list_reminders output)."
+                        description: "For action='delete'. Single reminder UUID to delete."
+                    ),
+                    "reminder_ids": ParameterProperty(
+                        type: "string",
+                        description: "For action='delete'. Multiple reminder IDs as JSON array string or CSV (e.g. [\"id1\",\"id2\"] or \"id1,id2\")."
+                    ),
+                    "delete_all": ParameterProperty(
+                        type: "boolean",
+                        description: "For action='delete'. If true, deletes all pending reminders."
+                    ),
+                    "delete_recurring": ParameterProperty(
+                        type: "boolean",
+                        description: "For action='delete'. If true, deletes all pending recurring reminders. Optional recurrence filter can narrow to daily/weekly/monthly/every_X_minutes."
                     )
                 ],
-                required: ["reminder_id"]
+                required: ["action"]
             )
         )
     )
     
     // MARK: - Calendar Tools
     
-    static let viewCalendar = ToolDefinition(
+    static let manageCalendar = ToolDefinition(
         function: FunctionDefinition(
-            name: "view_calendar",
-            description: "View the user's calendar events. By default shows only upcoming (future) events to save context space. Set include_past to true to also see past events.",
+            name: "manage_calendar",
+            description: "Single calendar tool. Use action='view' to list events, action='add' to create events, action='edit' to update events, and action='delete' to remove events.",
             parameters: FunctionParameters(
                 properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Calendar action: 'view', 'add', 'edit', or 'delete'."
+                    ),
                     "include_past": ParameterProperty(
                         type: "boolean",
-                        description: "If true, includes past events in the response. Default is false (only future events)."
-                    )
-                ],
-                required: []
-            )
-        )
-    )
-    
-    static let addCalendarEvent = ToolDefinition(
-        function: FunctionDefinition(
-            name: "add_calendar_event",
-            description: "Add a new event to the user's calendar. Use when the user wants to schedule meetings, appointments, or any time-based events.",
-            parameters: FunctionParameters(
-                properties: [
-                    "title": ParameterProperty(
-                        type: "string",
-                        description: "The title/name of the event (e.g., 'Meeting with John', 'Dentist appointment')."
+                        description: "Optional for action='view'. If true, include past events."
                     ),
-                    "datetime": ParameterProperty(
-                        type: "string",
-                        description: "ISO 8601 datetime string (e.g., '2026-02-01T15:00:00+01:00') for when the event occurs."
-                    ),
-                    "notes": ParameterProperty(
-                        type: "string",
-                        description: "Optional additional notes or details about the event."
-                    )
-                ],
-                required: ["title", "datetime"]
-            )
-        )
-    )
-    
-    static let editCalendarEvent = ToolDefinition(
-        function: FunctionDefinition(
-            name: "edit_calendar_event",
-            description: "Edit an existing calendar event. Use view_calendar first to get the event_id. Only provide the fields you want to change.",
-            parameters: FunctionParameters(
-                properties: [
                     "event_id": ParameterProperty(
                         type: "string",
-                        description: "The UUID of the event to edit (get this from view_calendar)."
+                        description: "Required for actions 'edit' and 'delete'. Event UUID."
                     ),
                     "title": ParameterProperty(
                         type: "string",
-                        description: "New title for the event (optional, only if changing)."
+                        description: "Required for action='add'. Optional for action='edit'. Event title."
                     ),
                     "datetime": ParameterProperty(
                         type: "string",
-                        description: "New ISO 8601 datetime for the event (optional, only if changing)."
+                        description: "Required for action='add'. Optional for action='edit'. ISO 8601 datetime."
                     ),
                     "notes": ParameterProperty(
                         type: "string",
-                        description: "New notes for the event (optional, only if changing)."
+                        description: "Optional for actions 'add' and 'edit'. Event notes."
                     )
                 ],
-                required: ["event_id"]
-            )
-        )
-    )
-    
-    static let deleteCalendarEvent = ToolDefinition(
-        function: FunctionDefinition(
-            name: "delete_calendar_event",
-            description: "Delete a calendar event. Use view_calendar first to get the event_id.",
-            parameters: FunctionParameters(
-                properties: [
-                    "event_id": ParameterProperty(
-                        type: "string",
-                        description: "The UUID of the event to delete (get this from view_calendar)."
-                    )
-                ],
-                required: ["event_id"]
+                required: ["action"]
             )
         )
     )
@@ -549,9 +494,18 @@ enum AvailableTools {
     static let listDocuments = ToolDefinition(
         function: FunctionDefinition(
             name: "list_documents",
-            description: "List all documents that the user has sent via Telegram. Use this to find document filenames before attaching them to emails. Returns filename, size, and type for each stored document.",
+            description: "List stored documents ranked by recent usage (most recently opened first; never-opened files fall back to newest created first). Use this to find document filenames before attaching them to emails. Supports pagination: pass limit (default 40, max 100) and cursor (from previous response next_cursor) to continue browsing older files page by page. Returns universal ISO 8601 UTC timestamps for each document.",
             parameters: FunctionParameters(
-                properties: [:],
+                properties: [
+                    "limit": ParameterProperty(
+                        type: "integer",
+                        description: "Optional number of documents to return per page. Default 40, max 100."
+                    ),
+                    "cursor": ParameterProperty(
+                        type: "string",
+                        description: "Optional pagination cursor from a previous list_documents response (next_cursor). Omit on first call to get the latest documents."
+                    )
+                ],
                 required: []
             )
         )
@@ -637,61 +591,42 @@ enum AvailableTools {
     
     // MARK: - Contact Tools
     
-    static let findContact = ToolDefinition(
+    static let manageContacts = ToolDefinition(
         function: FunctionDefinition(
-            name: "find_contact",
-            description: "Search for a contact by name or email. Use when user mentions sending email/message to a person by name, or asks for someone's contact info (e.g., 'What is John's email?', 'Send email to Sarah Smith'). Returns matching contacts with their details. Use the email from the results for send_email or reply_email tools.",
+            name: "manage_contacts",
+            description: "Single contacts tool. Use action='find' to search contacts, action='add' to create a contact, and action='list' to view contacts.",
             parameters: FunctionParameters(
                 properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Contact action: 'find', 'add', or 'list'."
+                    ),
                     "query": ParameterProperty(
                         type: "string",
-                        description: "Name or email to search for. Can be partial (e.g., 'John' will match 'John Doe', 'John Smith')."
-                    )
-                ],
-                required: ["query"]
-            )
-        )
-    )
-    
-    static let addContact = ToolDefinition(
-        function: FunctionDefinition(
-            name: "add_contact",
-            description: "Add a new contact to the user's contact list. Use when user explicitly asks to save/add a contact or provides contact information to remember.",
-            parameters: FunctionParameters(
-                properties: [
+                        description: "Required for action='find'. Name or email search query."
+                    ),
                     "first_name": ParameterProperty(
                         type: "string",
-                        description: "Contact's first name (required)."
+                        description: "Required for action='add'. Contact first name."
                     ),
                     "last_name": ParameterProperty(
                         type: "string",
-                        description: "Contact's last name (optional)."
+                        description: "Optional for action='add'. Contact last name."
                     ),
                     "email": ParameterProperty(
                         type: "string",
-                        description: "Contact's email address (optional)."
+                        description: "Optional for action='add'. Contact email."
                     ),
                     "phone": ParameterProperty(
                         type: "string",
-                        description: "Contact's phone number (optional)."
+                        description: "Optional for action='add'. Contact phone."
                     ),
                     "organization": ParameterProperty(
                         type: "string",
-                        description: "Contact's company or organization (optional)."
+                        description: "Optional for action='add'. Contact organization."
                     )
                 ],
-                required: ["first_name"]
-            )
-        )
-    )
-    
-    static let listContacts = ToolDefinition(
-        function: FunctionDefinition(
-            name: "list_contacts",
-            description: "List all contacts in the user's contact list. Use when user asks to see all their contacts or wants to browse contacts. Returns up to 50 contacts to save context space.",
-            parameters: FunctionParameters(
-                properties: [:],
-                required: []
+                required: ["action"]
             )
         )
     )
@@ -778,50 +713,38 @@ enum AvailableTools {
     
     // MARK: - User Context Management
     
-    static let addToUserContext = ToolDefinition(
+    static let editUserContext = ToolDefinition(
         function: FunctionDefinition(
-            name: "add_to_user_context",
-            description: "Append new information to your persistent memory about the user. Use when you learn something new worth remembering: preferences, life events (birthdays, moves), relationships, work details, communication style, etc. The fact is added to your existing context. Be concise but complete. Total context is limited to ~5000 tokens (~20k chars) — the response will tell you current usage.",
+            name: "edit_user_context",
+            description: "Single tool for persistent memory edits. Supports append, delete, replace, and full rewrite of user context. Use this for surgical updates (small corrections) and broad updates (reorganization). Context is capped at ~5000 tokens (~20k chars).",
             parameters: FunctionParameters(
                 properties: [
-                    "fact": ParameterProperty(
+                    "action": ParameterProperty(
                         type: "string",
-                        description: "The new fact or information to add. Write concisely (e.g., 'Birthday: March 15th', 'Prefers morning meetings', 'Works at Google as a software engineer'). Will be appended to existing context."
+                        description: "Edit action: 'append', 'delete', 'replace', or 'rewrite'."
+                    ),
+                    "content": ParameterProperty(
+                        type: "string",
+                        description: "For 'append': text to add as a new line. For 'rewrite': complete new context text."
+                    ),
+                    "target": ParameterProperty(
+                        type: "string",
+                        description: "For 'delete' and 'replace': exact text to find in current context."
+                    ),
+                    "replacement": ParameterProperty(
+                        type: "string",
+                        description: "For 'replace': replacement text for matches of target."
+                    ),
+                    "all_matches": ParameterProperty(
+                        type: "boolean",
+                        description: "Optional for 'delete'/'replace'. If true (default), edit all matches; if false, edit only first match."
+                    ),
+                    "case_sensitive": ParameterProperty(
+                        type: "boolean",
+                        description: "Optional for 'delete'/'replace'. If true, matching is case-sensitive; default false."
                     )
                 ],
-                required: ["fact"]
-            )
-        )
-    )
-    
-    static let removeFromUserContext = ToolDefinition(
-        function: FunctionDefinition(
-            name: "remove_from_user_context",
-            description: "Remove outdated or incorrect information from your persistent memory. Use when user corrects something ('Actually my birthday is in April, not March') or when information becomes irrelevant (got a new job, moved to a new city). Specify keywords to identify what to remove. The response will show remaining space after removal.",
-            parameters: FunctionParameters(
-                properties: [
-                    "keywords": ParameterProperty(
-                        type: "string",
-                        description: "Keywords or phrase to identify what to remove. Lines containing these keywords (case-insensitive) will be removed. E.g., 'birthday', 'old job', 'previous address'."
-                    )
-                ],
-                required: ["keywords"]
-            )
-        )
-    )
-    
-    static let rewriteUserContext = ToolDefinition(
-        function: FunctionDefinition(
-            name: "rewrite_user_context",
-            description: "Completely rewrite your persistent memory about the user. Use sparingly — only when context needs major reorganization or cleanup. Replaces ALL existing context. Limited to ~5000 tokens (~20k chars). The response shows usage after rewrite.",
-            parameters: FunctionParameters(
-                properties: [
-                    "new_context": ParameterProperty(
-                        type: "string",
-                        description: "The complete new user context. Write in second person ('You are assisting [name]...'). Organize by categories if helpful (Personal, Work, Preferences). Keep it under 20,000 characters."
-                    )
-                ],
-                required: ["new_context"]
+                required: ["action"]
             )
         )
     )
@@ -1255,9 +1178,18 @@ enum AvailableTools {
     static let listProjects = ToolDefinition(
         function: FunctionDefinition(
             name: "list_projects",
-            description: "List all available project workspaces created for Claude Code, including AI-generated project description and last_edited_at. Use this to choose which project to inspect or run.",
+            description: "List available project workspaces created for Claude Code, including AI-generated project description and last_modified_at. Results are sorted by last_modified_at (newest first) and support pagination: pass limit (default 20, max 100) and cursor (from previous response next_cursor) to continue page by page.",
             parameters: FunctionParameters(
-                properties: [:],
+                properties: [
+                    "limit": ParameterProperty(
+                        type: "integer",
+                        description: "Optional number of projects to return per page. Default 20, max 100."
+                    ),
+                    "cursor": ParameterProperty(
+                        type: "string",
+                        description: "Optional pagination cursor from a previous list_projects response (next_cursor). Omit on first call to get the latest projects."
+                    )
+                ],
                 required: []
             )
         )
@@ -1513,7 +1445,7 @@ enum AvailableTools {
     
     /// Non-email tools that do not depend on web search credentials
     static var coreToolsWithoutWebSearch: [ToolDefinition] {
-        [setReminder, listReminders, deleteReminder, viewCalendar, addCalendarEvent, editCalendarEvent, deleteCalendarEvent, viewConversationChunk, listDocuments, readDocument, findContact, addContact, listContacts, generateImage, downloadFromUrl, addToUserContext, removeFromUserContext, rewriteUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
+        [manageReminders, manageCalendar, viewConversationChunk, listDocuments, readDocument, manageContacts, generateImage, downloadFromUrl, editUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
     }
     
     static var gatedProjectDeploymentTools: [ToolDefinition] {

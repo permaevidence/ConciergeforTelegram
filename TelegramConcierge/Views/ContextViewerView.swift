@@ -481,7 +481,7 @@ struct ContextViewerView: View {
         - Email operations
         - Web search
         - Reminders
-        - Learning about the user (add_to_user_context, etc.)
+        - Learning about the user (edit_user_context)
         
         """
         
