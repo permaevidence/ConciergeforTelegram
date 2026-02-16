@@ -218,6 +218,22 @@ enum AvailableTools {
             )
         )
     )
+
+    static let deepResearch = ToolDefinition(
+        function: FunctionDefinition(
+            name: "deep_research",
+            description: "Perform deep, comprehensive research with multi-step web search and source triangulation. Use when the user asks for a detailed report, a thorough analysis, a full comparison, or a long-form answer with extensive sourcing.",
+            parameters: FunctionParameters(
+                properties: [
+                    "query": ParameterProperty(
+                        type: "string",
+                        description: "The research question or topic to investigate in depth. Include constraints, scope, and context from the conversation."
+                    )
+                ],
+                required: ["query"]
+            )
+        )
+    )
     
     static let manageReminders = ToolDefinition(
         function: FunctionDefinition(
@@ -658,12 +674,12 @@ enum AvailableTools {
     static let viewUrl = ToolDefinition(
         function: FunctionDefinition(
             name: "view_url",
-            description: "Read and view the content of a URL directly. Use AFTER web_search when you need to see the full content of a page, not just snippets. Returns markdown content with image descriptions (captions and URLs) and all links. If you want to actually SEE an image from the page, use view_page_image with the image URL returned in the images array. Ideal for: reading articles, documentation, product pages, or any URL from search results that you need more detail on.",
+            description: "Read and view the content of a URL directly. Use AFTER web_search or deep_research when you need to see the full content of a page, not just snippets. Returns markdown content with image descriptions (captions and URLs) and all links. If you want to actually SEE an image from the page, use view_page_image with the image URL returned in the images array. Ideal for: reading articles, documentation, product pages, or any URL from search results that you need more detail on.",
             parameters: FunctionParameters(
                 properties: [
                     "url": ParameterProperty(
                         type: "string",
-                        description: "The full URL to read (e.g., 'https://example.com/article'). Use URLs from web_search results or user-provided URLs."
+                        description: "The full URL to read (e.g., 'https://example.com/article'). Use URLs from web_search/deep_research results or user-provided URLs."
                     )
                 ],
                 required: ["url"]
@@ -1460,7 +1476,7 @@ enum AvailableTools {
             (KeychainHelper.load(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey) ?? "false")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() == "true"
-        let webTools = includeWebSearch ? [webSearch, viewUrl, viewPageImage] : []
+        let webTools = includeWebSearch ? [webSearch, deepResearch, viewUrl, viewPageImage] : []
         var coreTools = webTools + coreToolsWithoutWebSearch
         
         if disableLegacyDocumentGeneration {

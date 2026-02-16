@@ -87,6 +87,9 @@ actor ToolExecutor {
             
         case "web_search":
             content = try await executeWebSearch(call)
+
+        case "deep_research":
+            content = try await executeDeepResearch(call)
             
         case "manage_reminders":
             content = try await executeManageReminders(call)
@@ -239,6 +242,20 @@ actor ToolExecutor {
             return result.asJSON()
         } catch {
             return "{\"error\": \"Web search failed: \(error.localizedDescription)\"}"
+        }
+    }
+
+    private func executeDeepResearch(_ call: ToolCall) async throws -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(WebSearchArguments.self, from: argsData) else {
+            return "{\"error\": \"Failed to parse deep_research arguments\"}"
+        }
+
+        do {
+            let result = try await webOrchestrator.executeDeepResearchForTool(query: args.query)
+            return result.asJSON()
+        } catch {
+            return "{\"error\": \"Deep research failed: \(error.localizedDescription)\"}"
         }
     }
     

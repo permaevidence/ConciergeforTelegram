@@ -2,9 +2,11 @@ import Foundation
 
 // MARK: - OpenRouter Configuration for Web Search Pipeline
 enum ORModel {
-    static let agent      = "openai/gpt-oss-120b"
-    static let excerpts   = "openai/gpt-oss-20b"
-    static let finalAns   = "openai/gpt-oss-120b"
+    static let webAgent          = "openai/gpt-oss-120b"
+    static let webExcerpts       = "openai/gpt-oss-20b"
+    static let webFinalAnswer    = "openai/gpt-oss-120b"
+    static let deepExcerpt       = "openai/gpt-oss-120b"
+    static let defaultMainModel  = "google/gemini-3-flash-preview"
 }
 
 enum Endpoints {
@@ -22,7 +24,7 @@ struct ProviderSettings {
 // MARK: - Reasoning Configuration
 enum ReasoningEffort {
     case off
-    case low, medium, high
+    case minimal, low, medium, high
     case budgetTokens(Int)
 }
 
@@ -35,11 +37,37 @@ struct ReasoningSettings {
 func makeReasoning(_ r: ReasoningEffort) -> ORChatReq.Reasoning? {
     switch r {
     case .off: return nil
+    case .minimal: return .init(effort: "minimal", max_tokens: nil, exclude: true)
     case .low:    return .init(effort: "low",    max_tokens: nil, exclude: true)
     case .medium: return .init(effort: "medium", max_tokens: nil, exclude: true)
     case .high:   return .init(effort: "high",   max_tokens: nil, exclude: true)
     case .budgetTokens(let n): return .init(effort: nil, max_tokens: n, exclude: true)
     }
+}
+
+private func parseReasoningEffort(_ rawValue: String?) -> ReasoningEffort {
+    let value = (rawValue ?? "")
+        .trimmingCharacters(in: .whitespacesAndNewlines)
+        .lowercased()
+
+    switch value {
+    case "minimal":
+        return .minimal
+    case "low":
+        return .low
+    case "medium":
+        return .medium
+    case "high":
+        return .high
+    default:
+        // Keep aligned with OpenRouterService fallback when setting is missing.
+        return .high
+    }
+}
+
+enum ResearchMode {
+    case webSearch
+    case deepResearch
 }
 
 // MARK: - OpenRouter Types for Pipeline
@@ -314,7 +342,8 @@ final class WebOrchestrator {
     private var serperApiKey: String = ""
     private var jinaApiKey: String = ""
     
-    private let maxSteps = 5
+    private let maxWebSearchSteps = 5
+    private let maxDeepResearchSteps = 6
     private let perQueryDepth = 10
     private let maxContextBytes = 300_000
     private let excerptThreshold = 8_000
@@ -337,8 +366,17 @@ final class WebOrchestrator {
     
     /// Execute web search as a tool and return a condensed result for the main LLM
     func executeForTool(query: String) async throws -> WebSearchResult {
+        try await executeForTool(query: query, mode: .webSearch)
+    }
+
+    /// Execute deep research as a tool and return a detailed result for the main LLM
+    func executeDeepResearchForTool(query: String) async throws -> WebSearchResult {
+        try await executeForTool(query: query, mode: .deepResearch)
+    }
+
+    private func executeForTool(query: String, mode: ResearchMode) async throws -> WebSearchResult {
         lastQueriesUsed = []
-        let answer = try await answer(userPrompt: query, historyPairs: [])
+        let answer = try await answer(userPrompt: query, historyPairs: [], mode: mode)
         
         // Extract source URLs from the answer (URLs wrapped in angle brackets)
         let sources = extractSourceURLs(from: answer)
@@ -365,8 +403,13 @@ final class WebOrchestrator {
     }
     
     // MARK: - Main Entry Point
-    func answer(userPrompt: String, historyPairs: [(user: String, assistant: String)]) async throws -> String {
+    func answer(
+        userPrompt: String,
+        historyPairs: [(user: String, assistant: String)],
+        mode: ResearchMode = .webSearch
+    ) async throws -> String {
         let conversationContext = buildConversationContext(historyPairs: historyPairs, currentQuestion: userPrompt)
+        let maxSteps = maxSteps(for: mode)
         
         var webContext = WebContext.empty()
         var scratchpadEntries: [ScratchpadEntry] = []
@@ -383,7 +426,8 @@ final class WebOrchestrator {
                 webContext: webContext,
                 scratchpadEntries: scratchpadEntries,
                 currentStep: step,
-                maxSteps: maxSteps
+                maxSteps: maxSteps,
+                mode: mode
             )
             
             var actionsTaken: [String] = []
@@ -407,7 +451,7 @@ final class WebOrchestrator {
                         if let requests = call.arguments.scrape_requests, !requests.isEmpty {
                             onProgress?(.scraping)
                             let requestsToRun = Array(requests.prefix(3))
-                            let scrapedDocs = try await executeScrape(requests: requestsToRun, atStep: step)
+                            let scrapedDocs = try await executeScrape(requests: requestsToRun, atStep: step, mode: mode)
                             webContext.scraped.append(contentsOf: scrapedDocs)
                             let urls = requestsToRun.map { $0.url }
                             actionsTaken.append("scrape(\(urls.joined(separator: ", ")))")
@@ -437,7 +481,8 @@ final class WebOrchestrator {
             currentQuestion: userPrompt,
             webContextJSON: contextJSON,
             scratchpad: fullScratchpad,
-            historyPairs: historyPairs
+            historyPairs: historyPairs,
+            mode: mode
         )
     }
     
@@ -453,8 +498,42 @@ final class WebOrchestrator {
         return output
     }
     
-    private func buildAgentSystemPrompt(currentStep: Int, maxSteps: Int) -> String {
-        """
+    private func buildAgentSystemPrompt(currentStep: Int, maxSteps: Int, mode: ResearchMode) -> String {
+        if mode == .deepResearch {
+            return """
+            **Today is: \(nowStamp())**
+            
+            You are a deep research agent with access to tools. You have \(maxSteps - currentStep + 1) steps remaining (current step: \(currentStep)/\(maxSteps)).
+            
+            ## AVAILABLE TOOLS
+            
+            ### 1. search
+            Execute web searches. Provide up to 4 queries.
+            Arguments: { "queries": ["query1", "query2", ...] }
+            
+            ### 2. scrape
+            Fetch and extract relevant content from URLs. Provide up to 3 URLs with focus queries.
+            Arguments: { "scrape_requests": [{"url": "...", "focus": "what to look for"}, ...] }
+            
+            ## RESPONSE FORMAT
+            
+            Respond with STRICT JSON ONLY:
+            {
+              "thinking": "<Your thinking for THIS STEP ONLY - will be APPENDED to history>",
+              "tool_calls": [{ "tool": "search" | "scrape", "arguments": { ... } }],
+              "ready_for_answer": true | false
+            }
+            
+            ## DEEP RESEARCH STRATEGY
+            1. Create a broad plan, then systematically cover subtopics.
+            2. Seek primary/high-quality sources and triangulate key claims.
+            3. Actively search for conflicting or limiting evidence.
+            4. Keep collecting until major gaps are resolved across scope, evidence quality, and recency.
+            5. Set ready_for_answer = true only when you can produce a comprehensive, well-sourced final report.
+            """
+        }
+        
+        return """
         **Today is: \(nowStamp())**
         
         You are a research agent with access to tools. You have \(maxSteps - currentStep + 1) steps remaining (current step: \(currentStep)/\(maxSteps)).
@@ -509,8 +588,15 @@ final class WebOrchestrator {
     }
     
     // MARK: - Agent Call
-    private func callAgent(conversationContext: String, webContext: WebContext, scratchpadEntries: [ScratchpadEntry], currentStep: Int, maxSteps: Int) async throws -> AgentResponse {
-        let systemPrompt = buildAgentSystemPrompt(currentStep: currentStep, maxSteps: maxSteps)
+    private func callAgent(
+        conversationContext: String,
+        webContext: WebContext,
+        scratchpadEntries: [ScratchpadEntry],
+        currentStep: Int,
+        maxSteps: Int,
+        mode: ResearchMode
+    ) async throws -> AgentResponse {
+        let systemPrompt = buildAgentSystemPrompt(currentStep: currentStep, maxSteps: maxSteps, mode: mode)
         
         var userContent = "## USER QUESTION & CONVERSATION\n\n\(conversationContext)\n\n"
         userContent += "## SCRATCHPAD_HISTORY\n\n\(formatScratchpadHistory(scratchpadEntries))\n"
@@ -528,10 +614,11 @@ final class WebOrchestrator {
         ]
         
         let raw = try await callOpenRouter(
-            model: ORModel.agent,
+            model: agentModel(for: mode),
             messages: messages,
             maxTokens: 16000,
-            reasoning: makeReasoning(ReasoningSettings.agent)
+            reasoning: agentReasoning(for: mode),
+            provider: providerPreferences(for: mode)
         )
         
         guard let data = extractFirstJSONObjectData(from: raw),
@@ -577,13 +664,13 @@ final class WebOrchestrator {
         return WebContext(queries_used: queryRecords, results: results, answerBox: firstAB.map(WebAnswerBox.init), knowledgeGraph: firstKG.map(WebKG.init), peopleAlsoAsk: paa.map(WebPAA.init), topStories: top.map(WebTop.init), scraped: []).clamped(to: maxContextBytes)
     }
     
-    private func executeScrape(requests: [ScrapeRequest], atStep: Int) async throws -> [ScrapedDoc] {
+    private func executeScrape(requests: [ScrapeRequest], atStep: Int, mode: ResearchMode) async throws -> [ScrapedDoc] {
         await withTaskGroup(of: ScrapedDoc?.self) { group in
             for req in requests {
                 group.addTask {
                     do {
                         try Task.checkCancellation()
-                        return try await self.scrapeAndExtract(url: req.url, focus: req.focus, atStep: atStep)
+                        return try await self.scrapeAndExtract(url: req.url, focus: req.focus, atStep: atStep, mode: mode)
                     } catch { return nil }
                 }
             }
@@ -598,8 +685,16 @@ final class WebOrchestrator {
         model: String,
         messages: [ORChatReq.Msg],
         maxTokens: Int,
-        reasoning: ORChatReq.Reasoning? = nil
+        reasoning: ORChatReq.Reasoning? = nil,
+        provider: ORChatReq.Provider? = nil
     ) async throws -> String {
+        let providerToUse = provider ?? .init(
+            order: ProviderSettings.order,
+            only: ProviderSettings.only,
+            allow_fallbacks: ProviderSettings.allowFallbacks,
+            sort: nil
+        )
+
         let body = ORChatReq(
             model: model,
             messages: messages,
@@ -607,12 +702,7 @@ final class WebOrchestrator {
             temperature: 0.7,
             stream: false,
             reasoning: reasoning,
-            provider: .init(
-                order: ProviderSettings.order,
-                only: ProviderSettings.only,
-                allow_fallbacks: ProviderSettings.allowFallbacks,
-                sort: nil
-            )
+            provider: providerToUse
         )
         let data = try await httpJSONPost(url: Endpoints.openrouter, body: body, headers: ["Authorization": "Bearer \(openRouterApiKey)"], timeout: 120)
         let resp = try JSONDecoder().decode(ORChatResp.self, from: data)
@@ -767,7 +857,7 @@ final class WebOrchestrator {
         return Array(images.prefix(20)) // Limit to 20 images
     }
     
-    private func scrapeAndExtract(url: String, focus: String, atStep: Int) async throws -> ScrapedDoc {
+    private func scrapeAndExtract(url: String, focus: String, atStep: Int, mode: ResearchMode) async throws -> ScrapedDoc {
         let (maybeTitle, rawContent) = try await fetchWithJinaReader(originalURL: url, includeImageCaptions: true)
         let host = URL(string: url)?.host?.lowercased() ?? ""
 
@@ -781,7 +871,8 @@ final class WebOrchestrator {
             page: rawContent,
             focus: focus,
             candidateLinks: candidateLinks,
-            candidateImages: candidateImages
+            candidateImages: candidateImages,
+            mode: mode
         )
         let relevantLinks = relevantAssets?.links ?? []
         let relevantImages = relevantAssets?.images ?? []
@@ -799,7 +890,7 @@ final class WebOrchestrator {
         }
 
         if rawContent.count <= chunkSizeChars {
-            let ex = try await extractExcerpts(page: rawContent, focus: focus)
+            let ex = try await extractExcerpts(page: rawContent, focus: focus, mode: mode)
             return ScrapedDoc(
                 url: url,
                 source: host,
@@ -816,7 +907,7 @@ final class WebOrchestrator {
 
         for chunk in chunks {
             do {
-                let ex = try await extractExcerpts(page: chunk, focus: focus)
+                let ex = try await extractExcerpts(page: chunk, focus: focus, mode: mode)
                 if !ex.isEmpty { allExcerpts.append(contentsOf: ex) }
             } catch is CancellationError { throw CancellationError() }
             catch { /* continue */ }
@@ -833,7 +924,7 @@ final class WebOrchestrator {
         )
     }
     
-    private func extractExcerpts(page: String, focus: String) async throws -> [String] {
+    private func extractExcerpts(page: String, focus: String, mode: ResearchMode) async throws -> [String] {
         let sys = """
         Cite verbatim and in full the most relevant parts of the provided TEXT for the given FOCUS.
         OUTPUT STRICT JSON ONLY: { "excerpts": ["...", "..."] }
@@ -843,10 +934,11 @@ final class WebOrchestrator {
             .init(role: "user", content: "FOCUS:\n\(focus)\n\nTEXT:\n\(page.prefix(chunkSizeChars))")
         ]
         let raw = try await callOpenRouter(
-            model: ORModel.excerpts,
+            model: excerptModel(for: mode),
             messages: msgs,
             maxTokens: 16000,
-            reasoning: makeReasoning(ReasoningSettings.excerpts)
+            reasoning: excerptReasoning(for: mode),
+            provider: providerPreferences(for: mode)
         )
         guard let d = extractFirstJSONObjectData(from: raw),
               let out = try? JSONDecoder().decode(ExcerptOut.self, from: d) else { return [] }
@@ -857,7 +949,8 @@ final class WebOrchestrator {
         page: String,
         focus: String,
         candidateLinks: [ExtractedLink],
-        candidateImages: [ExtractedImage]
+        candidateImages: [ExtractedImage],
+        mode: ResearchMode
     ) async throws -> (links: [ExtractedLink], images: [ExtractedImage]) {
         guard !candidateLinks.isEmpty || !candidateImages.isEmpty else { return ([], []) }
 
@@ -908,10 +1001,11 @@ final class WebOrchestrator {
         ]
 
         let raw = try await callOpenRouter(
-            model: ORModel.excerpts,
+            model: excerptModel(for: mode),
             messages: msgs,
             maxTokens: 8000,
-            reasoning: makeReasoning(ReasoningSettings.excerpts)
+            reasoning: excerptReasoning(for: mode),
+            provider: providerPreferences(for: mode)
         )
 
         guard let d = extractFirstJSONObjectData(from: raw),
@@ -975,18 +1069,42 @@ final class WebOrchestrator {
         )
     }
     
-    private func generateFinalAnswer(currentQuestion: String, webContextJSON: String, scratchpad: String, historyPairs: [(user: String, assistant: String)]) async throws -> String {
-        let sys = """
-        **Today is: \(nowStamp())**
-        Use the provided WEB_CONTEXT_JSON and RESEARCH_JOURNEY to answer the question concisely.
-        Provide sources with URLs so the information you provide can be verified.
-        
-        Requirements:
-        - Prefer recent sources when appropriate
-        - If sources conflict, note briefly
-        - Keep answer concise, add "Sources" list at end
-        - Do NOT invent citations
-        """
+    private func generateFinalAnswer(
+        currentQuestion: String,
+        webContextJSON: String,
+        scratchpad: String,
+        historyPairs: [(user: String, assistant: String)],
+        mode: ResearchMode
+    ) async throws -> String {
+        let sys: String
+        if mode == .deepResearch {
+            sys = """
+            **Today is: \(nowStamp())**
+            Use WEB_CONTEXT_JSON and RESEARCH_JOURNEY to write a deep research report.
+            The answer must be detailed, complete, and long (not concise).
+            Include source URLs in angle brackets like <https://example.com> so claims can be verified.
+            
+            Requirements:
+            - Cover the topic comprehensively across major subtopics
+            - Explain important nuance, caveats, and uncertainty
+            - Compare conflicting evidence when present
+            - Prefer recent and high-quality sources where appropriate
+            - Do NOT invent citations
+            - End with a substantial "Sources" section listing all cited URLs
+            """
+        } else {
+            sys = """
+            **Today is: \(nowStamp())**
+            Use the provided WEB_CONTEXT_JSON and RESEARCH_JOURNEY to answer the question concisely.
+            Provide sources with URLs so the information you provide can be verified.
+            
+            Requirements:
+            - Prefer recent sources when appropriate
+            - If sources conflict, note briefly
+            - Keep answer concise, add "Sources" list at end
+            - Do NOT invent citations
+            """
+        }
         
         var msgs = [ORChatReq.Msg(role: "system", content: sys)]
         for p in historyPairs {
@@ -1000,12 +1118,84 @@ final class WebOrchestrator {
         msgs.append(.init(role: "user", content: userContent))
         
         let raw = try await callOpenRouter(
-            model: ORModel.finalAns,
+            model: finalAnswerModel(for: mode),
             messages: msgs,
             maxTokens: 16000,
-            reasoning: makeReasoning(ReasoningSettings.finalAns)
+            reasoning: finalAnswerReasoning(for: mode),
+            provider: providerPreferences(for: mode)
         )
         return autolinkPhoneNumbers(raw.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
+    
+    private func configuredMainModel() -> String {
+        let configured = (KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return configured.isEmpty ? ORModel.defaultMainModel : configured
+    }
+
+    private func configuredReasoning() -> ORChatReq.Reasoning? {
+        let configuredEffort = parseReasoningEffort(
+            KeychainHelper.load(key: KeychainHelper.openRouterReasoningEffortKey)
+        )
+        return makeReasoning(configuredEffort)
+    }
+
+    private func configuredProviderOrder() -> [String]? {
+        guard let providersString = KeychainHelper.load(key: KeychainHelper.openRouterProvidersKey),
+              !providersString.isEmpty else {
+            return nil
+        }
+        let providers = providersString
+            .split(separator: ",")
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        return providers.isEmpty ? nil : providers
+    }
+
+    private func providerPreferences(for mode: ResearchMode) -> ORChatReq.Provider {
+        if mode == .deepResearch {
+            return .init(
+                order: configuredProviderOrder(),
+                only: nil,
+                allow_fallbacks: true,
+                sort: nil
+            )
+        }
+
+        return .init(
+            order: ProviderSettings.order,
+            only: ProviderSettings.only,
+            allow_fallbacks: ProviderSettings.allowFallbacks,
+            sort: nil
+        )
+    }
+
+    private func agentModel(for mode: ResearchMode) -> String {
+        mode == .deepResearch ? configuredMainModel() : ORModel.webAgent
+    }
+
+    private func excerptModel(for mode: ResearchMode) -> String {
+        mode == .deepResearch ? ORModel.deepExcerpt : ORModel.webExcerpts
+    }
+
+    private func finalAnswerModel(for mode: ResearchMode) -> String {
+        mode == .deepResearch ? configuredMainModel() : ORModel.webFinalAnswer
+    }
+
+    private func agentReasoning(for mode: ResearchMode) -> ORChatReq.Reasoning? {
+        mode == .deepResearch ? configuredReasoning() : makeReasoning(ReasoningSettings.agent)
+    }
+
+    private func excerptReasoning(for mode: ResearchMode) -> ORChatReq.Reasoning? {
+        mode == .deepResearch ? makeReasoning(.medium) : makeReasoning(ReasoningSettings.excerpts)
+    }
+
+    private func finalAnswerReasoning(for mode: ResearchMode) -> ORChatReq.Reasoning? {
+        mode == .deepResearch ? configuredReasoning() : makeReasoning(ReasoningSettings.finalAns)
+    }
+
+    private func maxSteps(for mode: ResearchMode) -> Int {
+        mode == .deepResearch ? maxDeepResearchSteps : maxWebSearchSteps
     }
     
     // MARK: - Utilities

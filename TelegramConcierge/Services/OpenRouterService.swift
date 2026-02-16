@@ -410,6 +410,7 @@ actor OpenRouterService {
             - Prices, stock quotes, weather, or availability
             - Specific facts you're uncertain about
             - Any topic where fresh information would improve your answer
+            - Use web_search for quick/targeted lookup; use deep_research when the user asks for an in-depth, comprehensive, long-form researched answer
             - Project ZIP imports: if user wants edits to an existing project sent as a ZIP, use project tools to import it into a workspace before coding
             - Deployment/database operations: call show_project_deployment_tools first to unlock advanced deployment/database tools for this turn
             - **Self-orchestration via reminders**: Use manage_reminders with action='set' not just for user requests, but proactively when YOU decide a future action would be valuable. Examples: scheduling a follow-up check, breaking complex tasks into timed steps, verifying results later, or any "I should do X later" thought. Use action='list' to inspect pending reminders and action='delete' to cancel one, many (reminder_ids), all (delete_all=true), or all recurring (delete_recurring=true).

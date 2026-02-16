@@ -911,6 +911,8 @@ class ConversationManager: ObservableObject {
     /// Get appropriate progress message for tool calls
     private func getProgressMessage(for calls: [ToolCall]) -> String {
         let toolNames = Set(calls.map { $0.function.name })
+        let hasWebSearchOp = toolNames.contains("web_search") || toolNames.contains("deep_research")
+        let hasDeepResearchOp = toolNames.contains("deep_research")
         
         // Check for calendar operations
         let hasCalendarOp = toolNames.contains("manage_calendar")
@@ -920,11 +922,17 @@ class ConversationManager: ObservableObject {
         // Check for email operations
         let hasEmailOp = toolNames.contains("read_emails") || toolNames.contains("search_emails") || toolNames.contains("send_email") || toolNames.contains("reply_email") || toolNames.contains("forward_email")
         
-        if toolNames.contains("web_search") && hasReminderOp {
+        if hasDeepResearchOp && hasReminderOp {
+            return "🧠🔍 Deep researching and managing reminders..."
+        } else if hasDeepResearchOp && hasCalendarOp {
+            return "🧠🔍📅 Deep researching and managing calendar..."
+        } else if hasDeepResearchOp {
+            return "🧠🔍 Running deep research..."
+        } else if hasWebSearchOp && hasReminderOp {
             return "🔍 Searching the web and managing reminders..."
-        } else if toolNames.contains("web_search") && hasCalendarOp {
+        } else if hasWebSearchOp && hasCalendarOp {
             return "🔍📅 Searching the web and managing calendar..."
-        } else if toolNames.contains("web_search") {
+        } else if hasWebSearchOp {
             return "🔍 Searching the web..."
         } else if toolNames.contains("show_project_deployment_tools") {
             return "🧰 Enabling deployment and database tools for this turn..."
