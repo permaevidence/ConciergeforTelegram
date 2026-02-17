@@ -530,15 +530,19 @@ enum AvailableTools {
     static let readDocument = ToolDefinition(
         function: FunctionDefinition(
             name: "read_document",
-            description: "Open and read the contents of a document from your local file storage. Use when the user asks you to view, analyze, read, or examine a document they previously sent or that was saved from an email or download. Returns the raw file data (images, PDFs, documents) that you can directly process with your vision capabilities. Use list_documents first to find available files.",
+            description: "Open and read one or more documents from local file storage. Use proactively to view, analyze, read, or examine files that are relevant to the user's request, but of which you can only see the name and description. It is important that you see first hand the documents that you are analyzing. It returns raw file data (images, PDFs, documents) for direct multimodal analysis. You can open up to 10 documents per call. You can use list_documents to find available files to read/open.",
             parameters: FunctionParameters(
                 properties: [
+                    "document_filenames": ParameterProperty(
+                        type: "string",
+                        description: "JSON array of document filenames to read (from list_documents). Supports 1 to 10 files per call. Example: [\"a.pdf\", \"b.jpg\"]."
+                    ),
                     "document_filename": ParameterProperty(
                         type: "string",
-                        description: "The filename of the document to read (from list_documents, e.g. 'abc123.pdf'). This is the stored filename."
+                        description: "Optional legacy single filename form (from list_documents, e.g. 'abc123.pdf'). Prefer document_filenames."
                     )
                 ],
-                required: ["document_filename"]
+                required: ["document_filenames"]
             )
         )
     )
@@ -808,7 +812,7 @@ enum AvailableTools {
     static let sendDocumentToChat = ToolDefinition(
         function: FunctionDefinition(
             name: "send_document_to_chat",
-            description: "Send a document or file directly to the user via Telegram. Use when the user asks you to send/share a file, document, or image that's in your file management. Works with: PDFs, images, documents downloaded from URLs, email attachments, or any file in your documents folder. First use list_documents to find the filename.",
+            description: "Send a document or file directly to the user via Telegram. Use when the user asks you to send/share a file, document, or image that's in your file management. Works with: PDFs, images, documents downloaded from URLs, email attachments, or any file in your documents folder. You can use list_documents to find the filename before sending.",
             parameters: FunctionParameters(
                 properties: [
                     "document_filename": ParameterProperty(
@@ -993,7 +997,7 @@ enum AvailableTools {
     static let showProjectDeploymentTools = ToolDefinition(
         function: FunctionDefinition(
             name: "show_project_deployment_tools",
-            description: "Reveal advanced deployment/database tools for the current turn only. Call this BEFORE trying to deploy to Vercel or provision/sync project databases. Once called, the gated tools remain visible for the rest of this turn.",
+            description: "Reveal advanced deployment/database tools for the current turn only. Call this BEFORE trying to deploy to Vercel or provision/sync project databases with InstantDB. Once called, the gated tools remain visible for the rest of this turn.",
             parameters: FunctionParameters(
                 properties: [:],
                 required: []

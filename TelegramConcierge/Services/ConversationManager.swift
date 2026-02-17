@@ -27,6 +27,7 @@ class ConversationManager: ObservableObject {
     private var pendingReplyContext: String?
     private let toolRunLogPrefix = "[TOOL RUN LOG - compact]"
     private let maxRetainedToolRunLogs = 5
+    private let maxAssistantMessageChars = 4000
     
     private struct ToolAwareResponse {
         let finalText: String
@@ -567,9 +568,10 @@ class ConversationManager: ObservableObject {
             }
             
             // Add assistant message with any downloaded files tracked
-            let finalResponse = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            let finalResponseRaw = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "I completed the requested actions."
                 : response.finalText
+            let finalResponse = capAssistantMessageForHistoryAndTelegram(finalResponseRaw)
             let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
             let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
             messages.append(assistantMessage)
@@ -1143,9 +1145,10 @@ class ConversationManager: ObservableObject {
                 }
                 
                 // Add assistant message (guard against empty response)
-                let finalResponse = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                let finalResponseRaw = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                     ? "I completed the reminder actions."
                     : response.finalText
+                let finalResponse = capAssistantMessageForHistoryAndTelegram(finalResponseRaw)
                 let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
                 let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
                 messages.append(assistantMessage)
@@ -1262,7 +1265,7 @@ class ConversationManager: ObservableObject {
             messages.append(emailArrivalMessage)
             
             // Send the personalized notification
-            let notification = "📬 \(trimmed)"
+            let notification = capAssistantMessageForHistoryAndTelegram("📬 \(trimmed)")
             try await telegramService.sendMessage(chatId: chatId, text: notification)
             
             // Save Gemini's notification response to the conversation
@@ -1377,7 +1380,7 @@ class ConversationManager: ObservableObject {
             messages.append(emailArrivalMessage)
             
             // Send the personalized notification
-            let notification = "📬 \(trimmed)"
+            let notification = capAssistantMessageForHistoryAndTelegram("📬 \(trimmed)")
             try await telegramService.sendMessage(chatId: chatId, text: notification)
             
             // Save Gemini's notification response to the conversation
@@ -1468,6 +1471,13 @@ class ConversationManager: ObservableObject {
         formatter.timeStyle = .medium
         return formatter.string(from: Date())
     }
+
+    private func capAssistantMessageForHistoryAndTelegram(_ text: String) -> String {
+        guard text.count > maxAssistantMessageChars else { return text }
+        let capped = String(text.prefix(maxAssistantMessageChars))
+        print("[ConversationManager] Assistant message capped to first \(maxAssistantMessageChars) chars (original: \(text.count))")
+        return capped
+    }
     
     // MARK: - Image Access (for UI)
     
@@ -1508,6 +1518,11 @@ class ConversationManager: ObservableObject {
         // Return last 20 messages for recent context
         let recentMessages = Array(messages.suffix(20))
         return (recentMessages, chunkSummaries)
+    }
+    
+    /// Load the full archived text for a specific chunk.
+    func getArchivedChunkContent(chunkId: UUID) async throws -> String {
+        try await archiveService.getChunkContent(chunkId: chunkId)
     }
     
     // MARK: - Summarization Context Builder

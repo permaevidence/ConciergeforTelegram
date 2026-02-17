@@ -1518,11 +1518,87 @@ struct SendEmailWithAttachmentArguments: Codable {
     }
 }
 
-struct ReadDocumentArguments: Codable {
-    let documentFilename: String
+struct ReadDocumentArguments: Decodable {
+    let documentFilenames: [String]
     
     enum CodingKeys: String, CodingKey {
         case documentFilename = "document_filename"
+        case documentFilenames = "document_filenames"
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        
+        let parsedFilenames: [String]
+        if let array = try? container.decode([String].self, forKey: .documentFilenames) {
+            parsedFilenames = array
+        } else if let raw = (try? container.decode(String.self, forKey: .documentFilenames))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                parsedFilenames = parsed
+            } else {
+                parsedFilenames = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+            }
+        } else if let singleFilename = try? container.decode(String.self, forKey: .documentFilename) {
+            parsedFilenames = [singleFilename]
+        } else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .documentFilenames,
+                in: container,
+                debugDescription: "Provide document_filenames (array/JSON array string/CSV) or legacy document_filename"
+            )
+        }
+        
+        let normalized = parsedFilenames
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+        
+        var seen: Set<String> = []
+        let deduplicated = normalized.filter { seen.insert($0).inserted }
+        
+        guard !deduplicated.isEmpty else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .documentFilenames,
+                in: container,
+                debugDescription: "No document filenames provided"
+            )
+        }
+        
+        documentFilenames = deduplicated
+    }
+}
+
+struct ReadDocumentItemResult: Codable {
+    let filename: String
+    let mimeType: String
+    let sizeBytes: Int
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case filename
+        case mimeType
+        case sizeBytes
+        case message
+    }
+}
+
+struct ReadDocumentResult: Codable {
+    let success: Bool
+    let loadedCount: Int
+    let maxDocumentsPerCall: Int
+    let documents: [ReadDocumentItemResult]
+    let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success
+        case loadedCount
+        case maxDocumentsPerCall = "max_documents_per_call"
+        case documents
+        case message
     }
 }
 
@@ -1741,64 +1817,73 @@ extension ToolExecutor {
             return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse read_document arguments\"}")
         }
         
-        let documentURL = documentsDirectory.appendingPathComponent(args.documentFilename)
-        guard FileManager.default.fileExists(atPath: documentURL.path) else {
-            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Document not found: \(args.documentFilename). Use list_documents to see available files.\"}")
+        let maxDocumentsPerCall = 10
+        if args.documentFilenames.count > maxDocumentsPerCall {
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: "{\"error\": \"read_document accepts at most \(maxDocumentsPerCall) files per call. Received \(args.documentFilenames.count).\"}"
+            )
         }
         
-        do {
-            let data = try Data(contentsOf: documentURL)
-            recordDocumentOpened(filename: args.documentFilename)
-            
-            // Determine MIME type from extension
-            let ext = documentURL.pathExtension.lowercased()
-            let mimeType: String
-            switch ext {
-            case "pdf": mimeType = "application/pdf"
-            case "jpg", "jpeg": mimeType = "image/jpeg"
-            case "png": mimeType = "image/png"
-            case "gif": mimeType = "image/gif"
-            case "webp": mimeType = "image/webp"
-            case "heic": mimeType = "image/heic"
-            case "txt": mimeType = "text/plain"
-            case "json": mimeType = "application/json"
-            case "html", "htm": mimeType = "text/html"
-            case "md": mimeType = "text/markdown"
-            case "csv": mimeType = "text/csv"
-            case "doc": mimeType = "application/msword"
-            case "docx": mimeType = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-            case "xls": mimeType = "application/vnd.ms-excel"
-            case "xlsx": mimeType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-            case "zip": mimeType = "application/zip"
-            case "mp3": mimeType = "audio/mpeg"
-            case "m4a": mimeType = "audio/mp4"
-            case "wav": mimeType = "audio/wav"
-            case "ogg", "oga": mimeType = "audio/ogg"
-            case "aac": mimeType = "audio/aac"
-            case "flac": mimeType = "audio/flac"
-            default: mimeType = "application/octet-stream"
+        var fileAttachments: [FileAttachment] = []
+        var documents: [ReadDocumentItemResult] = []
+        
+        for filename in args.documentFilenames {
+            let documentURL = documentsDirectory.appendingPathComponent(filename)
+            guard FileManager.default.fileExists(atPath: documentURL.path) else {
+                return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Document not found: \(filename). Use list_documents to see available files.\"}")
             }
             
-            // Create file attachment for multimodal injection
-            let attachment = FileAttachment(data: data, mimeType: mimeType, filename: args.documentFilename)
-            
-            // Result text (no base64 needed - file will be injected as multimodal content)
-            let visibilityMessage: String
-            if isInlineMimeTypeSupportedForLLM(mimeType) {
-                visibilityMessage = "Document loaded and visible. You can now analyze its contents."
-            } else if mimeType == "application/zip" || args.documentFilename.lowercased().hasSuffix(".zip") {
-                visibilityMessage = "Document loaded but not viewable inline. Import it into a project with add_project_files to extract and use its contents."
-            } else {
-                visibilityMessage = "Document loaded but not viewable inline in this model."
+            do {
+                let data = try Data(contentsOf: documentURL)
+                recordDocumentOpened(filename: filename)
+                
+                let mimeType = getMimeType(for: filename)
+                fileAttachments.append(FileAttachment(data: data, mimeType: mimeType, filename: filename))
+                
+                let visibilityMessage: String
+                if isInlineMimeTypeSupportedForLLM(mimeType) {
+                    visibilityMessage = "Document loaded and visible. You can now analyze its contents."
+                } else if mimeType == "application/zip" || filename.lowercased().hasSuffix(".zip") {
+                    visibilityMessage = "Document loaded but not viewable inline. Import it into a project with add_project_files to extract and use its contents."
+                } else {
+                    visibilityMessage = "Document loaded but not viewable inline in this model."
+                }
+                
+                documents.append(
+                    ReadDocumentItemResult(
+                        filename: filename,
+                        mimeType: mimeType,
+                        sizeBytes: data.count,
+                        message: visibilityMessage
+                    )
+                )
+            } catch {
+                return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to read document '\(filename)': \(error.localizedDescription)\"}")
             }
-            let result = """
-            {"success": true, "filename": "\(args.documentFilename)", "mimeType": "\(mimeType)", "sizeBytes": \(data.count), "message": "\(visibilityMessage)"}
-            """
-            
-            return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
-        } catch {
-            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to read document: \(error.localizedDescription)\"}")
         }
+        
+        let response = ReadDocumentResult(
+            success: true,
+            loadedCount: documents.count,
+            maxDocumentsPerCall: maxDocumentsPerCall,
+            documents: documents,
+            message: documents.count == 1
+                ? "Loaded 1 document."
+                : "Loaded \(documents.count) documents."
+        )
+        
+        let encoder = JSONEncoder()
+        if let data = try? encoder.encode(response),
+           let json = String(data: data, encoding: .utf8) {
+            return ToolResultMessage(toolCallId: call.id, content: json, fileAttachments: fileAttachments)
+        }
+        
+        return ToolResultMessage(
+            toolCallId: call.id,
+            content: "{\"success\": true, \"loadedCount\": \(documents.count), \"max_documents_per_call\": \(maxDocumentsPerCall)}",
+            fileAttachments: fileAttachments
+        )
     }
     
     func executeSendEmailWithAttachment(_ call: ToolCall) async -> String {
@@ -2347,14 +2432,25 @@ extension ToolExecutor {
         case "jpg", "jpeg": return "image/jpeg"
         case "png": return "image/png"
         case "gif": return "image/gif"
+        case "webp": return "image/webp"
+        case "heic": return "image/heic"
         case "doc": return "application/msword"
         case "docx": return "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
         case "xls": return "application/vnd.ms-excel"
         case "xlsx": return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         case "txt": return "text/plain"
+        case "md": return "text/markdown"
+        case "json": return "application/json"
         case "html", "htm": return "text/html"
+        case "xml": return "application/xml"
         case "csv": return "text/csv"
         case "zip": return "application/zip"
+        case "mp3": return "audio/mpeg"
+        case "m4a": return "audio/mp4"
+        case "wav": return "audio/wav"
+        case "ogg", "oga": return "audio/ogg"
+        case "aac": return "audio/aac"
+        case "flac": return "audio/flac"
         default: return "application/octet-stream"
         }
     }

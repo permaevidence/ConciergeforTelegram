@@ -15,6 +15,10 @@ struct ContextViewerView: View {
     @State private var userName: String = ""
     @State private var calendarContext: String = ""
     @State private var emailContext: String = ""
+    @State private var selectedChunk: ConversationChunk?
+    @State private var selectedChunkContent: String = ""
+    @State private var isChunkContentLoading = false
+    @State private var chunkContentError: String?
     
     // Expansion states
     @State private var isConversationExpanded = true
@@ -145,6 +149,9 @@ struct ContextViewerView: View {
             Task {
                 await refreshContext()
             }
+        }
+        .sheet(item: $selectedChunk) { chunk in
+            chunkDetailSheet(for: chunk)
         }
     }
     
@@ -285,8 +292,15 @@ struct ContextViewerView: View {
                         Text(chunk.summary)
                             .font(.caption)
                             .foregroundColor(.primary)
-                            .textSelection(.enabled)
                             .lineLimit(3)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .contentShape(Rectangle())
+                            .onTapGesture {
+                                Task {
+                                    await loadChunkContent(for: chunk)
+                                }
+                            }
+                            .help("Click to view full chunk content")
                         
                         Text("ID: \(chunk.id.uuidString.prefix(8))... • \(chunk.messageCount) messages")
                             .font(.caption2)
@@ -486,6 +500,85 @@ struct ContextViewerView: View {
         """
         
         return preview
+    }
+    
+    @ViewBuilder
+    private func chunkDetailSheet(for chunk: ConversationChunk) -> some View {
+        NavigationStack {
+            VStack(alignment: .leading, spacing: 12) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Summary")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    Text(chunk.summary)
+                        .font(.body)
+                    
+                    Text("Period: \(formatDateRange(start: chunk.startDate, end: chunk.endDate)) • \(chunk.messageCount) messages • \(chunk.sizeLabel)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+                
+                Divider()
+                
+                if isChunkContentLoading {
+                    HStack(spacing: 8) {
+                        ProgressView()
+                        Text("Loading full chunk content...")
+                            .foregroundColor(.secondary)
+                    }
+                } else if let chunkContentError {
+                    Text("Failed to load chunk: \(chunkContentError)")
+                        .font(.caption)
+                        .foregroundColor(.red)
+                } else if selectedChunkContent.isEmpty {
+                    Text("No content available for this chunk.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                        .italic()
+                } else {
+                    ScrollView {
+                        Text(selectedChunkContent)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(8)
+                    .background(Color.orange.opacity(0.05))
+                    .cornerRadius(6)
+                }
+            }
+            .padding()
+            .navigationTitle("Chunk \(chunk.id.uuidString.prefix(8))")
+            .toolbar {
+                ToolbarItem(placement: .cancellationAction) {
+                    Button("Close") {
+                        selectedChunk = nil
+                    }
+                }
+            }
+        }
+        .frame(minWidth: 700, minHeight: 560)
+    }
+    
+    private func loadChunkContent(for chunk: ConversationChunk) async {
+        let chunkId = chunk.id
+        selectedChunk = chunk
+        selectedChunkContent = ""
+        chunkContentError = nil
+        isChunkContentLoading = true
+        
+        do {
+            let content = try await conversationManager.getArchivedChunkContent(chunkId: chunkId)
+            guard selectedChunk?.id == chunkId else { return }
+            selectedChunkContent = content
+        } catch {
+            guard selectedChunk?.id == chunkId else { return }
+            chunkContentError = error.localizedDescription
+        }
+        
+        if selectedChunk?.id == chunkId {
+            isChunkContentLoading = false
+        }
     }
 }
 
