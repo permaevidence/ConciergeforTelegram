@@ -115,7 +115,7 @@ struct FileAttachment {
 struct ToolResultMessage: Codable {
     let role: String
     let toolCallId: String
-    let content: String
+    var content: String
     
     /// Optional files to inject as multimodal content (not serialized to API directly)
     var fileAttachments: [FileAttachment]

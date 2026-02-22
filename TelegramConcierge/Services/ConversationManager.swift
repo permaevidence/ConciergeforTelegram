@@ -556,8 +556,9 @@ class ConversationManager: ObservableObject {
         }
         
         do {
+            let turnStartDate = Date()
             try Task.checkCancellation()
-            let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id)
+            let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id, turnStartDate: turnStartDate)
             try Task.checkCancellation()
             
             guard activeRunId == runId else { return }
@@ -684,7 +685,7 @@ class ConversationManager: ObservableObject {
     
     // MARK: - Tool-Aware Response Generation
     
-    private func generateResponseWithTools(currentUserMessageId: UUID) async throws -> ToolAwareResponse {
+    private func generateResponseWithTools(currentUserMessageId: UUID, turnStartDate: Date) async throws -> ToolAwareResponse {
         try Task.checkCancellation()
         
         // Check if tools are available
@@ -782,7 +783,8 @@ class ConversationManager: ObservableObject {
                 chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
                 totalChunkCount: totalChunkCount,
                 currentUserMessageId: currentUserMessageId,
-                deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn
+                deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
+                turnStartDate: turnStartDate
             )
             print("[TIMING] LLM API call took: \(String(format: "%.2f", Date().timeIntervalSince(llmStartTime)))s")
             
@@ -845,6 +847,17 @@ class ConversationManager: ObservableObject {
                 
                 print("[ConversationManager] Round \(round) tool execution complete")
                 
+                // Append real-time chronology to the end of each tool result
+                // This lets the model know exactly how much time passed without breaking the prompt cache prefix
+                let postToolTimeFormatter = DateFormatter()
+                postToolTimeFormatter.dateFormat = "HH:mm:ss"
+                let currentRealTime = postToolTimeFormatter.string(from: Date())
+                
+                for i in 0..<orderedToolResults.count {
+                    let existingContent = orderedToolResults[i].content
+                    orderedToolResults[i].content = existingContent + "\n\n[System Note: Current time is now \(currentRealTime)]"
+                }
+                
                 if executableCalls.contains(where: { $0.function.name == "show_project_deployment_tools" }) {
                     deploymentToolsUnlockedForTurn = true
                 }
@@ -874,7 +887,8 @@ class ConversationManager: ObservableObject {
             chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
             totalChunkCount: totalChunkCount,
             currentUserMessageId: currentUserMessageId,
-            deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn
+            deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
+            turnStartDate: turnStartDate
         )
         
         switch finalResponse {
@@ -1137,7 +1151,8 @@ class ConversationManager: ObservableObject {
             
             // Generate LLM response with tools available
             do {
-                let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id)
+                let turnStartDate = Date()
+                let response = try await generateResponseWithTools(currentUserMessageId: userMessage.id, turnStartDate: turnStartDate)
                 
                 if let toolLog = response.compactToolLog, !toolLog.isEmpty {
                     messages.append(Message(role: .assistant, content: toolLog))

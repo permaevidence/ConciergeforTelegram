@@ -328,7 +328,8 @@ actor OpenRouterService {
         chunkSummaries: [ConversationChunk]? = nil,
         totalChunkCount: Int = 0,
         currentUserMessageId: UUID? = nil,
-        deploymentToolsUnlockedForTurn: Bool = false
+        deploymentToolsUnlockedForTurn: Bool = false,
+        turnStartDate: Date? = nil
     ) async throws -> LLMResponse {
         guard !apiKey.isEmpty else {
             throw OpenRouterError.notConfigured
@@ -343,7 +344,7 @@ actor OpenRouterService {
         // Add system message with date/time context and tool awareness
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
-        let currentDateTime = dateFormatter.string(from: Date())
+        let currentDateTime = dateFormatter.string(from: turnStartDate ?? Date())
         let timezone = TimeZone.current.identifier
         
         // Load persona settings
@@ -376,8 +377,9 @@ actor OpenRouterService {
             
             The user communicates with you via Telegram. They may send text messages, voice messages (which are automatically transcribed before you receive them), images, and documents.
             
-            **Current date and time**: \(currentDateTime) (\(timezone))
-            ⚠️ This timestamp is essential—use it as your reference for ALL time-sensitive reasoning: scheduling calendar events, setting reminders, interpreting email dates, and any "today", "tomorrow", or relative-time logic.
+            **Turn start time**: \(currentDateTime) (\(timezone))
+            ⚠️ This timestamp represents when the user sent their request. Use it as your baseline for ALL relative time logic ("today", "tomorrow", etc).
+            If you use tools, the current time elapsed since the turn started will be appended to the bottom of the tool results.
             
             """
             
@@ -452,7 +454,7 @@ actor OpenRouterService {
 
             prompt += """
             
-            🕐 **Reminder: Current time is exactly \(currentDateTime) (\(timezone))**
+            🕐 **Reminder: The turn started at exactly \(currentDateTime) (\(timezone))**
             """
             systemPrompt = prompt
         } else {
@@ -461,8 +463,8 @@ actor OpenRouterService {
             
             The user communicates with you via Telegram. They may send text messages, voice messages (which are automatically transcribed before you receive them), images, and documents.
             
-            **Current date and time**: \(currentDateTime) (\(timezone))
-            ⚠️ This timestamp is essential—use it as your reference for ALL time-sensitive reasoning: scheduling calendar events, setting reminders, interpreting email dates, and any "today", "tomorrow", or relative-time logic.
+            **Turn start time**: \(currentDateTime) (\(timezone))
+            ⚠️ This timestamp represents when the user sent their request. Use it as your baseline for ALL relative time logic ("today", "tomorrow", etc).
             """
             
             // Inject calendar context if available
@@ -488,7 +490,7 @@ actor OpenRouterService {
                 prompt += formatChunkSummaries(chunks, totalChunkCount: totalChunkCount)
             }
             
-            prompt += "\n\n🕐 **Reminder: Current time is exactly \(currentDateTime) (\(timezone))**"
+            prompt += "\n\n🕐 **Reminder: The turn started at exactly \(currentDateTime) (\(timezone))**"
             systemPrompt = prompt
         }
         
@@ -727,7 +729,6 @@ actor OpenRouterService {
         // Add tool interactions if this is a follow-up call
         // IMPORTANT: Collect file attachments separately - OpenRouter doesn't support
         // multimodal content in tool role messages, so we inject files as a user message
-        var pendingFileAttachments: [FileAttachment] = []
         
         if let interactions = toolResultMessages {
             for interaction in interactions {
@@ -740,12 +741,14 @@ actor OpenRouterService {
                     reasoningDetails: interaction.assistantMessage.reasoningDetails
                 ))
                 
+                var currentInteractionFiles: [FileAttachment] = []
+                
                 // Add tool results (text only - files will be added separately)
                 for result in interaction.results {
-                    // Collect file attachments for later injection
+                    // Collect file attachments for immediate injection after this round
                     if !result.fileAttachments.isEmpty {
                         print("[OpenRouterService] Collecting \(result.fileAttachments.count) file attachment(s) from tool result for user-role injection")
-                        pendingFileAttachments.append(contentsOf: result.fileAttachments)
+                        currentInteractionFiles.append(contentsOf: result.fileAttachments)
                     }
                     
                     // Tool result is always text-only
@@ -755,45 +758,45 @@ actor OpenRouterService {
                         toolCallId: result.toolCallId
                     ))
                 }
-            }
-            
-            // After all tool results, inject collected file attachments as a user message
-            // This is the OpenRouter-compatible way to make files visible to the model
-            if !pendingFileAttachments.isEmpty {
-                print("[OpenRouterService] Injecting \(pendingFileAttachments.count) file attachment(s) as user-role multimodal message")
-                var contentParts: [ContentPart] = []
                 
-                // Build descriptive text about the files
-                var visibleFiles: [String] = []
-                var nonInlineFiles: [String] = []
-                for attachment in pendingFileAttachments {
-                    if isInlineMimeTypeSupported(attachment.mimeType) {
-                        let base64String = attachment.data.base64EncodedString()
-                        let dataURL = "data:\(attachment.mimeType);base64,\(base64String)"
-                        print("[OpenRouterService] Adding file to user message: \(attachment.filename) (\(attachment.mimeType), \(attachment.data.count) bytes)")
-                        contentParts.append(.image(ImageURL(url: dataURL)))
-                        visibleFiles.append(attachment.filename)
-                    } else {
-                        print("[OpenRouterService] Skipping inline tool attachment \(attachment.filename) due to unsupported MIME type: \(attachment.mimeType)")
-                        nonInlineFiles.append(attachment.filename)
+                // Inject collected file attachments as a user message IMMEDIATELY following the tool results that produced them.
+                // This ensures chronological order and prevents cache-busting from re-appending the same attachments at the end of every turn
+                if !currentInteractionFiles.isEmpty {
+                    print("[OpenRouterService] Injecting \(currentInteractionFiles.count) file attachment(s) as user-role multimodal message")
+                    var contentParts: [ContentPart] = []
+                    
+                    // Build descriptive text about the files
+                    var visibleFiles: [String] = []
+                    var nonInlineFiles: [String] = []
+                    for attachment in currentInteractionFiles {
+                        if isInlineMimeTypeSupported(attachment.mimeType) {
+                            let base64String = attachment.data.base64EncodedString()
+                            let dataURL = "data:\(attachment.mimeType);base64,\(base64String)"
+                            print("[OpenRouterService] Adding file to user message: \(attachment.filename) (\(attachment.mimeType), \(attachment.data.count) bytes)")
+                            contentParts.append(.image(ImageURL(url: dataURL)))
+                            visibleFiles.append(attachment.filename)
+                        } else {
+                            print("[OpenRouterService] Skipping inline tool attachment \(attachment.filename) due to unsupported MIME type: \(attachment.mimeType)")
+                            nonInlineFiles.append(attachment.filename)
+                        }
                     }
+                    
+                    // Add text explaining what these files are
+                    let filesText: String
+                    if !visibleFiles.isEmpty && !nonInlineFiles.isEmpty {
+                        filesText = "[The tool downloaded file(s). Visible inline: \(visibleFiles.joined(separator: ", ")). Not inline-viewable: \(nonInlineFiles.joined(separator: ", ")). Analyze visible content and use tool outputs/filenames for the rest.]"
+                    } else if !visibleFiles.isEmpty {
+                        filesText = "[The tool downloaded the following file(s) which are now visible to you: \(visibleFiles.joined(separator: ", ")). Analyze the content above to answer the user's question.]"
+                    } else {
+                        filesText = "[The tool downloaded file(s) not viewable inline in this model: \(nonInlineFiles.joined(separator: ", ")). Use the filenames and tool outputs to continue (e.g., import ZIPs with project tools).]"
+                    }
+                    contentParts.append(.text(filesText))
+                    
+                    apiMessages.append(OpenRouterAPIMessage(
+                        role: "user",
+                        content: .parts(contentParts)
+                    ))
                 }
-                
-                // Add text explaining what these files are
-                let filesText: String
-                if !visibleFiles.isEmpty && !nonInlineFiles.isEmpty {
-                    filesText = "[The tool downloaded file(s). Visible inline: \(visibleFiles.joined(separator: ", ")). Not inline-viewable: \(nonInlineFiles.joined(separator: ", ")). Analyze visible content and use tool outputs/filenames for the rest.]"
-                } else if !visibleFiles.isEmpty {
-                    filesText = "[The tool downloaded the following file(s) which are now visible to you: \(visibleFiles.joined(separator: ", ")). Analyze the content above to answer the user's question.]"
-                } else {
-                    filesText = "[The tool downloaded file(s) not viewable inline in this model: \(nonInlineFiles.joined(separator: ", ")). Use the filenames and tool outputs to continue (e.g., import ZIPs with project tools).]"
-                }
-                contentParts.append(.text(filesText))
-                
-                apiMessages.append(OpenRouterAPIMessage(
-                    role: "user",
-                    content: .parts(contentParts)
-                ))
             }
         }
         
@@ -826,6 +829,7 @@ actor OpenRouterService {
         request.timeoutInterval = 120 // Longer timeout for tool reasoning
         
         let encoder = JSONEncoder()
+        encoder.outputFormatting = .sortedKeys
         request.httpBody = try encoder.encode(body)
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -863,8 +867,10 @@ actor OpenRouterService {
         // Extract usage info for token tracking
         let promptTokens = decoded.usage?.promptTokens
         let completionTokens = decoded.usage?.completionTokens
+        let cachedTokens = decoded.usage?.promptTokensDetails?.cachedTokens ?? 0
+        
         if let pt = promptTokens, let ct = completionTokens {
-            print("[OpenRouterService] Usage: \(pt) prompt tokens, \(ct) completion tokens")
+            print("[OpenRouterService] Usage: \(pt - cachedTokens) uncached prompt + \(cachedTokens) cached prompt, \(ct) completion tokens")
         }
         
         // Check if the model wants to call tools
@@ -1201,11 +1207,23 @@ struct OpenRouterUsage: Codable {
     let promptTokens: Int?
     let completionTokens: Int?
     let totalTokens: Int?
+    let promptTokensDetails: PromptTokensDetails?
     
     enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
+        case promptTokensDetails = "prompt_tokens_details"
+    }
+}
+
+struct PromptTokensDetails: Codable {
+    let cachedTokens: Int?
+    let audioTokens: Int?
+    
+    enum CodingKeys: String, CodingKey {
+        case cachedTokens = "cached_tokens"
+        case audioTokens = "audio_tokens"
     }
 }
 
