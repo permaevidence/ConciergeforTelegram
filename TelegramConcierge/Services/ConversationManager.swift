@@ -1214,86 +1214,27 @@ class ConversationManager: ObservableObject {
             emailDetails.append(detail)
         }
         
-        // Fetch the same context as the main LLM instance for personalized responses
-        async let calendarContextTask = CalendarService.shared.getCalendarContextForSystemPrompt()
-        async let emailContextTask = EmailService.shared.getEmailContextForSystemPrompt()
-        async let chunkSummariesTask = archiveService.getRecentChunkSummaries(count: 5)
-        async let totalChunkCountTask = archiveService.getAllChunks()
+        // Wait for any active execution to finish so we don't drop the email event or run in parallel
+        while activeRunId != nil || activeProcessingTask != nil {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
         
-        let calendarContext = await calendarContextTask
-        let emailContext = await emailContextTask
-        let chunkSummaries = await chunkSummariesTask
-        let totalChunkCount = await totalChunkCountTask.count
-        
-        let classificationPrompt = """
-        NEW EMAILS JUST ARRIVED. Your job is to tell the user about them naturally, like a helpful assistant would.
-        
-        SKIP (respond with just "SKIP"): spam, promotional/marketing, newsletters, automated notifications, social media alerts, shipping updates, routine confirmations, or anything clearly unimportant.
-        
-        For emails worth mentioning:
-        - Write naturally, as if you're telling the user about their mail
-        - Explain what the email is about and what it says
-        - If you recognize the sender from our conversation history, mention their relationship/context
-        - If it seems like something that needs a response, offer to help draft a reply
-        - If there are multiple important emails, summarize each briefly
+        let emailContent = """
+        [SYSTEM: NEW EMAILS ARRIVED]
+        The following new emails have just arrived in your inbox. Please tell the user about them naturally. 
+        If they seem unimportant (spam, promotions, newsletters), you can briefly mention them or skip detailing them, but you must still reply.
+        You have access to your full toolset, so you can perform actions like replying to the emails directly if appropriate.
         
         New emails:
         \(emailDetails.joined(separator: "\n"))
-        
-        Respond with "SKIP" if nothing is worth mentioning, or write your natural message to the user.
         """
         
-        do {
-            // Use the same rich context as the main LLM for personalized notifications
-            let response = try await openRouterService.generateResponse(
-                messages: messages + [Message(role: .user, content: classificationPrompt)],
-                imagesDirectory: imagesDirectory,
-                documentsDirectory: documentsDirectory,
-                tools: nil,
-                toolResultMessages: nil,
-                calendarContext: calendarContext,
-                emailContext: emailContext,
-                chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
-                totalChunkCount: totalChunkCount
-            )
-            
-            guard case .text(let content, _) = response else { return }
-            
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Check if Gemini decided to skip
-            if trimmed.uppercased() == "SKIP" || trimmed.uppercased().hasPrefix("SKIP") {
-                print("[ConversationManager] Gemini decided not to notify about these emails")
-                return
-            }
-            
-            // Build a summary of the emails for the conversation record
-            let emailSummaries = emails.map { email in
-                "From: \(email.from), Subject: \(email.subject)"
-            }.joined(separator: "; ")
-            
-            // Add email arrival as a "system" user message so Gemini remembers it
-            let emailArrivalMessage = Message(
-                role: .user,
-                content: "[EMAIL NOTIFICATION - New emails arrived]\n\(emailSummaries)"
-            )
-            messages.append(emailArrivalMessage)
-            
-            // Send the personalized notification
-            let notification = capAssistantMessageForHistoryAndTelegram("📬 \(trimmed)")
-            try await telegramService.sendMessage(chatId: chatId, text: notification)
-            
-            // Save Gemini's notification response to the conversation
-            let assistantMessage = Message(role: .assistant, content: notification)
-            messages.append(assistantMessage)
-            saveConversation()
-            
-            print("[ConversationManager] Sent personalized email notification (saved to history)")
-            
-        } catch {
-            print("[ConversationManager] Email notification failed: \(error)")
-            // Don't notify on error - better to miss a notification than spam the user
-        }
+        let userMessage = Message(role: .user, content: emailContent)
+        messages.append(userMessage)
+        saveConversation()
+        
+        statusMessage = "Processing new emails..."
+        startActiveProcessing(for: userMessage)
     }
     
     /// Process new Gmail emails (Gmail API version of processNewEmails)
@@ -1328,86 +1269,27 @@ class ConversationManager: ObservableObject {
             emailDetails.append(detail)
         }
         
-        // Fetch context for personalized responses
-        async let calendarContextTask = CalendarService.shared.getCalendarContextForSystemPrompt()
-        async let emailContextTask = GmailService.shared.getEmailContextForSystemPrompt()
-        async let chunkSummariesTask = archiveService.getRecentChunkSummaries(count: 5)
-        async let totalChunkCountTask = archiveService.getAllChunks()
+        // Wait for any active execution to finish so we don't drop the email event or run in parallel
+        while activeRunId != nil || activeProcessingTask != nil {
+            try? await Task.sleep(nanoseconds: 1_000_000_000)
+        }
         
-        let calendarContext = await calendarContextTask
-        let emailContext = await emailContextTask
-        let chunkSummaries = await chunkSummariesTask
-        let totalChunkCount = await totalChunkCountTask.count
-        
-        let classificationPrompt = """
-        NEW EMAILS JUST ARRIVED. Your job is to tell the user about them naturally, like a helpful assistant would.
-        
-        SKIP (respond with just "SKIP"): spam, promotional/marketing, newsletters, automated notifications, social media alerts, shipping updates, routine confirmations, or anything clearly unimportant.
-        
-        For emails worth mentioning:
-        - Write naturally, as if you're telling the user about their mail
-        - Explain what the email is about and what it says
-        - If you recognize the sender from our conversation history, mention their relationship/context
-        - If it seems like something that needs a response, offer to help draft a reply
-        - If there are multiple important emails, summarize each briefly
+        let emailContent = """
+        [SYSTEM: NEW EMAILS ARRIVED]
+        The following new emails have just arrived in your inbox. Please tell the user about them naturally. 
+        If they seem unimportant (spam, promotions, newsletters), you can briefly mention them or skip detailing them, but you must still reply.
+        You have access to your full toolset, so you can perform actions like replying to the emails directly if appropriate.
         
         New emails:
         \(emailDetails.joined(separator: "\n"))
-        
-        Respond with "SKIP" if nothing is worth mentioning, or write your natural message to the user.
         """
         
-        do {
-            let response = try await openRouterService.generateResponse(
-                messages: messages + [Message(role: .user, content: classificationPrompt)],
-                imagesDirectory: imagesDirectory,
-                documentsDirectory: documentsDirectory,
-                tools: nil,
-                toolResultMessages: nil,
-                calendarContext: calendarContext,
-                emailContext: emailContext,
-                chunkSummaries: chunkSummaries.isEmpty ? nil : chunkSummaries,
-                totalChunkCount: totalChunkCount
-            )
-            
-            guard case .text(let content, _) = response else { return }
-            
-            let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
-            
-            // Check if Gemini decided to skip
-            if trimmed.uppercased() == "SKIP" || trimmed.uppercased().hasPrefix("SKIP") {
-                print("[ConversationManager] Gemini decided not to notify about these Gmail emails")
-                return
-            }
-            
-            // Build a summary of the emails for the conversation record
-            let emailSummaries = emails.map { email in
-                let from = email.getHeader("From") ?? "Unknown"
-                let subject = email.getHeader("Subject") ?? "(No subject)"
-                return "From: \(from), Subject: \(subject)"
-            }.joined(separator: "; ")
-            
-            // Add email arrival as a "system" user message so Gemini remembers it
-            let emailArrivalMessage = Message(
-                role: .user,
-                content: "[EMAIL NOTIFICATION - New emails arrived]\n\(emailSummaries)"
-            )
-            messages.append(emailArrivalMessage)
-            
-            // Send the personalized notification
-            let notification = capAssistantMessageForHistoryAndTelegram("📬 \(trimmed)")
-            try await telegramService.sendMessage(chatId: chatId, text: notification)
-            
-            // Save Gemini's notification response to the conversation
-            let assistantMessage = Message(role: .assistant, content: notification)
-            messages.append(assistantMessage)
-            saveConversation()
-            
-            print("[ConversationManager] Sent personalized Gmail notification (saved to history)")
-            
-        } catch {
-            print("[ConversationManager] Gmail notification failed: \(error)")
-        }
+        let userMessage = Message(role: .user, content: emailContent)
+        messages.append(userMessage)
+        saveConversation()
+        
+        statusMessage = "Processing new Gmail emails..."
+        startActiveProcessing(for: userMessage)
     }
     
     // MARK: - Persistence
