@@ -1302,7 +1302,7 @@ enum AvailableTools {
     static let viewProjectHistory = ToolDefinition(
         function: FunctionDefinition(
             name: "view_project_history",
-            description: "Load recent Gemini↔Claude interaction history for a specific project workspace from past run logs. Use this when you need to explain what happened in Claude runs, debug issues, or recover context before deciding next actions. Returns the latest project run history up to a token budget.",
+            description: "View the recent history of your native Claude Code tool runs for a specific project. This tool provides a limited overview of recent raw logs, but standard history context is maintained perfectly across turns via native session persistence automatically.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1322,7 +1322,7 @@ enum AvailableTools {
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this to develop regular software, or to create/run your own internal 'Agent Automations' (like file sorters, parsers, or custom scripts). Automatically injects recent project-specific Gemini↔Claude run history (capped) so Claude can continue prior work. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
+            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this to develop regular software, or to create/run your own internal 'Agent Automations' (like file sorters, parsers, or custom scripts). Native Claude Code session persistence is used automatically, so Claude perfectly remembers prior context in the same project. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
