@@ -441,6 +441,22 @@ actor GmailService {
             normalizedBCC.append(normalizeAddress(recipient))
         }
         
+        // Convert plain text body to HTML to prevent hard-wrapping by clients
+        let escapedBody = body
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\n", with: "<br>\n")
+            
+        let htmlBody = """
+        <!DOCTYPE html>
+        <html>
+        <body>
+        \(escapedBody)
+        </body>
+        </html>
+        """
+        
         // Build RFC 2822 message
         var rawMessage = """
         From: \(from)
@@ -466,8 +482,8 @@ actor GmailService {
             rawMessage += "\nMIME-Version: 1.0"
             rawMessage += "\nContent-Type: multipart/mixed; boundary=\"\(boundary)\""
             rawMessage += "\n\n--\(boundary)"
-            rawMessage += "\nContent-Type: text/plain; charset=\"UTF-8\""
-            rawMessage += "\n\n\(body)"
+            rawMessage += "\nContent-Type: text/html; charset=\"UTF-8\""
+            rawMessage += "\n\n\(htmlBody)"
             
             // Add each attachment as a separate MIME part
             for attachment in attachments {
@@ -480,8 +496,8 @@ actor GmailService {
             
             rawMessage += "\n--\(boundary)--"
         } else {
-            rawMessage += "\nContent-Type: text/plain; charset=\"UTF-8\""
-            rawMessage += "\n\n\(body)"
+            rawMessage += "\nContent-Type: text/html; charset=\"UTF-8\""
+            rawMessage += "\n\n\(htmlBody)"
         }
         
         // Base64url encode the message

@@ -7019,6 +7019,7 @@ extension ToolExecutor {
         Initial notes: \(trimmedNotes?.isEmpty == false ? trimmedNotes! : "None")
         
         Keep it under 180 characters. Focus on intent and expected output.
+        IMPORTANT: If the notes or name indicate this is an internal tool, script, or automation for the AI agent's own use to help the user, start the description with "[AGENT AUTOMATION]". Otherwise, start it with "[USER PROJECT]".
         """
         
         if let generated = await requestGeminiProjectDescription(prompt: prompt) {
@@ -7071,6 +7072,7 @@ extension ToolExecutor {
         Stderr excerpt: \(stderrSnippet.isEmpty ? "None" : stderrSnippet)
         
         Produce a single compact description (<180 chars) that helps choose this project later.
+        IMPORTANT: Maintain the "[AGENT AUTOMATION]" or "[USER PROJECT]" prefix from the previous description, or infer it if missing. An "[AGENT AUTOMATION]" is an internal script/tool for the AI's own use to help the user; a "[USER PROJECT]" is regular software built for the user.
         """
         
         if let generated = await requestGeminiProjectDescription(prompt: promptText) {

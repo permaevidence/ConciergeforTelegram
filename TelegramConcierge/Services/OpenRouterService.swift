@@ -434,6 +434,7 @@ actor OpenRouterService {
                 **Claude Code routing for deliverables**:
                 - For requests that involve generating deliverables such as documents, spreadsheets, presentations, websites, or coding projects, prefer Claude project tools.
                 - Use this flow when needed: list_projects/create_project -> browse_project/read_project_file/add_project_files -> run_claude_code -> send_project_result.
+                - **Internal Automations**: You can create software/scripts for *your own use* to automate tasks for the user. When making an automation, name it clearly (e.g. "Automation: File Sorter") and state in the `initial_notes` of `create_project` that it's an internal agent automation. This helps the system catalog it properly so you can find it later in `list_projects`.
                 - If the user sends a project ZIP archive, import it with add_project_files (ZIPs are auto-extracted into the project workspace) before running run_claude_code.
                 - If a ZIP appears unrelated to current projects and the user did not explicitly choose an existing project, create a new project first (name it from the ZIP/context), then import the ZIP there.
                 - Reuse an existing project only when the user clearly asks to continue that specific project.

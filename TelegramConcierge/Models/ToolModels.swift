@@ -1187,7 +1187,7 @@ enum AvailableTools {
                     ),
                     "initial_notes": ParameterProperty(
                         type: "string",
-                        description: "Optional starter notes or requirements to save in the project README."
+                        description: "Optional starter notes or requirements to save in the project README. If you are creating an internal tool/automation for your own use, explicitly state 'This is an internal agent automation' here."
                     )
                 ],
                 required: ["project_name"]
@@ -1198,7 +1198,7 @@ enum AvailableTools {
     static let listProjects = ToolDefinition(
         function: FunctionDefinition(
             name: "list_projects",
-            description: "List available project workspaces created for Claude Code, including AI-generated project description and last_modified_at. Results are sorted by last_modified_at (newest first) and support pagination: pass limit (default 20, max 100) and cursor (from previous response next_cursor) to continue page by page.",
+            description: "List available project workspaces, including both 'User Projects' and your own internal 'Agent Automations'. Use this to find any scripts or tools you've previously built to automate tasks. Results include the AI-generated project description and last_modified_at. Sorted by last_modified_at (newest first) and supports pagination: pass limit (default 20, max 100) and cursor (from previous response next_cursor) to continue page by page.",
             parameters: FunctionParameters(
                 properties: [
                     "limit": ParameterProperty(
@@ -1322,7 +1322,7 @@ enum AvailableTools {
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this as the primary code-building tool for project implementation tasks. Automatically injects recent project-specific Gemini↔Claude run history (capped) so Claude can continue prior work. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
+            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this to develop regular software, or to create/run your own internal 'Agent Automations' (like file sorters, parsers, or custom scripts). Automatically injects recent project-specific Gemini↔Claude run history (capped) so Claude can continue prior work. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
