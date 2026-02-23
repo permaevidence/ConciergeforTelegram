@@ -15,11 +15,13 @@ struct Message: Identifiable, Codable, Equatable {
     // Referenced attachments from replied-to messages (also multiple)
     let referencedImageFileNames: [String]
     let referencedDocumentFileNames: [String]
-    let referencedImageFileSizes: [Int]
     let referencedDocumentFileSizes: [Int]
     
     // Files downloaded via tools (email attachments, URL downloads, etc.)
     var downloadedDocumentFileNames: [String]
+    
+    // Project workspaces accessed during the turn
+    var accessedProjectIds: [String]
     
     enum Role: String, Codable {
         case user
@@ -34,7 +36,6 @@ struct Message: Identifiable, Codable, Equatable {
     var documentFileSize: Int? { documentFileSizes.first }
     var referencedImageFileName: String? { referencedImageFileNames.first }
     var referencedDocumentFileName: String? { referencedDocumentFileNames.first }
-    var referencedImageFileSize: Int? { referencedImageFileSizes.first }
     var referencedDocumentFileSize: Int? { referencedDocumentFileSizes.first }
     
     // MARK: - Initializers
@@ -51,9 +52,9 @@ struct Message: Identifiable, Codable, Equatable {
         documentFileSizes: [Int] = [],
         referencedImageFileNames: [String] = [],
         referencedDocumentFileNames: [String] = [],
-        referencedImageFileSizes: [Int] = [],
         referencedDocumentFileSizes: [Int] = [],
-        downloadedDocumentFileNames: [String] = []
+        downloadedDocumentFileNames: [String] = [],
+        accessedProjectIds: [String] = []
     ) {
         self.id = id
         self.role = role
@@ -65,9 +66,9 @@ struct Message: Identifiable, Codable, Equatable {
         self.documentFileSizes = documentFileSizes
         self.referencedImageFileNames = referencedImageFileNames
         self.referencedDocumentFileNames = referencedDocumentFileNames
-        self.referencedImageFileSizes = referencedImageFileSizes
         self.referencedDocumentFileSizes = referencedDocumentFileSizes
         self.downloadedDocumentFileNames = downloadedDocumentFileNames
+        self.accessedProjectIds = accessedProjectIds
     }
     
     // MARK: - Codable (with backward compatibility)
@@ -77,12 +78,12 @@ struct Message: Identifiable, Codable, Equatable {
         // New array fields
         case imageFileNames, documentFileNames, imageFileSizes, documentFileSizes
         case referencedImageFileNames, referencedDocumentFileNames
-        case referencedImageFileSizes, referencedDocumentFileSizes
-        case downloadedDocumentFileNames
+        case referencedDocumentFileSizes
+        case downloadedDocumentFileNames, accessedProjectIds
         // Legacy single-value fields (for decoding old data)
         case imageFileName, documentFileName, imageFileSize, documentFileSize
         case referencedImageFileName, referencedDocumentFileName
-        case referencedImageFileSize, referencedDocumentFileSize
+        case referencedDocumentFileSize
     }
     
     init(from decoder: Decoder) throws {
@@ -143,14 +144,6 @@ struct Message: Identifiable, Codable, Equatable {
             referencedDocumentFileNames = []
         }
         
-        if let sizes = try? container.decode([Int].self, forKey: .referencedImageFileSizes) {
-            referencedImageFileSizes = sizes
-        } else if let size = try? container.decodeIfPresent(Int.self, forKey: .referencedImageFileSize) {
-            referencedImageFileSizes = [size]
-        } else {
-            referencedImageFileSizes = []
-        }
-        
         if let sizes = try? container.decode([Int].self, forKey: .referencedDocumentFileSizes) {
             referencedDocumentFileSizes = sizes
         } else if let size = try? container.decodeIfPresent(Int.self, forKey: .referencedDocumentFileSize) {
@@ -161,6 +154,9 @@ struct Message: Identifiable, Codable, Equatable {
         
         // Downloaded files (new field, default to empty for old messages)
         downloadedDocumentFileNames = (try? container.decode([String].self, forKey: .downloadedDocumentFileNames)) ?? []
+        
+        // Accessed projects (new field, default to empty for old messages)
+        accessedProjectIds = (try? container.decode([String].self, forKey: .accessedProjectIds)) ?? []
     }
     
     func encode(to encoder: Encoder) throws {
@@ -178,8 +174,8 @@ struct Message: Identifiable, Codable, Equatable {
         try container.encode(documentFileSizes, forKey: .documentFileSizes)
         try container.encode(referencedImageFileNames, forKey: .referencedImageFileNames)
         try container.encode(referencedDocumentFileNames, forKey: .referencedDocumentFileNames)
-        try container.encode(referencedImageFileSizes, forKey: .referencedImageFileSizes)
         try container.encode(referencedDocumentFileSizes, forKey: .referencedDocumentFileSizes)
         try container.encode(downloadedDocumentFileNames, forKey: .downloadedDocumentFileNames)
+        try container.encode(accessedProjectIds, forKey: .accessedProjectIds)
     }
 }

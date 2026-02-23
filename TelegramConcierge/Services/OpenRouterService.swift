@@ -161,12 +161,9 @@ actor OpenRouterService {
         }
         
         // Include referenced attachments (from replied-to messages)
-        for (index, _) in message.referencedImageFileNames.enumerated() {
-            if index < message.referencedImageFileSizes.count {
-                tokens += estimateImageTokens(fileSize: message.referencedImageFileSizes[index])
-            } else {
-                tokens += 250
-            }
+        // Since we don't store referenced image sizes anymore, we assume a generic 250 tokens
+        for _ in message.referencedImageFileNames {
+            tokens += 250
         }
         
         for (index, fileName) in message.referencedDocumentFileNames.enumerated() {
@@ -435,14 +432,15 @@ actor OpenRouterService {
             if claudeCodeDocumentModeEnabled {
                 prompt += """
                 
-                **\(codeCLIProviderName) routing for deliverables**:
-                - For requests that involve generating deliverables such as documents, spreadsheets, presentations, websites, or coding projects, prefer project tools.
-                - Use this flow when needed: list_projects/create_project -> browse_project/read_project_file/add_project_files -> run_claude_code -> send_project_result.
-                - **Internal Automations**: You can create software/scripts for *your own use* to automate tasks for the user. When making an automation, name it clearly (e.g. "Automation: File Sorter") and state in the `initial_notes` of `create_project` that it's an internal agent automation. This helps the system catalog it properly so you can find it later in `list_projects`.
-                - If the user sends a project ZIP archive, import it with add_project_files (ZIPs are auto-extracted into the project workspace) before running run_claude_code.
-                - If a ZIP appears unrelated to current projects and the user did not explicitly choose an existing project, create a new project first (name it from the ZIP/context), then import the ZIP there.
-                - Reuse an existing project only when the user clearly asks to continue that specific project.
-                - When sending websites/apps or other multi-file outputs, prefer send_project_result with package_as='zip_project' unless the user explicitly asked for individual files.
+                **\\(codeCLIProviderName) as your Local Sub-Agent / Execution Engine**:
+                - You are the Brain, and \\(codeCLIProviderName) is your Hands. It has terminal access, file system access, and autonomous execution capabilities.
+                - Delegate ALL tasks involving complex file manipulation, data analysis, script execution, or iterative local computer tasks to the Code CLI via project tools. Do not try to do these yourself.
+                - **Project-Bound Memory**: The Code CLI's memory and context are strictly isolated to the project it runs in. It remembers everything done *within* that project, but knows nothing about other projects or your broader conversation with the user.
+                - Use this flow when delegating: list_projects/create_project -> add_project_files (if user provided inputs) -> run_claude_code (prompting it with a high-level goal) -> read_project_file/send_project_result.
+                - **Internal Automations**: You can prompt the Code CLI to create software/scripts for *your own use* to automate tasks for the user. When making an automation, name it clearly (e.g. "Automation: File Sorter") and state in the `initial_notes` of `create_project` that it's an internal agent automation.
+                - If the user sends a project ZIP archive, import it with add_project_files (ZIPs are auto-extracted) before running run_claude_code.
+                - Reuse an existing project only when interacting with that specific past workflow/context. Otherwise, create a new project to give the CLI a clean memory space.
+                - When sending outputs, you can send_project_result with package_as='zip_project' or if more appropriate send the user individual files.
                 """
                 
                 if deploymentToolsUnlockedForTurn {
@@ -735,6 +733,12 @@ actor OpenRouterService {
                         }
                     }
                     textContent = textContent + "\n[Downloaded from email: \(parts.joined(separator: "; ")) — use read_document to view again]"
+                }
+                
+                // Add permanent but silent log for accessed projects
+                if !message.accessedProjectIds.isEmpty {
+                    let projectsList = message.accessedProjectIds.joined(separator: ", ")
+                    textContent = textContent + "\n[Accessed projects in this turn: \(projectsList)]"
                 }
                 
                 // Add date header (if new day) and time prefix to text content

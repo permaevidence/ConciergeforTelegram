@@ -32,6 +32,7 @@ class ConversationManager: ObservableObject {
     private struct ToolAwareResponse {
         let finalText: String
         let compactToolLog: String?
+        let accessedProjects: [String]?
     }
     
     private let appFolder: URL = {
@@ -514,7 +515,6 @@ class ConversationManager: ObservableObject {
             documentFileSizes: pendingDocuments.map { $0.fileSize },
             referencedImageFileNames: pendingReferencedImages.map { $0.fileName },
             referencedDocumentFileNames: pendingReferencedDocuments.map { $0.fileName },
-            referencedImageFileSizes: pendingReferencedImages.map { $0.fileSize },
             referencedDocumentFileSizes: pendingReferencedDocuments.map { $0.fileSize }
         )
         
@@ -568,13 +568,18 @@ class ConversationManager: ObservableObject {
                 pruneOldToolLogMessages()
             }
             
-            // Add assistant message with any downloaded files tracked
+            // Add assistant message with any downloaded files and accessed projects tracked
             let finalResponseRaw = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "I completed the requested actions."
                 : response.finalText
             let finalResponse = capAssistantMessageForHistoryAndTelegram(finalResponseRaw)
             let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
-            let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
+            let assistantMessage = Message(
+                role: .assistant, 
+                content: finalResponse, 
+                downloadedDocumentFileNames: downloadedFilenames,
+                accessedProjectIds: response.accessedProjects ?? []
+            )
             messages.append(assistantMessage)
             saveConversation()
             
@@ -796,9 +801,11 @@ class ConversationManager: ObservableObject {
                 } else {
                     print("[ConversationManager] LLM returned text response after \(round) round(s)")
                 }
+                let accessedProjects = extractAccessedProjects(from: toolInteractions)
                 return ToolAwareResponse(
                     finalText: content,
-                    compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
+                    compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                    accessedProjects: accessedProjects
                 )
                 
             case .toolCalls(let assistantMessage, let calls, _):
@@ -891,18 +898,48 @@ class ConversationManager: ObservableObject {
             turnStartDate: turnStartDate
         )
         
+        let accessedProjects = extractAccessedProjects(from: toolInteractions)
+        
         switch finalResponse {
         case .text(let content, _):
             return ToolAwareResponse(
                 finalText: content,
-                compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
+                compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                accessedProjects: accessedProjects
             )
         case .toolCalls(_, _, _):
             return ToolAwareResponse(
                 finalText: "I completed the requested actions but had trouble summarizing the results.",
-                compactToolLog: buildCompactToolExecutionLog(from: toolInteractions)
+                compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                accessedProjects: accessedProjects
             )
         }
+    }
+    
+    private func extractAccessedProjects(from interactions: [ToolInteraction]) -> [String] {
+        var projectIds = Set<String>()
+        let projectTools = Set(["create_project", "browse_project", "read_project_file", "add_project_files", "run_claude_code", "send_project_result"])
+        
+        for interaction in interactions {
+            for call in interaction.assistantMessage.toolCalls {
+                guard projectTools.contains(call.function.name) else { continue }
+                
+                if let data = call.function.arguments.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    if let projectId = json["project_id"] as? String {
+                        projectIds.insert(projectId)
+                    } else if let projectName = json["project_name"] as? String {
+                        // For create_project, the ID is derived from the name
+                        let generatedId = projectName
+                            .lowercased()
+                            .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
+                            .trimmingCharacters(in: CharacterSet(charactersIn: "-"))
+                        projectIds.insert(generatedId)
+                    }
+                }
+            }
+        }
+        return Array(projectIds).sorted()
     }
     
     private func blockedToolResult(for call: ToolCall, deploymentToolsUnlockedForTurn: Bool) -> ToolResultMessage {
@@ -1168,7 +1205,12 @@ class ConversationManager: ObservableObject {
                     : response.finalText
                 let finalResponse = capAssistantMessageForHistoryAndTelegram(finalResponseRaw)
                 let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
-                let assistantMessage = Message(role: .assistant, content: finalResponse, downloadedDocumentFileNames: downloadedFilenames)
+                let assistantMessage = Message(
+                    role: .assistant, 
+                    content: finalResponse, 
+                    downloadedDocumentFileNames: downloadedFilenames,
+                    accessedProjectIds: response.accessedProjects ?? []
+                )
                 messages.append(assistantMessage)
                 saveConversation()
                 

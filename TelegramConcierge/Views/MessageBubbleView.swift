@@ -52,6 +52,11 @@ struct MessageBubbleView: View {
                     downloadedFilesView
                 }
                 
+                // Accessed projects (permanent log)
+                if !message.accessedProjectIds.isEmpty {
+                    accessedProjectsView
+                }
+                
                 Text(formattedTime)
                     .font(.caption2)
                     .foregroundColor(.secondary)
@@ -193,6 +198,22 @@ struct MessageBubbleView: View {
                     label: "Downloaded",
                     filename: filename,
                     description: fileDescriptions[filename]
+                )
+            }
+        }
+    }
+    
+    // MARK: - Accessed Projects
+    
+    private var accessedProjectsView: some View {
+        VStack(alignment: isUser ? .trailing : .leading, spacing: 3) {
+            ForEach(message.accessedProjectIds, id: \.self) { projectId in
+                fileChip(
+                    icon: "folder",
+                    color: .indigo,
+                    label: "Accessed Project",
+                    filename: projectId,
+                    description: nil
                 )
             }
         }

@@ -1178,7 +1178,7 @@ enum AvailableTools {
     static let createProject = ToolDefinition(
         function: FunctionDefinition(
             name: "create_project",
-            description: "Create a new local project workspace folder that the configured Code CLI can work in. Use this when starting a new coding task or when the user asks to create a new project.",
+            description: "Create a new local isolated workspace (project folder) for the configured Code CLI Sub-Agent. Use this when starting any new delegated task (data analysis, script writing, software development) to give the CLI a clean context and memory space.",
             parameters: FunctionParameters(
                 properties: [
                     "project_name": ParameterProperty(
@@ -1198,9 +1198,13 @@ enum AvailableTools {
     static let listProjects = ToolDefinition(
         function: FunctionDefinition(
             name: "list_projects",
-            description: "List available project workspaces, including both 'User Projects' and your own internal 'Agent Automations'. Use this to find any scripts or tools you've previously built to automate tasks. Results include the AI-generated project description and last_modified_at. Sorted by last_modified_at (newest first) and supports pagination: pass limit (default 20, max 100) and cursor (from previous response next_cursor) to continue page by page.",
+            description: "List or search available project workspaces, including both 'User Projects' and your own internal 'Agent Automations'. Use this to find any scripts or tools you've previously built to automate tasks. Results include the AI-generated project description. Sorted by last_modified_at (newest first). Use the optional `query` parameter to substring search for specific project names, IDs, or keywords in their descriptions.",
             parameters: FunctionParameters(
                 properties: [
+                    "query": ParameterProperty(
+                        type: "string",
+                        description: "Optional keyword to search for specific project names, IDs, or description contents (case-insensitive)."
+                    ),
                     "limit": ParameterProperty(
                         type: "integer",
                         description: "Optional number of projects to return per page. Default 20, max 100."
@@ -1322,7 +1326,7 @@ enum AvailableTools {
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Run the configured Code CLI (Claude Code or Gemini CLI) in a selected project workspace with a prompt. Use this to develop regular software, or to create/run your own internal 'Agent Automations' (like file sorters, parsers, or custom scripts). Native session persistence is used automatically, so context is remembered in the same project. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
+            description: "Delegate a task to the configured Code CLI Sub-Agent (Claude Code or Gemini CLI) in a specific workspace. Use this for complex file manipulations, iterative local tasks, data processing, or script execution. The Code CLI acts autonomously within the project. CRITICAL: The Code CLI's memory is strictly project-bound; it only remembers past interactions within this specific project ID. Always check created_files/modified_files/file_changes_detected before claiming work is done.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(

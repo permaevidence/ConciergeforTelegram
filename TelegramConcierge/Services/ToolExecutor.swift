@@ -4158,10 +4158,12 @@ private struct ProjectDiscoveryContentSummary {
 private struct ListProjectsArguments: Codable {
     let limit: Int?
     let cursor: String?
+    let query: String?
     
     enum CodingKeys: String, CodingKey {
         case limit
         case cursor
+        case query
     }
     
     init(from decoder: Decoder) throws {
@@ -4183,6 +4185,8 @@ private struct ListProjectsArguments: Codable {
         } else {
             cursor = nil
         }
+        
+        query = try? container.decodeIfPresent(String.self, forKey: .query)
     }
 }
 
@@ -4642,6 +4646,7 @@ extension ToolExecutor {
         var limit = defaultLimit
         var pageOffset = 0
         var cursorUsed: String?
+        var searchQuery: String?
         
         let rawArguments = call.function.arguments.trimmingCharacters(in: .whitespacesAndNewlines)
         if !rawArguments.isEmpty && rawArguments != "{}" {
@@ -4656,10 +4661,14 @@ extension ToolExecutor {
             
             if let rawCursor = args.cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCursor.isEmpty {
                 guard let parsedOffset = parseListDocumentsCursor(rawCursor) else {
-                    return #"{"error":"Invalid cursor '\#(rawCursor)'. Use next_cursor from the previous list_projects response."}"#
+                    return #"{"error":"Invalid cursor '\(rawCursor)'. Use next_cursor from the previous list_projects response."}"#
                 }
                 pageOffset = parsedOffset
                 cursorUsed = rawCursor
+            }
+            
+            if let q = args.query?.trimmingCharacters(in: .whitespacesAndNewlines), !q.isEmpty {
+                searchQuery = q.lowercased()
             }
         }
         
@@ -4712,6 +4721,14 @@ extension ToolExecutor {
                     lastRunAt: runRecord.map { isoFormatter.string(from: $0.timestamp) },
                     lastModifiedAt: isoFormatter.string(from: lastModifiedAt)
                 )
+                
+                if let query = searchQuery {
+                    let textToSearch = [item.name, item.id, item.description ?? ""].joined(separator: " ").lowercased()
+                    if !textToSearch.contains(query) {
+                        continue // Skip if doesn't match query
+                    }
+                }
+                
                 indexedProjects.append(IndexedProject(item: item, createdAt: createdAt, lastModifiedAt: lastModifiedAt))
             }
             
@@ -4734,7 +4751,11 @@ extension ToolExecutor {
             
             let message: String
             if totalProjects == 0 {
-                message = "No projects found. Use create_project to create a workspace."
+                if searchQuery != nil {
+                    message = "No projects found matching the search query."
+                } else {
+                    message = "No projects found. Use create_project to create a workspace."
+                }
             } else if pageProjects.isEmpty {
                 message = "No projects found for cursor \(pageOffset). Use a smaller cursor to see available pages."
             } else if let nextCursor {
