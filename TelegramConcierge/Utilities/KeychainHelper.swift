@@ -69,8 +69,12 @@ enum KeychainHelper {
 
 // MARK: - Credential Keys
 extension KeychainHelper {
+    static let defaultCodeCLIProvider = "claude"
     static let defaultClaudeCodeArgs = "-p --permission-mode bypassPermissions"
     static let defaultClaudeCodeTimeout = "1000"
+    static let defaultGeminiCodeCommand = "gemini"
+    static let defaultGeminiCodeArgs = "--yolo --output-format json"
+    static let defaultGeminiCodeTimeout = "1000"
     static let defaultVercelCommand = "vercel"
     static let defaultVercelTimeout = "1200"
     static let defaultInstantCLICommand = "npx instant-cli@latest"
@@ -98,9 +102,13 @@ extension KeychainHelper {
     static let geminiApiKeyKey = "gemini_api_key"
     
     // Claude Code CLI Settings
+    static let codeCLIProviderKey = "code_cli_provider"
     static let claudeCodeCommandKey = "claude_code_command"
     static let claudeCodeArgsKey = "claude_code_args"
     static let claudeCodeTimeoutKey = "claude_code_timeout"
+    static let geminiCodeCommandKey = "gemini_code_command"
+    static let geminiCodeArgsKey = "gemini_code_args"
+    static let geminiCodeTimeoutKey = "gemini_code_timeout"
     static let claudeCodeDisableLegacyDocumentGenerationToolsKey = "claude_code_disable_legacy_document_generation_tools"
     
     // Vercel Deployment Settings

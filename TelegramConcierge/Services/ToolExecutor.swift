@@ -4102,6 +4102,30 @@ private struct ClaudeProjectMetadata: Codable {
     var projectDescriptionSource: String?
     var lastEditedAt: Date?
     var sessionUuid: String?
+    var codeCLISessionIds: [String: String]?
+}
+
+private enum CodeCLIProvider: String {
+    case claude
+    case gemini
+    
+    static func fromStoredValue(_ value: String?) -> CodeCLIProvider {
+        guard let normalized = value?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased() else {
+            return .claude
+        }
+        return CodeCLIProvider(rawValue: normalized) ?? .claude
+    }
+    
+    var displayName: String {
+        switch self {
+        case .claude:
+            return "Claude Code"
+        case .gemini:
+            return "Gemini CLI"
+        }
+    }
 }
 
 private struct ClaudeRunRecord: Codable {
@@ -4347,6 +4371,24 @@ private struct ClaudeExecutionOutput {
     let timedOut: Bool
     let stdout: String
     let stderr: String
+}
+
+private struct GeminiJSONError: Decodable {
+    let type: String?
+    let message: String?
+    let code: String?
+}
+
+private struct GeminiJSONOutput: Decodable {
+    let sessionId: String?
+    let response: String?
+    let error: GeminiJSONError?
+    
+    enum CodingKeys: String, CodingKey {
+        case sessionId = "session_id"
+        case response
+        case error
+    }
 }
 
 private struct SendProjectResultOutput: Codable {
@@ -4991,7 +5033,7 @@ extension ToolExecutor {
             projectId: args.projectId,
             maxTokens: maxTokens
         ) else {
-            return #"{"error":"No Claude run history found for this project yet."}"#
+            return #"{"error":"No run history found for this project yet."}"#
         }
         
         let result = ClaudeProjectHistoryResult(
@@ -5014,53 +5056,61 @@ extension ToolExecutor {
             return #"{"error":"Project not found. Use list_projects first."}"#
         }
         
-        let configuredCommand = KeychainHelper.load(key: KeychainHelper.claudeCodeCommandKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        let command = (configuredCommand?.isEmpty == false) ? configuredCommand! : "claude"
+        let provider = resolvedCodeCLIProvider()
+        let configuredCommand = loadCodeCLICommand(for: provider)
+        let command = configuredCommand.isEmpty
+            ? (provider == .gemini ? KeychainHelper.defaultGeminiCodeCommand : "claude")
+            : configuredCommand
         
-        let configuredArgs: String
-        if let storedArgs = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey)?
-            .trimmingCharacters(in: .whitespacesAndNewlines),
-           !storedArgs.isEmpty {
-            if isLegacyAcceptEditsArgumentString(storedArgs) {
-                configuredArgs = KeychainHelper.defaultClaudeCodeArgs
-                try? KeychainHelper.save(key: KeychainHelper.claudeCodeArgsKey, value: configuredArgs)
-            } else {
-                configuredArgs = storedArgs
-            }
-        } else {
+        var configuredArgs = loadCodeCLIArguments(for: provider)
+        if provider == .claude, isLegacyAcceptEditsArgumentString(configuredArgs) {
             configuredArgs = KeychainHelper.defaultClaudeCodeArgs
+            try? KeychainHelper.save(key: KeychainHelper.claudeCodeArgsKey, value: configuredArgs)
         }
+        
         let rawArgString = args.cliArgs?.trimmingCharacters(in: .whitespacesAndNewlines)
         let argString = (rawArgString?.isEmpty == false) ? rawArgString! : configuredArgs
         let hasPerCallCliOverride = rawArgString?.isEmpty == false
         var parsedArgs = parseCommandLineArguments(argString)
         
-        if !parsedArgs.contains("-p") && !parsedArgs.contains("--print") {
-            parsedArgs.insert("-p", at: 0)
-        }
-        
         var metadata = ensureProjectMetadata(projectURL: projectURL)
-        if let existingSession = metadata.sessionUuid {
-            parsedArgs.insert(contentsOf: ["-r", existingSession], at: 0)
+        if provider == .claude {
+            if !parsedArgs.contains("-p") && !parsedArgs.contains("--print") {
+                parsedArgs.insert("-p", at: 0)
+            }
+            
+            if let existingSession = codeCLISessionID(for: .claude, metadata: metadata) {
+                parsedArgs.insert(contentsOf: ["-r", existingSession], at: 0)
+            } else {
+                let newSession = UUID().uuidString
+                setCodeCLISessionID(newSession, for: .claude, metadata: &metadata)
+                saveProjectMetadata(metadata, projectURL: projectURL)
+                parsedArgs.insert(contentsOf: ["--session-id", newSession], at: 0)
+            }
         } else {
-            let newSession = UUID().uuidString
-            metadata.sessionUuid = newSession
-            saveProjectMetadata(metadata, projectURL: projectURL)
-            parsedArgs.insert(contentsOf: ["--session-id", newSession], at: 0)
+            ensureGeminiHeadlessArguments(&parsedArgs)
+            if let existingSession = codeCLISessionID(for: .gemini, metadata: metadata) {
+                parsedArgs.insert(contentsOf: ["-r", existingSession], at: 0)
+            }
         }
         
-        let configuredTimeout = Int(KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? "") ?? Int(KeychainHelper.defaultClaudeCodeTimeout) ?? 300
+        let configuredTimeout = loadCodeCLITimeout(for: provider)
         let timeoutSeconds = min(max(args.timeoutSeconds ?? configuredTimeout, 30), 3600)
         let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
         
         let preSnapshot = snapshotProjectFiles(projectURL: projectURL)
         let startTime = Date()
-        let baseEnvironment = claudeBaseEnvironment()
-        let invocations = buildClaudeInvocations(command: command, cliArgs: parsedArgs, prompt: args.prompt)
+        let baseEnvironment = codeCLIBaseEnvironment(for: provider)
+        let invocations = buildCodeCLIInvocations(
+            command: command,
+            cliArgs: parsedArgs,
+            prompt: args.prompt,
+            provider: provider
+        )
         
         guard !invocations.isEmpty else {
-            return #"{"error":"No valid Claude Code command invocation was generated. Check Claude Code settings."}"#
+            let providerName = provider.displayName.replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"error":"No valid \#(providerName) command invocation was generated. Check Code CLI settings."}"#
         }
         
         var launchErrors: [String] = []
@@ -5071,7 +5121,7 @@ extension ToolExecutor {
             do {
                 var activeInvocation = invocation
                 var activeEnvironment = baseEnvironment
-                var result = try await runClaudeInvocation(
+                var result = try await runCodeCLIInvocation(
                     activeInvocation,
                     projectURL: projectURL,
                     environment: activeEnvironment,
@@ -5079,52 +5129,89 @@ extension ToolExecutor {
                     maxOutputChars: maxOutputChars
                 )
                 
-                // Sandboxed contexts can block writes to ~/.claude.
-                // If that happens, retry with an app-local config directory.
-                if shouldRetryClaudeWithAppConfig(stderr: result.stderr) && baseEnvironment["CLAUDE_CONFIG_DIR"] == nil {
-                    var retryEnvironment = baseEnvironment
-                    retryEnvironment["CLAUDE_CONFIG_DIR"] = claudeConfigDirectory.path
-                    
-                    do {
-                        let retryResult = try await runClaudeInvocation(
-                            activeInvocation,
-                            projectURL: projectURL,
-                            environment: retryEnvironment,
-                            timeoutSeconds: timeoutSeconds,
-                            maxOutputChars: maxOutputChars
-                        )
-                        result = ClaudeExecutionOutput(
-                            exitCode: retryResult.exitCode,
-                            timedOut: retryResult.timedOut,
-                            stdout: retryResult.stdout,
-                            stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with CLAUDE_CONFIG_DIR=\(claudeConfigDirectory.path)"
-                        )
-                        activeEnvironment = retryEnvironment
-                    } catch {
-                        launchErrors.append("\(invocation.displayCommand) (retry with CLAUDE_CONFIG_DIR): \(error.localizedDescription)")
+                if provider == .claude {
+                    // Sandboxed contexts can block writes to ~/.claude.
+                    // If that happens, retry with an app-local config directory.
+                    if shouldRetryClaudeWithAppConfig(stderr: result.stderr) && baseEnvironment["CLAUDE_CONFIG_DIR"] == nil {
+                        var retryEnvironment = baseEnvironment
+                        retryEnvironment["CLAUDE_CONFIG_DIR"] = claudeConfigDirectory.path
+                        
+                        do {
+                            let retryResult = try await runCodeCLIInvocation(
+                                activeInvocation,
+                                projectURL: projectURL,
+                                environment: retryEnvironment,
+                                timeoutSeconds: timeoutSeconds,
+                                maxOutputChars: maxOutputChars
+                            )
+                            result = ClaudeExecutionOutput(
+                                exitCode: retryResult.exitCode,
+                                timedOut: retryResult.timedOut,
+                                stdout: retryResult.stdout,
+                                stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with CLAUDE_CONFIG_DIR=\(claudeConfigDirectory.path)"
+                            )
+                            activeEnvironment = retryEnvironment
+                        } catch {
+                            launchErrors.append("\(invocation.displayCommand) (retry with CLAUDE_CONFIG_DIR): \(error.localizedDescription)")
+                        }
                     }
-                }
-                
-                if !hasPerCallCliOverride,
-                   shouldRetryClaudeWithBypassPermissions(
+                    
+                    if !hasPerCallCliOverride,
+                       shouldRetryClaudeWithBypassPermissions(
+                        stdout: result.stdout,
+                        stderr: result.stderr,
+                        arguments: activeInvocation.arguments
+                       ) {
+                        let bypassArgs = applyBypassPermissionMode(to: activeInvocation.arguments)
+                        if bypassArgs != activeInvocation.arguments {
+                            let bypassInvocation = ClaudeInvocation(
+                                executableURL: activeInvocation.executableURL,
+                                arguments: bypassArgs,
+                                displayCommand: displayCodeCLIInvocationCommand(
+                                    executable: activeInvocation.executableURL.path,
+                                    arguments: bypassArgs
+                                )
+                            )
+                            
+                            do {
+                                let retryResult = try await runCodeCLIInvocation(
+                                    bypassInvocation,
+                                    projectURL: projectURL,
+                                    environment: activeEnvironment,
+                                    timeoutSeconds: timeoutSeconds,
+                                    maxOutputChars: maxOutputChars
+                                )
+                                result = ClaudeExecutionOutput(
+                                    exitCode: retryResult.exitCode,
+                                    timedOut: retryResult.timedOut,
+                                    stdout: retryResult.stdout,
+                                    stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with --permission-mode bypassPermissions after detecting approval deadlock."
+                                )
+                                activeInvocation = bypassInvocation
+                            } catch {
+                                launchErrors.append("\(invocation.displayCommand) (retry with bypassPermissions): \(error.localizedDescription)")
+                            }
+                        }
+                    }
+                } else if shouldRetryGeminiWithoutResume(
                     stdout: result.stdout,
                     stderr: result.stderr,
                     arguments: activeInvocation.arguments
-                   ) {
-                    let bypassArgs = applyBypassPermissionMode(to: activeInvocation.arguments)
-                    if bypassArgs != activeInvocation.arguments {
-                        let bypassInvocation = ClaudeInvocation(
+                ) {
+                    let retryArgs = removingGeminiResumeArguments(from: activeInvocation.arguments)
+                    if retryArgs != activeInvocation.arguments {
+                        let retryInvocation = ClaudeInvocation(
                             executableURL: activeInvocation.executableURL,
-                            arguments: bypassArgs,
-                            displayCommand: displayClaudeInvocationCommand(
+                            arguments: retryArgs,
+                            displayCommand: displayCodeCLIInvocationCommand(
                                 executable: activeInvocation.executableURL.path,
-                                arguments: bypassArgs
+                                arguments: retryArgs
                             )
                         )
                         
                         do {
-                            let retryResult = try await runClaudeInvocation(
-                                bypassInvocation,
+                            let retryResult = try await runCodeCLIInvocation(
+                                retryInvocation,
                                 projectURL: projectURL,
                                 environment: activeEnvironment,
                                 timeoutSeconds: timeoutSeconds,
@@ -5134,11 +5221,13 @@ extension ToolExecutor {
                                 exitCode: retryResult.exitCode,
                                 timedOut: retryResult.timedOut,
                                 stdout: retryResult.stdout,
-                                stderr: retryResult.stderr + "\n[TelegramConcierge] Retried with --permission-mode bypassPermissions after detecting approval deadlock."
+                                stderr: retryResult.stderr + "\n[TelegramConcierge] Retried without --resume after an invalid/missing session reference."
                             )
-                            activeInvocation = bypassInvocation
+                            activeInvocation = retryInvocation
+                            clearCodeCLISessionID(for: .gemini, metadata: &metadata)
+                            saveProjectMetadata(metadata, projectURL: projectURL)
                         } catch {
-                            launchErrors.append("\(invocation.displayCommand) (retry with bypassPermissions): \(error.localizedDescription)")
+                            launchErrors.append("\(invocation.displayCommand) (retry without --resume): \(error.localizedDescription)")
                         }
                     }
                 }
@@ -5157,7 +5246,42 @@ extension ToolExecutor {
                 : launchErrors.joined(separator: " | ")
             let safeDetails = redactSensitiveContextForModel(details).replacingOccurrences(of: "\"", with: "\\\"")
             let safeCommand = redactSensitiveContextForModel(command).replacingOccurrences(of: "\"", with: "\\\"")
-            return #"{"error":"Failed to launch Claude Code command '\#(safeCommand)'. Attempts: \#(safeDetails)"}"#
+            let providerName = provider.displayName.replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"error":"Failed to launch \#(providerName) command '\#(safeCommand)'. Attempts: \#(safeDetails)"}"#
+        }
+        
+        var normalizedStdout = finalExecution.stdout
+        var normalizedStderr = finalExecution.stderr
+        var providerReportedErrorMessage: String?
+        
+        if provider == .gemini {
+            if let parsedOutput = parseGeminiJSONOutput(finalExecution.stdout) {
+                if let sessionId = parsedOutput.sessionId?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !sessionId.isEmpty {
+                    if codeCLISessionID(for: .gemini, metadata: metadata) != sessionId {
+                        setCodeCLISessionID(sessionId, for: .gemini, metadata: &metadata)
+                        saveProjectMetadata(metadata, projectURL: projectURL)
+                    }
+                }
+                
+                if let response = parsedOutput.response?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !response.isEmpty {
+                    normalizedStdout = response
+                }
+                
+                if let errorMessage = parsedOutput.error?.message?
+                    .trimmingCharacters(in: .whitespacesAndNewlines),
+                   !errorMessage.isEmpty {
+                    providerReportedErrorMessage = errorMessage
+                    if normalizedStderr.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        normalizedStderr = errorMessage
+                    } else if !normalizedStderr.contains(errorMessage) {
+                        normalizedStderr += "\n\(errorMessage)"
+                    }
+                }
+            }
         }
         
         let postSnapshot = snapshotProjectFiles(projectURL: projectURL)
@@ -5171,8 +5295,8 @@ extension ToolExecutor {
             createdFiles: createdFiles,
             modifiedFiles: modifiedFiles,
             deletedFiles: deletedFiles,
-            stdout: finalExecution.stdout,
-            stderr: finalExecution.stderr,
+            stdout: normalizedStdout,
+            stderr: normalizedStderr,
             fileChangesDetected: fileChangesDetected
         )
         let duration = Date().timeIntervalSince(startTime)
@@ -5188,30 +5312,36 @@ extension ToolExecutor {
             createdFiles: createdFiles,
             modifiedFiles: modifiedFiles,
             deletedFiles: deletedFiles,
-            stdoutPreview: finalExecution.stdout,
-            stderrPreview: finalExecution.stderr
+            stdoutPreview: normalizedStdout,
+            stderrPreview: normalizedStderr
         )
         
         let logFile = persistRunRecord(runRecord, projectURL: projectURL)
         
-        let permissionBlocked = containsClaudePermissionPromptSignal(text: finalExecution.stdout + "\n" + finalExecution.stderr)
-        let success = finalExecution.exitCode == 0 && !finalExecution.timedOut && !permissionBlocked
+        let permissionBlocked = containsCodeCLIPermissionPromptSignal(
+            provider: provider,
+            text: normalizedStdout + "\n" + normalizedStderr
+        )
+        let providerReturnedError = providerReportedErrorMessage != nil
+        let success = finalExecution.exitCode == 0 && !finalExecution.timedOut && !permissionBlocked && !providerReturnedError
         let safeCommand = redactSensitiveContextForModel(finalInvocation.displayCommand)
-        let safeStdout = redactSensitiveContextForModel(finalExecution.stdout)
-        let safeStderr = redactSensitiveContextForModel(finalExecution.stderr)
-        let modelOutputRedacted = safeStdout != finalExecution.stdout || safeStderr != finalExecution.stderr
+        let safeStdout = redactSensitiveContextForModel(normalizedStdout)
+        let safeStderr = redactSensitiveContextForModel(normalizedStderr)
+        let modelOutputRedacted = safeStdout != normalizedStdout || safeStderr != normalizedStderr
         
         let baseMessage: String
         if success {
             baseMessage = fileChangesDetected
-                ? "Claude Code run completed with file changes."
-                : "Claude Code run completed, but no file changes were detected. Verify prompt/permission mode and inspect stdout."
+                ? "\(provider.displayName) run completed with file changes."
+                : "\(provider.displayName) run completed, but no file changes were detected. Verify prompt/permission mode and inspect stdout."
         } else if permissionBlocked {
-            baseMessage = "Claude Code run was blocked by command approval prompts. Retried with bypassPermissions if possible, but execution still could not complete the requested actions."
+            baseMessage = "\(provider.displayName) run was blocked by command approval prompts."
+        } else if providerReturnedError, let providerReportedErrorMessage {
+            baseMessage = "\(provider.displayName) returned an error: \(providerReportedErrorMessage)"
         } else if finalExecution.timedOut {
-            baseMessage = "Claude Code run timed out after \(timeoutSeconds)s."
+            baseMessage = "\(provider.displayName) run timed out after \(timeoutSeconds)s."
         } else {
-            baseMessage = "Claude Code run failed with exit code \(finalExecution.exitCode)."
+            baseMessage = "\(provider.displayName) run failed with exit code \(finalExecution.exitCode)."
         }
         
         let resultMessage = modelOutputRedacted
@@ -7477,9 +7607,9 @@ extension ToolExecutor {
         [\(timestamp)] exit=\(run.exitCode) timed_out=\(run.timedOut ? "yes" : "no") changes=\(fileSummary)
         Gemini prompt:
         \(promptExcerpt)
-        Claude stdout:
+        CLI stdout:
         \(stdoutExcerpt)
-        Claude stderr:
+        CLI stderr:
         \(stderrExcerpt)
         """
     }
@@ -7493,6 +7623,209 @@ extension ToolExecutor {
         
         guard compact.count > maxChars else { return compact }
         return String(compact.prefix(maxChars)) + "\n...[truncated]..."
+    }
+    
+    private func resolvedCodeCLIProvider() -> CodeCLIProvider {
+        let storedProvider = KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey)
+        return CodeCLIProvider.fromStoredValue(storedProvider)
+    }
+    
+    private func loadCodeCLICommand(for provider: CodeCLIProvider) -> String {
+        let value: String?
+        switch provider {
+        case .claude:
+            value = KeychainHelper.load(key: KeychainHelper.claudeCodeCommandKey)
+        case .gemini:
+            value = KeychainHelper.load(key: KeychainHelper.geminiCodeCommandKey)
+        }
+        
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        
+        switch provider {
+        case .claude:
+            return "claude"
+        case .gemini:
+            return KeychainHelper.defaultGeminiCodeCommand
+        }
+    }
+    
+    private func loadCodeCLIArguments(for provider: CodeCLIProvider) -> String {
+        let value: String?
+        switch provider {
+        case .claude:
+            value = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey)
+        case .gemini:
+            value = KeychainHelper.load(key: KeychainHelper.geminiCodeArgsKey)
+        }
+        
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        
+        switch provider {
+        case .claude:
+            return KeychainHelper.defaultClaudeCodeArgs
+        case .gemini:
+            return KeychainHelper.defaultGeminiCodeArgs
+        }
+    }
+    
+    private func loadCodeCLITimeout(for provider: CodeCLIProvider) -> Int {
+        let rawValue: String?
+        let defaultValue: String
+        
+        switch provider {
+        case .claude:
+            rawValue = KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey)
+            defaultValue = KeychainHelper.defaultClaudeCodeTimeout
+        case .gemini:
+            rawValue = KeychainHelper.load(key: KeychainHelper.geminiCodeTimeoutKey)
+            defaultValue = KeychainHelper.defaultGeminiCodeTimeout
+        }
+        
+        return Int(rawValue ?? "") ?? Int(defaultValue) ?? 300
+    }
+    
+    private func normalizedSessionID(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+    
+    private func codeCLISessionID(for provider: CodeCLIProvider, metadata: ClaudeProjectMetadata) -> String? {
+        if let stored = normalizedSessionID(metadata.codeCLISessionIds?[provider.rawValue]) {
+            return stored
+        }
+        
+        // Backward compatibility with legacy single-session storage.
+        guard let legacy = normalizedSessionID(metadata.sessionUuid) else {
+            return nil
+        }
+        
+        let isUUID = UUID(uuidString: legacy) != nil
+        switch provider {
+        case .claude:
+            return isUUID ? legacy : nil
+        case .gemini:
+            return isUUID ? nil : legacy
+        }
+    }
+    
+    private func setCodeCLISessionID(
+        _ sessionID: String,
+        for provider: CodeCLIProvider,
+        metadata: inout ClaudeProjectMetadata
+    ) {
+        guard let normalized = normalizedSessionID(sessionID) else { return }
+        var sessions = metadata.codeCLISessionIds ?? [:]
+        sessions[provider.rawValue] = normalized
+        metadata.codeCLISessionIds = sessions
+        
+        // Keep legacy field populated for Claude backward compatibility.
+        if provider == .claude {
+            metadata.sessionUuid = normalized
+        } else if let legacy = normalizedSessionID(metadata.sessionUuid),
+                  UUID(uuidString: legacy) == nil {
+            metadata.sessionUuid = nil
+        }
+    }
+    
+    private func clearCodeCLISessionID(for provider: CodeCLIProvider, metadata: inout ClaudeProjectMetadata) {
+        if var sessions = metadata.codeCLISessionIds {
+            sessions.removeValue(forKey: provider.rawValue)
+            metadata.codeCLISessionIds = sessions.isEmpty ? nil : sessions
+        }
+        
+        if provider == .claude {
+            metadata.sessionUuid = nil
+        } else if let legacy = normalizedSessionID(metadata.sessionUuid),
+                  UUID(uuidString: legacy) == nil {
+            metadata.sessionUuid = nil
+        }
+    }
+    
+    private func ensureGeminiHeadlessArguments(_ arguments: inout [String]) {
+        var cleanedArgs: [String] = []
+        var index = 0
+        
+        while index < arguments.count {
+            let token = arguments[index]
+            let lowerToken = token.lowercased()
+            
+            if lowerToken == "--output-format" {
+                index += min(2, arguments.count - index)
+                continue
+            }
+            
+            if lowerToken.hasPrefix("--output-format=") {
+                index += 1
+                continue
+            }
+            
+            if lowerToken == "-p" || lowerToken == "--prompt" {
+                if index + 1 < arguments.count {
+                    let next = arguments[index + 1]
+                    if !next.hasPrefix("-") {
+                        index += 2
+                        continue
+                    }
+                }
+                index += 1
+                continue
+            }
+            
+            if lowerToken.hasPrefix("--prompt=") {
+                index += 1
+                continue
+            }
+            
+            cleanedArgs.append(token)
+            index += 1
+        }
+        
+        // Keep Gemini in deterministic headless mode and ensure `-p` sits
+        // immediately before the injected prompt argument.
+        arguments = ["--output-format", "json"] + cleanedArgs + ["-p"]
+    }
+    
+    private func parseGeminiJSONOutput(_ raw: String) -> GeminiJSONOutput? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        func decode(_ candidate: String) -> GeminiJSONOutput? {
+            guard let data = candidate.data(using: .utf8) else { return nil }
+            return try? JSONDecoder().decode(GeminiJSONOutput.self, from: data)
+        }
+        
+        if let parsed = decode(trimmed) {
+            return parsed
+        }
+        
+        guard let start = trimmed.firstIndex(of: "{"),
+              let end = trimmed.lastIndex(of: "}") else {
+            return nil
+        }
+        
+        let candidate = String(trimmed[start...end])
+        return decode(candidate)
+    }
+    
+    private func codeCLIBaseEnvironment(for provider: CodeCLIProvider) -> [String: String] {
+        var environment = claudeBaseEnvironment()
+        if provider == .gemini {
+            let storedGeminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !storedGeminiApiKey.isEmpty {
+                environment["GEMINI_API_KEY"] = storedGeminiApiKey
+            }
+        }
+        return environment
     }
     
     private var claudeConfigDirectory: URL {
@@ -7517,9 +7850,14 @@ extension ToolExecutor {
         return environment
     }
     
-    private func buildClaudeInvocations(command: String, cliArgs: [String], prompt: String) -> [ClaudeInvocation] {
+    private func buildCodeCLIInvocations(
+        command: String,
+        cliArgs: [String],
+        prompt: String,
+        provider: CodeCLIProvider
+    ) -> [ClaudeInvocation] {
         let commandTokens = parseCommandLineArguments(command)
-        let primaryCommand = commandTokens.first ?? "claude"
+        let primaryCommand = commandTokens.first ?? (provider == .gemini ? "gemini" : "claude")
         let commandPrefixArgs = Array(commandTokens.dropFirst())
         let taskArgs = commandPrefixArgs + cliArgs + [prompt]
         
@@ -7554,8 +7892,16 @@ extension ToolExecutor {
             appendInvocation(executable: "/usr/bin/env", args: [primaryCommand] + taskArgs)
         }
         
-        if primaryCommand == "claude" {
-            for launcher in ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"] {
+        let knownLaunchers: [String]
+        switch provider {
+        case .claude:
+            knownLaunchers = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"]
+        case .gemini:
+            knownLaunchers = ["/opt/homebrew/bin/gemini", "/usr/local/bin/gemini", "/usr/bin/gemini"]
+        }
+        
+        if primaryCommand == provider.rawValue {
+            for launcher in knownLaunchers {
                 if fileManager.fileExists(atPath: launcher) {
                     appendInvocation(executable: launcher, args: taskArgs)
                 }
@@ -7565,17 +7911,19 @@ extension ToolExecutor {
         var launcherCandidates: [String] = []
         if primaryCommand.contains("/") {
             launcherCandidates.append(primaryCommand)
-        } else if primaryCommand == "claude" {
-            launcherCandidates += ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"]
+        } else if primaryCommand == provider.rawValue {
+            launcherCandidates += knownLaunchers
         }
         
-        for launcher in launcherCandidates {
-            guard let scriptPath = resolveClaudeScriptPath(launcherPath: launcher) else { continue }
-            
-            if let nodePath = resolveNodeExecutablePath() {
-                appendInvocation(executable: nodePath, args: [scriptPath] + taskArgs)
+        if provider == .claude {
+            for launcher in launcherCandidates {
+                guard let scriptPath = resolveClaudeScriptPath(launcherPath: launcher) else { continue }
+                
+                if let nodePath = resolveNodeExecutablePath() {
+                    appendInvocation(executable: nodePath, args: [scriptPath] + taskArgs)
+                }
+                appendInvocation(executable: "/usr/bin/env", args: ["node", scriptPath] + taskArgs)
             }
-            appendInvocation(executable: "/usr/bin/env", args: ["node", scriptPath] + taskArgs)
         }
         
         return invocations
@@ -7863,6 +8211,22 @@ extension ToolExecutor {
         return nil
     }
     
+    private func runCodeCLIInvocation(
+        _ invocation: ClaudeInvocation,
+        projectURL: URL,
+        environment: [String: String],
+        timeoutSeconds: Int,
+        maxOutputChars: Int
+    ) async throws -> ClaudeExecutionOutput {
+        try await runClaudeInvocation(
+            invocation,
+            projectURL: projectURL,
+            environment: environment,
+            timeoutSeconds: timeoutSeconds,
+            maxOutputChars: maxOutputChars
+        )
+    }
+    
     private func runClaudeInvocation(
         _ invocation: ClaudeInvocation,
         projectURL: URL,
@@ -8010,6 +8374,19 @@ extension ToolExecutor {
         return ([executable] + displayArgs).joined(separator: " ")
     }
     
+    private func displayCodeCLIInvocationCommand(executable: String, arguments: [String]) -> String {
+        displayClaudeInvocationCommand(executable: executable, arguments: arguments)
+    }
+    
+    private func containsCodeCLIPermissionPromptSignal(provider: CodeCLIProvider, text: String) -> Bool {
+        switch provider {
+        case .claude:
+            return containsClaudePermissionPromptSignal(text: text)
+        case .gemini:
+            return containsGeminiPermissionPromptSignal(text: text)
+        }
+    }
+    
     private func containsClaudePermissionPromptSignal(text: String) -> Bool {
         let lower = text.lowercased()
         let signals = [
@@ -8031,6 +8408,71 @@ extension ToolExecutor {
         let permissionErrors = lower.contains("permission denied") || lower.contains("operation not permitted")
         let approvalContext = lower.contains("approval") || lower.contains("permission settings")
         return permissionErrors && approvalContext
+    }
+    
+    private func containsGeminiPermissionPromptSignal(text: String) -> Bool {
+        let lower = text.lowercased()
+        let signals = [
+            "confirmation prompt requested by the command",
+            "requires confirmation",
+            "requires approval",
+            "please confirm",
+            "blocked by approval mode",
+            "agent execution blocked"
+        ]
+        return signals.contains(where: { lower.contains($0) })
+    }
+    
+    private func shouldRetryGeminiWithoutResume(
+        stdout: String,
+        stderr: String,
+        arguments: [String]
+    ) -> Bool {
+        guard geminiArgumentsContainResume(arguments) else { return false }
+        let lower = (stdout + "\n" + stderr).lowercased()
+        let signals = [
+            "invalid session identifier",
+            "no previous sessions found",
+            "failed to find session",
+            "use --list-sessions",
+            "could not resume"
+        ]
+        return signals.contains(where: { lower.contains($0) })
+    }
+    
+    private func geminiArgumentsContainResume(_ arguments: [String]) -> Bool {
+        let lowerArgs = arguments.map { $0.lowercased() }
+        for token in lowerArgs {
+            if token == "-r" || token == "--resume" || token.hasPrefix("--resume=") {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func removingGeminiResumeArguments(from arguments: [String]) -> [String] {
+        var cleaned: [String] = []
+        var skipNext = false
+        
+        for token in arguments {
+            if skipNext {
+                skipNext = false
+                continue
+            }
+            
+            let lower = token.lowercased()
+            if lower == "-r" || lower == "--resume" {
+                skipNext = true
+                continue
+            }
+            if lower.hasPrefix("--resume=") {
+                continue
+            }
+            
+            cleaned.append(token)
+        }
+        
+        return cleaned
     }
     
     private func isLegacyAcceptEditsArgumentString(_ argString: String) -> Bool {

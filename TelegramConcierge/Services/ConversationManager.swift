@@ -961,7 +961,10 @@ class ConversationManager: ObservableObject {
         } else if toolNames.contains("generate_project_mcp_config") {
             return "🧩 Generating MCP configuration..."
         } else if toolNames.contains("run_claude_code") {
-            return "🤖 Running Claude Code..."
+            let provider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .lowercased()
+            return provider == "gemini" ? "🤖 Running Gemini CLI..." : "🤖 Running Claude Code..."
         } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") {
             return "📁 Managing project workspace..."
         } else if toolNames.contains("send_project_result") {

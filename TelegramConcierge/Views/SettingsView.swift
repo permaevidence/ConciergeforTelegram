@@ -46,10 +46,14 @@ struct SettingsView: View {
     // Image generation settings
     @State private var geminiApiKey: String = ""
     
-    // Claude Code settings
+    // Code CLI settings
+    @State private var codeCLIProvider: String = KeychainHelper.defaultCodeCLIProvider
     @State private var claudeCodeCommand: String = "claude"
     @State private var claudeCodeArgs: String = KeychainHelper.defaultClaudeCodeArgs
     @State private var claudeCodeTimeout: String = KeychainHelper.defaultClaudeCodeTimeout
+    @State private var geminiCodeCommand: String = KeychainHelper.defaultGeminiCodeCommand
+    @State private var geminiCodeArgs: String = KeychainHelper.defaultGeminiCodeArgs
+    @State private var geminiCodeTimeout: String = KeychainHelper.defaultGeminiCodeTimeout
     @State private var claudeCodeDisableLegacyDocumentGenerationTools: Bool = false
     
     // Vercel deployment settings
@@ -275,30 +279,61 @@ struct SettingsView: View {
             }
             
             Section {
-                TextField("CLI Command", text: $claudeCodeCommand)
-                    .textFieldStyle(.roundedBorder)
+                Toggle(
+                    "Use Gemini CLI instead of Claude Code",
+                    isOn: Binding(
+                        get: { codeCLIProvider == "gemini" },
+                        set: { codeCLIProvider = $0 ? "gemini" : "claude" }
+                    )
+                )
                 
-                Text("Default: claude")
+                Text("Active provider: \(codeCLIProvider == "gemini" ? "Gemini CLI" : "Claude Code")")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                TextField("Default CLI Args", text: $claudeCodeArgs)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Default: \(KeychainHelper.defaultClaudeCodeArgs). You can override per tool call.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("Default Timeout (seconds)", text: $claudeCodeTimeout)
-                    .textFieldStyle(.roundedBorder)
+                if codeCLIProvider == "gemini" {
+                    TextField("CLI Command", text: $geminiCodeCommand)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    Text("Default: \(KeychainHelper.defaultGeminiCodeCommand)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Default CLI Args", text: $geminiCodeArgs)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    Text("Default: \(KeychainHelper.defaultGeminiCodeArgs). You can override per tool call.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Default Timeout (seconds)", text: $geminiCodeTimeout)
+                        .textFieldStyle(.roundedBorder)
+                } else {
+                    TextField("CLI Command", text: $claudeCodeCommand)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    Text("Default: claude")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Default CLI Args", text: $claudeCodeArgs)
+                        .textFieldStyle(.roundedBorder)
+                    
+                    Text("Default: \(KeychainHelper.defaultClaudeCodeArgs). You can override per tool call.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                    TextField("Default Timeout (seconds)", text: $claudeCodeTimeout)
+                        .textFieldStyle(.roundedBorder)
+                }
                 
                 Text("Used by run_claude_code when timeout_seconds is omitted. Range: 30-3600.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                Toggle("Use Claude Code for document generation", isOn: $claudeCodeDisableLegacyDocumentGenerationTools)
+                Toggle("Use selected Code CLI for document generation", isOn: $claudeCodeDisableLegacyDocumentGenerationTools)
                 
-                Text("When enabled, Gemini will not see the legacy generate_document tool and will use Claude project tools for PDFs, spreadsheets, and text deliverables.")
+                Text("When enabled, Gemini will not see the legacy generate_document tool and will use project tools powered by the selected Code CLI provider.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -307,7 +342,7 @@ struct SettingsView: View {
                 }
                 
             } header: {
-                Label("Claude Code", systemImage: "terminal")
+                Label("Code CLI", systemImage: "terminal")
             }
             
             Section {
@@ -1334,10 +1369,17 @@ struct SettingsView: View {
         // Load image generation settings
         geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey) ?? ""
         
-        // Load Claude Code settings
+        // Load Code CLI settings
+        let loadedProvider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        codeCLIProvider = loadedProvider == "gemini" ? "gemini" : "claude"
         claudeCodeCommand = KeychainHelper.load(key: KeychainHelper.claudeCodeCommandKey) ?? "claude"
         claudeCodeArgs = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey) ?? KeychainHelper.defaultClaudeCodeArgs
         claudeCodeTimeout = KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? KeychainHelper.defaultClaudeCodeTimeout
+        geminiCodeCommand = KeychainHelper.load(key: KeychainHelper.geminiCodeCommandKey) ?? KeychainHelper.defaultGeminiCodeCommand
+        geminiCodeArgs = KeychainHelper.load(key: KeychainHelper.geminiCodeArgsKey) ?? KeychainHelper.defaultGeminiCodeArgs
+        geminiCodeTimeout = KeychainHelper.load(key: KeychainHelper.geminiCodeTimeoutKey) ?? KeychainHelper.defaultGeminiCodeTimeout
         claudeCodeDisableLegacyDocumentGenerationTools =
             (KeychainHelper.load(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey) ?? "false")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1510,26 +1552,8 @@ struct SettingsView: View {
                 try KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: geminiApiKey)
             }
             
-            // Save Claude Code settings
-            let normalizedClaudeCommand = claudeCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-            try KeychainHelper.save(
-                key: KeychainHelper.claudeCodeCommandKey,
-                value: normalizedClaudeCommand.isEmpty ? "claude" : normalizedClaudeCommand
-            )
-            try KeychainHelper.save(
-                key: KeychainHelper.claudeCodeArgsKey,
-                value: claudeCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                    ? KeychainHelper.defaultClaudeCodeArgs
-                    : claudeCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
-            )
-            let timeoutValue = Int(claudeCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
-            let clampedTimeout = min(max(timeoutValue, 30), 3600)
-            try KeychainHelper.save(key: KeychainHelper.claudeCodeTimeoutKey, value: "\(clampedTimeout)")
-            claudeCodeTimeout = "\(clampedTimeout)"
-            try KeychainHelper.save(
-                key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey,
-                value: claudeCodeDisableLegacyDocumentGenerationTools ? "true" : "false"
-            )
+            // Save Code CLI settings
+            try saveCodeCLISettings()
             
             // Save Vercel deployment settings
             let normalizedVercelToken = vercelApiToken.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1729,28 +1753,60 @@ struct SettingsView: View {
     }
     
     private func saveClaudeCodeSection() {
-        let normalizedCommand = claudeCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
-        let normalizedArgs = claudeCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
-        let timeout = Int(claudeCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
-        let clamped = min(max(timeout, 30), 3600)
+        try? saveCodeCLISettings()
+    }
+    
+    private func saveCodeCLISettings() throws {
+        let normalizedProvider = codeCLIProvider == "gemini" ? "gemini" : "claude"
         
-        try? KeychainHelper.save(
-            key: KeychainHelper.claudeCodeCommandKey,
-            value: normalizedCommand.isEmpty ? "claude" : normalizedCommand
-        )
-        try? KeychainHelper.save(
-            key: KeychainHelper.claudeCodeArgsKey,
-            value: normalizedArgs.isEmpty ? KeychainHelper.defaultClaudeCodeArgs : normalizedArgs
-        )
-        try? KeychainHelper.save(key: KeychainHelper.claudeCodeTimeoutKey, value: "\(clamped)")
-        try? KeychainHelper.save(
-            key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey,
-            value: claudeCodeDisableLegacyDocumentGenerationTools ? "true" : "false"
-        )
+        let normalizedClaudeCommand = claudeCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedClaudeArgs = claudeCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let claudeTimeout = Int(claudeCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
+        let clampedClaudeTimeout = min(max(claudeTimeout, 30), 3600)
         
-        claudeCodeCommand = normalizedCommand.isEmpty ? "claude" : normalizedCommand
-        claudeCodeArgs = normalizedArgs.isEmpty ? KeychainHelper.defaultClaudeCodeArgs : normalizedArgs
-        claudeCodeTimeout = "\(clamped)"
+        let normalizedGeminiCommand = geminiCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedGeminiArgs = geminiCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let geminiTimeout = Int(geminiCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
+        let clampedGeminiTimeout = min(max(geminiTimeout, 30), 3600)
+        
+        let saveOp = {
+            try KeychainHelper.save(key: KeychainHelper.codeCLIProviderKey, value: normalizedProvider)
+            try KeychainHelper.save(
+                key: KeychainHelper.claudeCodeCommandKey,
+                value: normalizedClaudeCommand.isEmpty ? "claude" : normalizedClaudeCommand
+            )
+            try KeychainHelper.save(
+                key: KeychainHelper.claudeCodeArgsKey,
+                value: normalizedClaudeArgs.isEmpty ? KeychainHelper.defaultClaudeCodeArgs : normalizedClaudeArgs
+            )
+            try KeychainHelper.save(key: KeychainHelper.claudeCodeTimeoutKey, value: "\(clampedClaudeTimeout)")
+            
+            try KeychainHelper.save(
+                key: KeychainHelper.geminiCodeCommandKey,
+                value: normalizedGeminiCommand.isEmpty ? KeychainHelper.defaultGeminiCodeCommand : normalizedGeminiCommand
+            )
+            try KeychainHelper.save(
+                key: KeychainHelper.geminiCodeArgsKey,
+                value: normalizedGeminiArgs.isEmpty ? KeychainHelper.defaultGeminiCodeArgs : normalizedGeminiArgs
+            )
+            try KeychainHelper.save(key: KeychainHelper.geminiCodeTimeoutKey, value: "\(clampedGeminiTimeout)")
+            
+            try KeychainHelper.save(
+                key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey,
+                value: claudeCodeDisableLegacyDocumentGenerationTools ? "true" : "false"
+            )
+        }
+        
+        try saveOp()
+        
+        codeCLIProvider = normalizedProvider
+        claudeCodeCommand = normalizedClaudeCommand.isEmpty ? "claude" : normalizedClaudeCommand
+        claudeCodeArgs = normalizedClaudeArgs.isEmpty ? KeychainHelper.defaultClaudeCodeArgs : normalizedClaudeArgs
+        claudeCodeTimeout = "\(clampedClaudeTimeout)"
+        
+        geminiCodeCommand = normalizedGeminiCommand.isEmpty ? KeychainHelper.defaultGeminiCodeCommand : normalizedGeminiCommand
+        geminiCodeArgs = normalizedGeminiArgs.isEmpty ? KeychainHelper.defaultGeminiCodeArgs : normalizedGeminiArgs
+        geminiCodeTimeout = "\(clampedGeminiTimeout)"
     }
     
     private func saveVercelSection() {

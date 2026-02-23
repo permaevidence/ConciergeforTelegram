@@ -1173,12 +1173,12 @@ enum AvailableTools {
         )
     )
 
-    // MARK: - Claude Code Project Workspace Tools
+    // MARK: - Project Workspace Tools
 
     static let createProject = ToolDefinition(
         function: FunctionDefinition(
             name: "create_project",
-            description: "Create a new local project workspace folder that Claude Code can work in. Use this when starting a new coding task or when the user asks to create a new project.",
+            description: "Create a new local project workspace folder that the configured Code CLI can work in. Use this when starting a new coding task or when the user asks to create a new project.",
             parameters: FunctionParameters(
                 properties: [
                     "project_name": ParameterProperty(
@@ -1218,7 +1218,7 @@ enum AvailableTools {
     static let browseProject = ToolDefinition(
         function: FunctionDefinition(
             name: "browse_project",
-            description: "Browse files and folders inside a specific project workspace. Use this to inspect project structure before running Claude Code or sending results.",
+            description: "Browse files and folders inside a specific project workspace. Use this to inspect project structure before running project automation/coding or sending results.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1270,7 +1270,7 @@ enum AvailableTools {
     static let addProjectFiles = ToolDefinition(
         function: FunctionDefinition(
             name: "add_project_files",
-            description: "Copy files from local app storage into a Claude project workspace. If any selected file is a .zip archive, it is automatically extracted into the destination folder inside the project. Use this when the user sends files/images and wants Claude Code to use them in the project.",
+            description: "Copy files from local app storage into a project workspace. If any selected file is a .zip archive, it is automatically extracted into the destination folder inside the project. Use this when the user sends files/images and wants the configured Code CLI to use them in the project.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1302,7 +1302,7 @@ enum AvailableTools {
     static let viewProjectHistory = ToolDefinition(
         function: FunctionDefinition(
             name: "view_project_history",
-            description: "View the recent history of your native Claude Code tool runs for a specific project. This tool provides a limited overview of recent raw logs, but standard history context is maintained perfectly across turns via native session persistence automatically.",
+            description: "View the recent history of your project tool runs for a specific project. This tool provides a limited overview of recent raw logs, but standard history context is maintained across turns via native session persistence automatically.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1322,7 +1322,7 @@ enum AvailableTools {
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Run Claude Code CLI in a selected project workspace with a prompt. Use this to develop regular software, or to create/run your own internal 'Agent Automations' (like file sorters, parsers, or custom scripts). Native Claude Code session persistence is used automatically, so Claude perfectly remembers prior context in the same project. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
+            description: "Run the configured Code CLI (Claude Code or Gemini CLI) in a selected project workspace with a prompt. Use this to develop regular software, or to create/run your own internal 'Agent Automations' (like file sorters, parsers, or custom scripts). Native session persistence is used automatically, so context is remembered in the same project. Always check created_files/modified_files/file_changes_detected before claiming code was written. This tool also refreshes project_description metadata for future project selection.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1331,7 +1331,7 @@ enum AvailableTools {
                     ),
                     "prompt": ParameterProperty(
                         type: "string",
-                        description: "Task instructions for Claude Code."
+                        description: "Task instructions for the configured Code CLI."
                     ),
                     "timeout_seconds": ParameterProperty(
                         type: "integer",

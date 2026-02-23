@@ -355,6 +355,10 @@ actor OpenRouterService {
             (KeychainHelper.load(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey) ?? "false")
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased() == "true"
+        let codeCLIProvider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        let codeCLIProviderName = codeCLIProvider == "gemini" ? "Gemini CLI" : "Claude Code"
         
         // Build persona intro
         var personaIntro: String
@@ -431,8 +435,8 @@ actor OpenRouterService {
             if claudeCodeDocumentModeEnabled {
                 prompt += """
                 
-                **Claude Code routing for deliverables**:
-                - For requests that involve generating deliverables such as documents, spreadsheets, presentations, websites, or coding projects, prefer Claude project tools.
+                **\(codeCLIProviderName) routing for deliverables**:
+                - For requests that involve generating deliverables such as documents, spreadsheets, presentations, websites, or coding projects, prefer project tools.
                 - Use this flow when needed: list_projects/create_project -> browse_project/read_project_file/add_project_files -> run_claude_code -> send_project_result.
                 - **Internal Automations**: You can create software/scripts for *your own use* to automate tasks for the user. When making an automation, name it clearly (e.g. "Automation: File Sorter") and state in the `initial_notes` of `create_project` that it's an internal agent automation. This helps the system catalog it properly so you can find it later in `list_projects`.
                 - If the user sends a project ZIP archive, import it with add_project_files (ZIPs are auto-extracted into the project workspace) before running run_claude_code.
@@ -454,7 +458,7 @@ actor OpenRouterService {
                 }
                 
                 prompt += """
-                - For project cleanup requests, instruct the user to open the Claude projects folder in Finder from the main app view and delete folders manually; do not claim deletion was completed by tools.
+                - For project cleanup requests, instruct the user to open the projects folder in Finder from the main app view and delete folders manually; do not claim deletion was completed by tools.
                 - Do not claim files/code were created unless run_claude_code reports file_changes_detected or returns created_files/modified_files.
                 """
             }

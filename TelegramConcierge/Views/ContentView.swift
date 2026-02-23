@@ -322,7 +322,7 @@ struct ContentView: View {
         guard !didOpen else { return }
         presentAlert(
             title: "Unable to Open Folder",
-            message: "Could not open the Claude projects folder in Finder."
+            message: "Could not open the projects folder in Finder."
         )
     }
 
