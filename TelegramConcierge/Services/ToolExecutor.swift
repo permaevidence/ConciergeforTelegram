@@ -2591,6 +2591,25 @@ extension ToolExecutor {
     
     // MARK: - Contact Tool Execution
     
+    private func parseListContactsCursor(_ cursor: String) -> Int? {
+        let trimmed = cursor.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        
+        if let offset = Int(trimmed), offset >= 0 {
+            return offset
+        }
+        
+        let lowered = trimmed.lowercased()
+        if lowered.hasPrefix("offset:") {
+            let value = trimmed.dropFirst("offset:".count).trimmingCharacters(in: .whitespacesAndNewlines)
+            if let offset = Int(value), offset >= 0 {
+                return offset
+            }
+        }
+        
+        return nil
+    }
+    
     func executeManageContacts(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(ManageContactsArguments.self, from: argsData) else {
@@ -2660,8 +2679,32 @@ extension ToolExecutor {
             return #"{"success":true,"message":"Contact added"}"#
 
         case "list":
+            let defaultLimit = 40
+            let maxLimit = 40
+            var limit = defaultLimit
+            var pageOffset = 0
+            var cursorUsed: String?
+            
+            if let requestedLimit = args.limit {
+                limit = min(max(requestedLimit, 1), maxLimit)
+            }
+            
+            if let rawCursor = args.cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCursor.isEmpty {
+                guard let parsedOffset = parseListContactsCursor(rawCursor) else {
+                    return #"{"error":"Invalid cursor '\#(rawCursor)'. Use next_cursor from the previous manage_contacts list response."}"#
+                }
+                pageOffset = parsedOffset
+                cursorUsed = rawCursor
+            }
+
             let contacts = await ContactsService.shared.getAllContacts()
-            let contactResponses = contacts.prefix(50).map { contact in
+            let totalContacts = contacts.count
+            let start = min(max(pageOffset, 0), totalContacts)
+            let end = min(start + limit, totalContacts)
+            let pageContacts = start < end ? Array(contacts[start..<end]) : []
+            let nextCursor = end < totalContacts ? String(end) : nil
+            
+            let contactResponses = pageContacts.map { contact in
                 ContactResponse(
                     id: contact.id.uuidString,
                     firstName: contact.firstName,
@@ -2673,11 +2716,26 @@ extension ToolExecutor {
                 )
             }
 
+            let message: String
+            if totalContacts == 0 {
+                message = "No contacts found. Import contacts via Settings or use manage_contacts with action='add' to create one."
+            } else if pageContacts.isEmpty {
+                message = "No contacts found for cursor \(pageOffset). Use a smaller cursor to see available pages."
+            } else if let nextCursor {
+                message = "Showing \(contactResponses.count) of \(totalContacts) contact(s). Use cursor '\(nextCursor)' for the next page."
+            } else {
+                message = "Showing \(contactResponses.count) of \(totalContacts) contact(s). End of list."
+            }
+
             let result = ListContactsResult(
                 success: true,
-                totalCount: contacts.count,
+                totalCount: totalContacts,
+                returnedCount: contactResponses.count,
+                limit: limit,
+                nextCursor: nextCursor,
+                cursorUsed: cursorUsed,
                 contacts: Array(contactResponses),
-                message: contacts.isEmpty ? "No contacts found. Import contacts via Settings or use manage_contacts with action='add' to create one." : "Showing \(contactResponses.count) of \(contacts.count) contact(s)"
+                message: message
             )
 
             let encoder = JSONEncoder()
@@ -2685,12 +2743,20 @@ extension ToolExecutor {
             if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
                 return json
             }
-            return "{\"success\": true, \"totalCount\": \(contacts.count)}"
+            return "{\"success\": true, \"totalCount\": \(totalContacts)}"
 
         case "delete":
-            let ids = args.contactIds ?? []
+            var ids = args.contactIds?
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty } ?? []
+            if ids.isEmpty,
+               let singleId = args.contactId?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !singleId.isEmpty {
+                ids = [singleId]
+            }
+            ids = Array(NSOrderedSet(array: ids)) as? [String] ?? ids
             guard !ids.isEmpty else {
-                return #"{"error":"For action 'delete', contact_ids array is required and must not be empty"}"#
+                return #"{"error":"For action 'delete', provide contact_id or contact_ids (array/JSON array string/CSV)"}"#
             }
             
             var deletedCount = 0
@@ -2739,6 +2805,9 @@ struct ManageContactsArguments: Codable {
     let email: String?
     let phone: String?
     let organization: String?
+    let limit: Int?
+    let cursor: String?
+    let contactId: String?
     let contactIds: [String]?
     
     enum CodingKeys: String, CodingKey {
@@ -2747,7 +2816,58 @@ struct ManageContactsArguments: Codable {
         case firstName = "first_name"
         case lastName = "last_name"
         case email, phone, organization
+        case limit
+        case cursor
+        case contactId = "contact_id"
         case contactIds = "contact_ids"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(String.self, forKey: .action)
+        query = try container.decodeIfPresent(String.self, forKey: .query)
+        firstName = try container.decodeIfPresent(String.self, forKey: .firstName)
+        lastName = try container.decodeIfPresent(String.self, forKey: .lastName)
+        email = try container.decodeIfPresent(String.self, forKey: .email)
+        phone = try container.decodeIfPresent(String.self, forKey: .phone)
+        organization = try container.decodeIfPresent(String.self, forKey: .organization)
+
+        if let intLimit = try? container.decodeIfPresent(Int.self, forKey: .limit) {
+            limit = intLimit
+        } else if let stringLimit = try? container.decodeIfPresent(String.self, forKey: .limit),
+                  let parsed = Int(stringLimit.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            limit = parsed
+        } else {
+            limit = nil
+        }
+
+        if let stringCursor = try? container.decodeIfPresent(String.self, forKey: .cursor) {
+            cursor = stringCursor
+        } else if let intCursor = try? container.decodeIfPresent(Int.self, forKey: .cursor) {
+            cursor = String(intCursor)
+        } else {
+            cursor = nil
+        }
+
+        contactId = try container.decodeIfPresent(String.self, forKey: .contactId)
+
+        if let array = try? container.decodeIfPresent([String].self, forKey: .contactIds) {
+            contactIds = array
+        } else if let raw = (try? container.decodeIfPresent(String.self, forKey: .contactIds))?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !raw.isEmpty {
+            if let data = raw.data(using: .utf8),
+               let parsed = try? JSONDecoder().decode([String].self, from: data) {
+                contactIds = parsed
+            } else {
+                let csv = raw
+                    .split(separator: ",")
+                    .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                    .filter { !$0.isEmpty }
+                contactIds = csv.isEmpty ? nil : csv
+            }
+        } else {
+            contactIds = nil
+        }
     }
 }
 
@@ -2780,8 +2900,23 @@ struct AddContactResult: Codable {
 struct ListContactsResult: Codable {
     let success: Bool
     let totalCount: Int
+    let returnedCount: Int
+    let limit: Int
+    let nextCursor: String?
+    let cursorUsed: String?
     let contacts: [ContactResponse]
     let message: String
+    
+    enum CodingKeys: String, CodingKey {
+        case success
+        case totalCount = "total_count"
+        case returnedCount = "returned_count"
+        case limit
+        case nextCursor = "next_cursor"
+        case cursorUsed = "cursor_used"
+        case contacts
+        case message
+    }
 }
 
 struct DeleteContactsResult: Codable {

@@ -614,12 +614,12 @@ enum AvailableTools {
     static let manageContacts = ToolDefinition(
         function: FunctionDefinition(
             name: "manage_contacts",
-            description: "Single contacts tool. Use action='find' to search contacts, action='add' to create a contact, and action='list' to view contacts.",
+            description: "Single contacts tool. Prefer action='find' to search by name/email (more token-efficient). Use action='add' to create a contact, action='list' to browse contacts with pagination, and action='delete' to remove one or many contacts.",
             parameters: FunctionParameters(
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Contact action: 'find', 'add', or 'list'."
+                        description: "Contact action: 'find', 'add', 'list', or 'delete'."
                     ),
                     "query": ParameterProperty(
                         type: "string",
@@ -644,6 +644,22 @@ enum AvailableTools {
                     "organization": ParameterProperty(
                         type: "string",
                         description: "Optional for action='add'. Contact organization."
+                    ),
+                    "limit": ParameterProperty(
+                        type: "integer",
+                        description: "Optional for action='list'. Page size (default 40, max 40)."
+                    ),
+                    "cursor": ParameterProperty(
+                        type: "string",
+                        description: "Optional for action='list'. Pagination cursor from previous response (next_cursor). Omit on first call."
+                    ),
+                    "contact_id": ParameterProperty(
+                        type: "string",
+                        description: "For action='delete'. Single contact UUID."
+                    ),
+                    "contact_ids": ParameterProperty(
+                        type: "string",
+                        description: "For action='delete'. Multiple contact IDs as JSON array string or CSV (e.g. [\"id1\",\"id2\"] or \"id1,id2\")."
                     )
                 ],
                 required: ["action"]

@@ -63,7 +63,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 
 ### 📇 Contacts
 - Import contacts from `.vcf` (vCard) files
-- Search, add, and list contacts
+- Search, add, list, and delete contacts
 - Used by the AI when composing emails to find addresses
 
 ### ⏰ Reminders & Self-Orchestration
