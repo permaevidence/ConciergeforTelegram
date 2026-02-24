@@ -262,13 +262,16 @@ struct SettingsView: View {
             }
             
             Section {
+                Text("API Key")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 SecureField("Gemini API Key", text: $geminiApiKey)
                     .textFieldStyle(.roundedBorder)
                 
                 Link("Get your API key from Google AI Studio", destination: URL(string: "https://aistudio.google.com/apikey")!)
                     .font(.caption)
                 
-                Text("Enables AI image generation. Uses gemini-3-pro-image-preview model.")
+                Text("This key is strictly used for image generation tools. Headless Gemini CLI will use the credentials established in your terminal (Ultra subscription).")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -276,7 +279,7 @@ struct SettingsView: View {
                     saveImageGenSection()
                 }
             } header: {
-                Label("Image Generation", systemImage: "photo.badge.plus")
+                Label("Image Generation (Gemini)", systemImage: "photo.badge.plus")
             }
             
             Section {

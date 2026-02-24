@@ -8045,15 +8045,7 @@ extension ToolExecutor {
     }
     
     private func codeCLIBaseEnvironment(for provider: CodeCLIProvider) -> [String: String] {
-        var environment = claudeBaseEnvironment()
-        if provider == .gemini {
-            let storedGeminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey)?
-                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-            if !storedGeminiApiKey.isEmpty {
-                environment["GEMINI_API_KEY"] = storedGeminiApiKey
-            }
-        }
-        return environment
+        return claudeBaseEnvironment()
     }
     
     private var claudeConfigDirectory: URL {
