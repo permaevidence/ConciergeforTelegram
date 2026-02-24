@@ -74,6 +74,7 @@ extension KeychainHelper {
     static let defaultClaudeCodeTimeout = "1000"
     static let defaultGeminiCodeCommand = "gemini"
     static let defaultGeminiCodeArgs = "--yolo --output-format json"
+    static let defaultGeminiCodeModel = ""
     static let defaultGeminiCodeTimeout = "1000"
     static let defaultVercelCommand = "vercel"
     static let defaultVercelTimeout = "1200"
@@ -108,6 +109,7 @@ extension KeychainHelper {
     static let claudeCodeTimeoutKey = "claude_code_timeout"
     static let geminiCodeCommandKey = "gemini_code_command"
     static let geminiCodeArgsKey = "gemini_code_args"
+    static let geminiCodeModelKey = "gemini_code_model"
     static let geminiCodeTimeoutKey = "gemini_code_timeout"
     static let claudeCodeDisableLegacyDocumentGenerationToolsKey = "claude_code_disable_legacy_document_generation_tools"
     

@@ -53,6 +53,7 @@ struct SettingsView: View {
     @State private var claudeCodeTimeout: String = KeychainHelper.defaultClaudeCodeTimeout
     @State private var geminiCodeCommand: String = KeychainHelper.defaultGeminiCodeCommand
     @State private var geminiCodeArgs: String = KeychainHelper.defaultGeminiCodeArgs
+    @State private var geminiCodeModel: String = KeychainHelper.defaultGeminiCodeModel
     @State private var geminiCodeTimeout: String = KeychainHelper.defaultGeminiCodeTimeout
     @State private var claudeCodeDisableLegacyDocumentGenerationTools: Bool = false
     
@@ -291,18 +292,27 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                if codeCLIProvider == "gemini" {
-                    TextField("CLI Command", text: $geminiCodeCommand)
-                        .textFieldStyle(.roundedBorder)
-                    
-                    Text("Default: \(KeychainHelper.defaultGeminiCodeCommand)")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                Group {
+                    if codeCLIProvider == "gemini" {
+                        TextField("CLI Command", text: $geminiCodeCommand)
+                            .textFieldStyle(.roundedBorder)
+                        
+                        Text("Default: \(KeychainHelper.defaultGeminiCodeCommand)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     
                     TextField("Default CLI Args", text: $geminiCodeArgs)
                         .textFieldStyle(.roundedBorder)
                     
                     Text("Default: \(KeychainHelper.defaultGeminiCodeArgs). You can override per tool call.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    
+                        TextField("CLI Model (optional)", text: $geminiCodeModel)
+                            .textFieldStyle(.roundedBorder)
+                            .disableAutocorrection(true)
+                        
+                        Text("Optional model to use for Gemini CLI. e.g., gemini-3.1-pro-preview")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
@@ -327,9 +337,10 @@ struct SettingsView: View {
                         .textFieldStyle(.roundedBorder)
                 }
                 
-                Text("Used by run_claude_code when timeout_seconds is omitted. Range: 30-3600.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    Text("Used by run_claude_code when timeout_seconds is omitted. Range: 30-3600.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 
                 Toggle("Use selected Code CLI for document generation", isOn: $claudeCodeDisableLegacyDocumentGenerationTools)
                 
@@ -1379,6 +1390,7 @@ struct SettingsView: View {
         claudeCodeTimeout = KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? KeychainHelper.defaultClaudeCodeTimeout
         geminiCodeCommand = KeychainHelper.load(key: KeychainHelper.geminiCodeCommandKey) ?? KeychainHelper.defaultGeminiCodeCommand
         geminiCodeArgs = KeychainHelper.load(key: KeychainHelper.geminiCodeArgsKey) ?? KeychainHelper.defaultGeminiCodeArgs
+        geminiCodeModel = KeychainHelper.load(key: KeychainHelper.geminiCodeModelKey) ?? KeychainHelper.defaultGeminiCodeModel
         geminiCodeTimeout = KeychainHelper.load(key: KeychainHelper.geminiCodeTimeoutKey) ?? KeychainHelper.defaultGeminiCodeTimeout
         claudeCodeDisableLegacyDocumentGenerationTools =
             (KeychainHelper.load(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey) ?? "false")
@@ -1766,6 +1778,7 @@ struct SettingsView: View {
         
         let normalizedGeminiCommand = geminiCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedGeminiArgs = geminiCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedGeminiModel = geminiCodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let geminiTimeout = Int(geminiCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
         let clampedGeminiTimeout = min(max(geminiTimeout, 30), 3600)
         
@@ -1789,6 +1802,10 @@ struct SettingsView: View {
                 key: KeychainHelper.geminiCodeArgsKey,
                 value: normalizedGeminiArgs.isEmpty ? KeychainHelper.defaultGeminiCodeArgs : normalizedGeminiArgs
             )
+            try KeychainHelper.save(
+                key: KeychainHelper.geminiCodeModelKey,
+                value: normalizedGeminiModel.isEmpty ? KeychainHelper.defaultGeminiCodeModel : normalizedGeminiModel
+            )
             try KeychainHelper.save(key: KeychainHelper.geminiCodeTimeoutKey, value: "\(clampedGeminiTimeout)")
             
             try KeychainHelper.save(
@@ -1806,6 +1823,7 @@ struct SettingsView: View {
         
         geminiCodeCommand = normalizedGeminiCommand.isEmpty ? KeychainHelper.defaultGeminiCodeCommand : normalizedGeminiCommand
         geminiCodeArgs = normalizedGeminiArgs.isEmpty ? KeychainHelper.defaultGeminiCodeArgs : normalizedGeminiArgs
+        geminiCodeModel = normalizedGeminiModel.isEmpty ? KeychainHelper.defaultGeminiCodeModel : normalizedGeminiModel
         geminiCodeTimeout = "\(clampedGeminiTimeout)"
     }
     

@@ -2687,8 +2687,44 @@ extension ToolExecutor {
             }
             return "{\"success\": true, \"totalCount\": \(contacts.count)}"
 
+        case "delete":
+            let ids = args.contactIds ?? []
+            guard !ids.isEmpty else {
+                return #"{"error":"For action 'delete', contact_ids array is required and must not be empty"}"#
+            }
+            
+            var deletedCount = 0
+            var failedIds: [String] = []
+            
+            for idString in ids {
+                if let uuid = UUID(uuidString: idString) {
+                    let success = await ContactsService.shared.deleteContact(id: uuid)
+                    if success {
+                        deletedCount += 1
+                    } else {
+                        failedIds.append(idString)
+                    }
+                } else {
+                    failedIds.append(idString)
+                }
+            }
+            
+            let result = DeleteContactsResult(
+                success: deletedCount > 0,
+                deletedCount: deletedCount,
+                failedIds: failedIds.isEmpty ? nil : failedIds,
+                message: deletedCount > 0 ? "Successfully deleted \(deletedCount) contact(s)." : "Failed to delete contacts."
+            )
+            
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = .prettyPrinted
+            if let data = try? encoder.encode(result), let json = String(data: data, encoding: .utf8) {
+                return json
+            }
+            return #"{"success":true,"message":"Contacts deleted"}"#
+
         default:
-            return #"{"error":"Invalid action. Supported actions: find, add, list"}"#
+            return #"{"error":"Invalid action. Supported actions: find, add, list, delete"}"#
         }
     }
 }
@@ -2703,6 +2739,7 @@ struct ManageContactsArguments: Codable {
     let email: String?
     let phone: String?
     let organization: String?
+    let contactIds: [String]?
     
     enum CodingKeys: String, CodingKey {
         case action
@@ -2710,6 +2747,7 @@ struct ManageContactsArguments: Codable {
         case firstName = "first_name"
         case lastName = "last_name"
         case email, phone, organization
+        case contactIds = "contact_ids"
     }
 }
 
@@ -2743,6 +2781,13 @@ struct ListContactsResult: Codable {
     let success: Bool
     let totalCount: Int
     let contacts: [ContactResponse]
+    let message: String
+}
+
+struct DeleteContactsResult: Codable {
+    let success: Bool
+    let deletedCount: Int
+    let failedIds: [String]?
     let message: String
 }
 
@@ -5112,6 +5157,11 @@ extension ToolExecutor {
             ensureGeminiHeadlessArguments(&parsedArgs)
             if let existingSession = codeCLISessionID(for: .gemini, metadata: metadata) {
                 parsedArgs.insert(contentsOf: ["-r", existingSession], at: 0)
+            }
+            
+            let configuredModel = loadCodeCLIModel(for: .gemini)
+            if !configuredModel.isEmpty {
+                parsedArgs.insert(contentsOf: ["--model", configuredModel], at: 0)
             }
         }
         
@@ -7692,6 +7742,28 @@ extension ToolExecutor {
             return KeychainHelper.defaultClaudeCodeArgs
         case .gemini:
             return KeychainHelper.defaultGeminiCodeArgs
+        }
+    }
+    
+    private func loadCodeCLIModel(for provider: CodeCLIProvider) -> String {
+        let value: String?
+        switch provider {
+        case .claude:
+            value = nil
+        case .gemini:
+            value = KeychainHelper.load(key: KeychainHelper.geminiCodeModelKey)
+        }
+        
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        if !trimmed.isEmpty {
+            return trimmed
+        }
+        
+        switch provider {
+        case .claude:
+            return ""
+        case .gemini:
+            return KeychainHelper.defaultGeminiCodeModel
         }
     }
     
