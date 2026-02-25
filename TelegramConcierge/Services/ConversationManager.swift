@@ -705,6 +705,9 @@ class ConversationManager: ObservableObject {
         case "/stop":
             await stopActiveExecution()
             return true
+        case "/spend":
+            await sendSpendSnapshot()
+            return true
         case "/claude":
             await switchCodeCLIProvider(to: "claude")
             return true
@@ -762,6 +765,23 @@ class ConversationManager: ObservableObject {
             try? await telegramService.sendMessage(chatId: chatId, text: message)
         }
         
+        if activeRunId == nil {
+            statusMessage = "Listening... (Last check: \(formattedTime()))"
+        }
+    }
+
+    private func sendSpendSnapshot() async {
+        let snapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
+        let message = """
+        💸 OpenRouter spend
+        Today: $\(formatUSD(snapshot.today))
+        This month: $\(formatUSD(snapshot.month))
+        """
+
+        if let chatId = pairedChatId {
+            try? await telegramService.sendMessage(chatId: chatId, text: message)
+        }
+
         if activeRunId == nil {
             statusMessage = "Listening... (Last check: \(formattedTime()))"
         }

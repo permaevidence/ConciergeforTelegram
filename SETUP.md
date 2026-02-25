@@ -148,6 +148,7 @@ You can switch provider remotely by sending one of these commands in Telegram:
 - `/claude` → use Claude Code
 - `/gemini` → use Gemini CLI
 - `/codex` → use Codex CLI
+- `/spend` → show OpenRouter spend totals (today and this month)
 
 The change is saved immediately and applies to the next delegated Code CLI run.
 
