@@ -1,6 +1,6 @@
 # Telegram Concierge
 
-A native macOS AI assistant that lives inside a Telegram bot you control. It reads and sends emails, searches the web, generates images, manages your calendar, transcribes voice messages, runs macOS Shortcuts, delegates coding tasks to Claude Code, and remembers everything — powered by any LLM available through OpenRouter.
+A native macOS AI assistant that lives inside a Telegram bot you control. It reads and sends emails, searches the web, generates images, manages your calendar, transcribes voice messages, runs macOS Shortcuts, delegates coding tasks to Claude Code/Gemini CLI/Codex CLI, and remembers everything — powered by any LLM available through OpenRouter.
 
 <p align="center">
   <img src="https://img.shields.io/badge/platform-macOS%2014+-blue" alt="macOS 14+">
@@ -51,10 +51,10 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 - CoreML-optimized for Apple Silicon
 - Send voice messages in Telegram and the AI receives the transcript
 
-### 💻 Claude Code Integration
-- Delegate coding tasks to [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) CLI
+### 💻 Code CLI Integration
+- Delegate coding tasks to [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), Gemini CLI, or [Codex CLI](https://developers.openai.com/codex/cli)
 - Project workspace management — create, browse, read, and add files to projects
-- Run Claude Code with prompts and receive structured results
+- Run the selected CLI provider with prompts and receive structured results
 - Send generated files back via Telegram or email
 
 ### ⚡ macOS Shortcuts
@@ -112,7 +112,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 │ WebOrchestrator      │ GeminiImageService        │
 │ DocumentService      │ DocumentGeneratorService  │
 │ ContactsService      │ WhisperKitService         │
-│ MindExportService    │ Claude Code (subprocess)  │
+│ MindExportService    │ Code CLI (subprocess)     │
 │ macOS Shortcuts      │ User Context Management   │
 └──────────────────────────────────────────────────┘
 ```
@@ -182,22 +182,22 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 </details>
 
 <details>
-<summary><strong>💻 Claude Code (6 tools)</strong></summary>
+<summary><strong>💻 Code CLI Projects (7 tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `create_project` | Create a new Claude Code project workspace |
+| `create_project` | Create a new Code CLI project workspace |
 | `list_projects` | List project workspaces by recent modification with pagination (`limit`, `cursor`) |
 | `browse_project` | View project file tree |
 | `read_project_file` | Read a file from a project |
 | `add_project_files` | Copy local files into a project |
-| `run_claude_code` | Execute Claude Code with a prompt in a project |
+| `run_claude_code` | Execute the selected Code CLI provider with a prompt in a project |
 | `send_project_result` | Send project files via Telegram or email |
 
 </details>
 
 > [!TIP]
-> To inspect Claude Code workspaces on disk, use the folder button in the main chat header (`ContentView`). It opens the projects folder directly in Finder, where you can also delete project folders manually.
+> To inspect Code CLI workspaces on disk, use the folder button in the main chat header (`ContentView`). It opens the projects folder directly in Finder, where you can also delete project folders manually.
 
 <details>
 <summary><strong>🧠 Memory & Context (4 tools)</strong></summary>
@@ -294,7 +294,7 @@ TelegramConcierge/
 4. Open **Settings** (⌘,) and follow the [**Setup Guide**](SETUP.md) to configure your API keys.
 
 > [!TIP]
-> The full setup guide walks you through each section step by step — from creating your Telegram bot to configuring email, voice transcription, and Claude Code.
+> The full setup guide walks you through each section step by step — from creating your Telegram bot to configuring email, voice transcription, and Code CLI providers.
 
 ---
 
@@ -332,7 +332,7 @@ All configuration is done in the app's Settings panel (⌘,). See [SETUP.md](SET
 | **OpenRouter** | ✅ | LLM API key, model selection, reasoning effort |
 | **Web Search** | Optional | Serper + Jina keys for web browsing |
 | **Image Generation** | Optional | Gemini API key for image generation |
-| **Claude Code** | Optional | CLI command + args for Claude Code integration |
+| **Code CLI** | Optional | Choose Claude Code, Gemini CLI, or Codex CLI and configure command + args |
 | **Email** | Optional | Gmail API (recommended) or IMAP/SMTP |
 | **Voice Transcription** | Optional | Download + compile WhisperKit model |
 
@@ -351,3 +351,4 @@ This project is open source and available under the [MIT License](LICENSE).
 - [Serper](https://serper.dev) — Google Search API
 - [Jina AI](https://jina.ai) — web content extraction
 - [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview) — agentic coding CLI by Anthropic
+- [Codex CLI](https://developers.openai.com/codex/cli) — agentic coding CLI by OpenAI

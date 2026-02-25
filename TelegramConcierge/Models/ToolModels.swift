@@ -1342,7 +1342,7 @@ enum AvailableTools {
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Delegate a task to the configured Code CLI Sub-Agent (Claude Code or Gemini CLI) in a specific workspace. Use this for complex file manipulations, iterative local tasks, data processing, or script execution. The Code CLI acts autonomously within the project. CRITICAL: The Code CLI's memory is strictly project-bound; it only remembers past interactions within this specific project ID. Always check created_files/modified_files/file_changes_detected before claiming work is done.",
+            description: "Delegate a task to the configured Code CLI Sub-Agent (Claude Code, Gemini CLI, or Codex CLI) in a specific workspace. Use this for complex file manipulations, iterative local tasks, data processing, or script execution. The Code CLI acts autonomously within the project. CRITICAL: The Code CLI's memory is strictly project-bound; it only remembers past interactions within this specific project ID. Always check created_files/modified_files/file_changes_detected before claiming work is done.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(

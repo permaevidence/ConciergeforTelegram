@@ -197,3 +197,100 @@ final class WhisperKitService: ObservableObject {
         statusMessage = "Model not downloaded"
     }
 }
+
+actor OpenAITranscriptionService {
+    static let shared = OpenAITranscriptionService()
+
+    private struct TranscriptionResponse: Decodable {
+        let text: String
+    }
+
+    private struct APIErrorEnvelope: Decodable {
+        struct APIError: Decodable {
+            let message: String
+        }
+        let error: APIError
+    }
+
+    func transcribeAudioFile(url: URL, apiKey: String) async -> String? {
+        let trimmedApiKey = apiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmedApiKey.isEmpty else {
+            print("[OpenAITranscriptionService] Missing API key")
+            return nil
+        }
+
+        guard let endpoint = URL(string: "https://api.openai.com/v1/audio/transcriptions") else {
+            print("[OpenAITranscriptionService] Invalid endpoint URL")
+            return nil
+        }
+
+        do {
+            let fileData = try Data(contentsOf: url)
+            let boundary = "Boundary-\(UUID().uuidString)"
+
+            var request = URLRequest(url: endpoint)
+            request.httpMethod = "POST"
+            request.timeoutInterval = 120
+            request.setValue("Bearer \(trimmedApiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+
+            var body = Data()
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
+            body.append("gpt-4o-transcribe\r\n".data(using: .utf8)!)
+
+            let filename = url.lastPathComponent.isEmpty ? "voice.ogg" : url.lastPathComponent
+            body.append("--\(boundary)\r\n".data(using: .utf8)!)
+            body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+            body.append("Content-Type: \(mimeType(for: url))\r\n\r\n".data(using: .utf8)!)
+            body.append(fileData)
+            body.append("\r\n".data(using: .utf8)!)
+            body.append("--\(boundary)--\r\n".data(using: .utf8)!)
+
+            request.httpBody = body
+
+            let (data, response) = try await URLSession.shared.data(for: request)
+            guard let httpResponse = response as? HTTPURLResponse else {
+                print("[OpenAITranscriptionService] Invalid HTTP response")
+                return nil
+            }
+
+            guard httpResponse.statusCode == 200 else {
+                if let apiError = try? JSONDecoder().decode(APIErrorEnvelope.self, from: data) {
+                    print("[OpenAITranscriptionService] API error (HTTP \(httpResponse.statusCode)): \(apiError.error.message)")
+                } else if let bodyText = String(data: data, encoding: .utf8), !bodyText.isEmpty {
+                    print("[OpenAITranscriptionService] API error (HTTP \(httpResponse.statusCode)): \(bodyText.prefix(200))")
+                } else {
+                    print("[OpenAITranscriptionService] API error (HTTP \(httpResponse.statusCode))")
+                }
+                return nil
+            }
+
+            let decoded = try JSONDecoder().decode(TranscriptionResponse.self, from: data)
+            let text = decoded.text.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        } catch {
+            print("[OpenAITranscriptionService] Transcription error: \(error.localizedDescription)")
+            return nil
+        }
+    }
+
+    private func mimeType(for url: URL) -> String {
+        switch url.pathExtension.lowercased() {
+        case "ogg", "oga":
+            return "audio/ogg"
+        case "mp3":
+            return "audio/mpeg"
+        case "m4a":
+            return "audio/mp4"
+        case "wav":
+            return "audio/wav"
+        case "aac":
+            return "audio/aac"
+        case "flac":
+            return "audio/flac"
+        default:
+            return "application/octet-stream"
+        }
+    }
+}

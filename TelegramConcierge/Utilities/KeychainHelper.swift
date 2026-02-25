@@ -1,6 +1,32 @@
 import Foundation
 import Security
 
+enum VoiceTranscriptionProvider: String, CaseIterable, Identifiable {
+    case local
+    case openAI = "openai"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .local:
+            return "Local (Whisper)"
+        case .openAI:
+            return "OpenAI (gpt-4o-transcribe)"
+        }
+    }
+
+    static var defaultProvider: VoiceTranscriptionProvider { .local }
+
+    static func fromStoredValue(_ value: String?) -> VoiceTranscriptionProvider {
+        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let provider = VoiceTranscriptionProvider(rawValue: normalized) else {
+            return .defaultProvider
+        }
+        return provider
+    }
+}
+
 enum KeychainHelper {
     
     enum KeychainError: Error {
@@ -76,6 +102,10 @@ extension KeychainHelper {
     static let defaultGeminiCodeArgs = "--yolo --output-format json"
     static let defaultGeminiCodeModel = ""
     static let defaultGeminiCodeTimeout = "1000"
+    static let defaultCodexCodeCommand = "codex"
+    static let defaultCodexCodeArgs = "exec --sandbox workspace-write --skip-git-repo-check"
+    static let defaultCodexCodeModel = ""
+    static let defaultCodexCodeTimeout = "1000"
     static let defaultVercelCommand = "vercel"
     static let defaultVercelTimeout = "1200"
     static let defaultInstantCLICommand = "npx instant-cli@latest"
@@ -102,7 +132,7 @@ extension KeychainHelper {
     // Google Gemini API Key
     static let geminiApiKeyKey = "gemini_api_key"
     
-    // Claude Code CLI Settings
+    // Code CLI Settings (Claude Code, Gemini CLI, Codex CLI)
     static let codeCLIProviderKey = "code_cli_provider"
     static let claudeCodeCommandKey = "claude_code_command"
     static let claudeCodeArgsKey = "claude_code_args"
@@ -111,6 +141,10 @@ extension KeychainHelper {
     static let geminiCodeArgsKey = "gemini_code_args"
     static let geminiCodeModelKey = "gemini_code_model"
     static let geminiCodeTimeoutKey = "gemini_code_timeout"
+    static let codexCodeCommandKey = "codex_code_command"
+    static let codexCodeArgsKey = "codex_code_args"
+    static let codexCodeModelKey = "codex_code_model"
+    static let codexCodeTimeoutKey = "codex_code_timeout"
     static let claudeCodeDisableLegacyDocumentGenerationToolsKey = "claude_code_disable_legacy_document_generation_tools"
     
     // Vercel Deployment Settings
@@ -137,6 +171,10 @@ extension KeychainHelper {
     static let openRouterToolSpendLimitPerTurnUSDKey = "openrouter_tool_spend_limit_per_turn_usd"
     static let openRouterToolSpendLimitDailyUSDKey = "openrouter_tool_spend_limit_daily_usd"
     static let openRouterToolSpendLimitMonthlyUSDKey = "openrouter_tool_spend_limit_monthly_usd"
+
+    // Voice Transcription Settings
+    static let voiceTranscriptionProviderKey = "voice_transcription_provider"
+    static let openAITranscriptionApiKeyKey = "openai_transcription_api_key"
     
     // Archive Settings
     static let archiveChunkSizeKey = "archive_chunk_size"

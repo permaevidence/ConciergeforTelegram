@@ -4321,6 +4321,7 @@ private struct ClaudeProjectMetadata: Codable {
 private enum CodeCLIProvider: String {
     case claude
     case gemini
+    case codex
     
     static func fromStoredValue(_ value: String?) -> CodeCLIProvider {
         guard let normalized = value?
@@ -4337,6 +4338,8 @@ private enum CodeCLIProvider: String {
             return "Claude Code"
         case .gemini:
             return "Gemini CLI"
+        case .codex:
+            return "Codex CLI"
         }
     }
 }
@@ -5292,9 +5295,19 @@ extension ToolExecutor {
         
         let provider = resolvedCodeCLIProvider()
         let configuredCommand = loadCodeCLICommand(for: provider)
-        let command = configuredCommand.isEmpty
-            ? (provider == .gemini ? KeychainHelper.defaultGeminiCodeCommand : "claude")
-            : configuredCommand
+        let command: String
+        if configuredCommand.isEmpty {
+            switch provider {
+            case .claude:
+                command = "claude"
+            case .gemini:
+                command = KeychainHelper.defaultGeminiCodeCommand
+            case .codex:
+                command = KeychainHelper.defaultCodexCodeCommand
+            }
+        } else {
+            command = configuredCommand
+        }
         
         var configuredArgs = loadCodeCLIArguments(for: provider)
         if provider == .claude, isLegacyAcceptEditsArgumentString(configuredArgs) {
@@ -5308,7 +5321,8 @@ extension ToolExecutor {
         var parsedArgs = parseCommandLineArguments(argString)
         
         var metadata = ensureProjectMetadata(projectURL: projectURL)
-        if provider == .claude {
+        switch provider {
+        case .claude:
             if !parsedArgs.contains("-p") && !parsedArgs.contains("--print") {
                 parsedArgs.insert("-p", at: 0)
             }
@@ -5321,7 +5335,8 @@ extension ToolExecutor {
                 saveProjectMetadata(metadata, projectURL: projectURL)
                 parsedArgs.insert(contentsOf: ["--session-id", newSession], at: 0)
             }
-        } else {
+            
+        case .gemini:
             ensureGeminiHeadlessArguments(&parsedArgs)
             if let existingSession = codeCLISessionID(for: .gemini, metadata: metadata) {
                 parsedArgs.insert(contentsOf: ["-r", existingSession], at: 0)
@@ -5330,6 +5345,26 @@ extension ToolExecutor {
             let configuredModel = loadCodeCLIModel(for: .gemini)
             if !configuredModel.isEmpty {
                 parsedArgs.insert(contentsOf: ["--model", configuredModel], at: 0)
+            }
+            
+        case .codex:
+            ensureCodexHeadlessArguments(&parsedArgs)
+            if let existingSession = codeCLISessionID(for: .codex, metadata: metadata) {
+                parsedArgs = removingCodexResumeArguments(from: parsedArgs)
+                parsedArgs = removingCodexExecutionOnlyArguments(from: parsedArgs)
+                if parsedArgs.first?.lowercased() == "exec" {
+                    parsedArgs.insert("resume", at: 1)
+                    parsedArgs.insert(existingSession.lowercased() == "last" ? "--last" : existingSession, at: 2)
+                }
+            }
+            
+            let configuredModel = loadCodeCLIModel(for: .codex)
+            if !configuredModel.isEmpty && !codexArgumentsContainModel(parsedArgs) {
+                if parsedArgs.first?.lowercased() == "exec" {
+                    parsedArgs.insert(contentsOf: ["--model", configuredModel], at: 1)
+                } else {
+                    parsedArgs.insert(contentsOf: ["--model", configuredModel], at: 0)
+                }
             }
         }
         
@@ -5432,7 +5467,7 @@ extension ToolExecutor {
                             }
                         }
                     }
-                } else if shouldRetryGeminiWithoutResume(
+                } else if provider == .gemini, shouldRetryGeminiWithoutResume(
                     stdout: result.stdout,
                     stderr: result.stderr,
                     arguments: activeInvocation.arguments
@@ -5467,6 +5502,43 @@ extension ToolExecutor {
                             saveProjectMetadata(metadata, projectURL: projectURL)
                         } catch {
                             launchErrors.append("\(invocation.displayCommand) (retry without --resume): \(error.localizedDescription)")
+                        }
+                    }
+                } else if provider == .codex, shouldRetryCodexWithoutResume(
+                    stdout: result.stdout,
+                    stderr: result.stderr,
+                    arguments: activeInvocation.arguments
+                ) {
+                    let retryArgs = removingCodexResumeArguments(from: activeInvocation.arguments)
+                    if retryArgs != activeInvocation.arguments {
+                        let retryInvocation = ClaudeInvocation(
+                            executableURL: activeInvocation.executableURL,
+                            arguments: retryArgs,
+                            displayCommand: displayCodeCLIInvocationCommand(
+                                executable: activeInvocation.executableURL.path,
+                                arguments: retryArgs
+                            )
+                        )
+                        
+                        do {
+                            let retryResult = try await runCodeCLIInvocation(
+                                retryInvocation,
+                                projectURL: projectURL,
+                                environment: activeEnvironment,
+                                timeoutSeconds: timeoutSeconds,
+                                maxOutputChars: maxOutputChars
+                            )
+                            result = ClaudeExecutionOutput(
+                                exitCode: retryResult.exitCode,
+                                timedOut: retryResult.timedOut,
+                                stdout: retryResult.stdout,
+                                stderr: retryResult.stderr + "\n[TelegramConcierge] Retried Codex without resume after an invalid/missing session reference."
+                            )
+                            activeInvocation = retryInvocation
+                            clearCodeCLISessionID(for: .codex, metadata: &metadata)
+                            saveProjectMetadata(metadata, projectURL: projectURL)
+                        } catch {
+                            launchErrors.append("\(invocation.displayCommand) (retry Codex without resume): \(error.localizedDescription)")
                         }
                     }
                 }
@@ -5520,6 +5592,13 @@ extension ToolExecutor {
                         normalizedStderr += "\n\(errorMessage)"
                     }
                 }
+            }
+        }
+        
+        if provider == .codex, finalExecution.exitCode == 0, !finalExecution.timedOut {
+            if codeCLISessionID(for: .codex, metadata: metadata) != "last" {
+                setCodeCLISessionID("last", for: .codex, metadata: &metadata)
+                saveProjectMetadata(metadata, projectURL: projectURL)
             }
         }
         
@@ -7844,7 +7923,7 @@ extension ToolExecutor {
         
         return """
         [\(timestamp)] exit=\(run.exitCode) timed_out=\(run.timedOut ? "yes" : "no") changes=\(fileSummary)
-        Gemini prompt:
+        Delegation prompt:
         \(promptExcerpt)
         CLI stdout:
         \(stdoutExcerpt)
@@ -7876,6 +7955,8 @@ extension ToolExecutor {
             value = KeychainHelper.load(key: KeychainHelper.claudeCodeCommandKey)
         case .gemini:
             value = KeychainHelper.load(key: KeychainHelper.geminiCodeCommandKey)
+        case .codex:
+            value = KeychainHelper.load(key: KeychainHelper.codexCodeCommandKey)
         }
         
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -7888,6 +7969,8 @@ extension ToolExecutor {
             return "claude"
         case .gemini:
             return KeychainHelper.defaultGeminiCodeCommand
+        case .codex:
+            return KeychainHelper.defaultCodexCodeCommand
         }
     }
     
@@ -7898,6 +7981,8 @@ extension ToolExecutor {
             value = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey)
         case .gemini:
             value = KeychainHelper.load(key: KeychainHelper.geminiCodeArgsKey)
+        case .codex:
+            value = KeychainHelper.load(key: KeychainHelper.codexCodeArgsKey)
         }
         
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -7910,6 +7995,8 @@ extension ToolExecutor {
             return KeychainHelper.defaultClaudeCodeArgs
         case .gemini:
             return KeychainHelper.defaultGeminiCodeArgs
+        case .codex:
+            return KeychainHelper.defaultCodexCodeArgs
         }
     }
     
@@ -7920,6 +8007,8 @@ extension ToolExecutor {
             value = nil
         case .gemini:
             value = KeychainHelper.load(key: KeychainHelper.geminiCodeModelKey)
+        case .codex:
+            value = KeychainHelper.load(key: KeychainHelper.codexCodeModelKey)
         }
         
         let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -7932,6 +8021,8 @@ extension ToolExecutor {
             return ""
         case .gemini:
             return KeychainHelper.defaultGeminiCodeModel
+        case .codex:
+            return KeychainHelper.defaultCodexCodeModel
         }
     }
     
@@ -7946,6 +8037,9 @@ extension ToolExecutor {
         case .gemini:
             rawValue = KeychainHelper.load(key: KeychainHelper.geminiCodeTimeoutKey)
             defaultValue = KeychainHelper.defaultGeminiCodeTimeout
+        case .codex:
+            rawValue = KeychainHelper.load(key: KeychainHelper.codexCodeTimeoutKey)
+            defaultValue = KeychainHelper.defaultCodexCodeTimeout
         }
         
         return Int(rawValue ?? "") ?? Int(defaultValue) ?? 300
@@ -7975,6 +8069,8 @@ extension ToolExecutor {
             return isUUID ? legacy : nil
         case .gemini:
             return isUUID ? nil : legacy
+        case .codex:
+            return nil
         }
     }
     
@@ -8055,6 +8151,129 @@ extension ToolExecutor {
         arguments = ["--output-format", "json"] + cleanedArgs + ["-p"]
     }
     
+    private func ensureCodexHeadlessArguments(_ arguments: inout [String]) {
+        var cleanedArgs: [String] = []
+        var index = 0
+        
+        while index < arguments.count {
+            let token = arguments[index]
+            let lower = token.lowercased()
+            
+            if lower == "--skip-git-repo-check" {
+                index += 1
+                continue
+            }
+            
+            // Backward-compatibility: older Codex versions reject this flag.
+            if lower == "-a" || lower == "--ask-for-approval" {
+                index += min(2, arguments.count - index)
+                continue
+            }
+            
+            if lower.hasPrefix("--ask-for-approval=") {
+                index += 1
+                continue
+            }
+            
+            cleanedArgs.append(token)
+            index += 1
+        }
+        
+        if cleanedArgs.first?.lowercased() != "exec" {
+            cleanedArgs.insert("exec", at: 0)
+        }
+        
+        if !codexArgumentsContainSandbox(cleanedArgs) {
+            cleanedArgs.append(contentsOf: ["--sandbox", "workspace-write"])
+        }
+        
+        if !codexArgumentsContainConfigOverride(cleanedArgs, key: "sandbox_mode") {
+            cleanedArgs.append(contentsOf: ["-c", "sandbox_mode=\"workspace-write\""])
+        }
+        
+        if !codexArgumentsContainConfigOverride(cleanedArgs, key: "approval_policy") {
+            cleanedArgs.append(contentsOf: ["-c", "approval_policy=\"never\""])
+        }
+        
+        cleanedArgs.append("--skip-git-repo-check")
+        arguments = cleanedArgs
+    }
+    
+    private func codexArgumentsContainSandbox(_ arguments: [String]) -> Bool {
+        let lowerArgs = arguments.map { $0.lowercased() }
+        for token in lowerArgs {
+            if token == "-s" || token == "--sandbox" || token.hasPrefix("--sandbox=") {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func codexArgumentsContainModel(_ arguments: [String]) -> Bool {
+        let lowerArgs = arguments.map { $0.lowercased() }
+        for token in lowerArgs {
+            if token == "-m" || token == "--model" || token.hasPrefix("--model=") {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func removingCodexExecutionOnlyArguments(from arguments: [String]) -> [String] {
+        var cleaned: [String] = []
+        var index = 0
+        
+        while index < arguments.count {
+            let token = arguments[index]
+            let lower = token.lowercased()
+            
+            if lower == "-s" || lower == "--sandbox" || lower == "-a" || lower == "--ask-for-approval" {
+                index += min(2, arguments.count - index)
+                continue
+            }
+            
+            if lower.hasPrefix("--sandbox=") || lower.hasPrefix("--ask-for-approval=") {
+                index += 1
+                continue
+            }
+            
+            cleaned.append(token)
+            index += 1
+        }
+        
+        return cleaned
+    }
+    
+    private func codexArgumentsContainConfigOverride(_ arguments: [String], key: String) -> Bool {
+        let needle = key.lowercased() + "="
+        var index = 0
+        
+        while index < arguments.count {
+            let token = arguments[index].lowercased()
+            if token == "-c" || token == "--config" {
+                if index + 1 < arguments.count {
+                    let value = arguments[index + 1].trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+                    if value.hasPrefix(needle) {
+                        return true
+                    }
+                }
+                index += 2
+                continue
+            }
+            
+            if token.hasPrefix("--config=") {
+                let value = String(token.dropFirst("--config=".count))
+                if value.hasPrefix(needle) {
+                    return true
+                }
+            }
+            
+            index += 1
+        }
+        
+        return false
+    }
+    
     private func parseGeminiJSONOutput(_ raw: String) -> GeminiJSONOutput? {
         let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
@@ -8077,7 +8296,7 @@ extension ToolExecutor {
         return decode(candidate)
     }
     
-    private func codeCLIBaseEnvironment(for provider: CodeCLIProvider) -> [String: String] {
+    private func codeCLIBaseEnvironment(for _: CodeCLIProvider) -> [String: String] {
         return claudeBaseEnvironment()
     }
     
@@ -8110,7 +8329,15 @@ extension ToolExecutor {
         provider: CodeCLIProvider
     ) -> [ClaudeInvocation] {
         let commandTokens = parseCommandLineArguments(command)
-        let primaryCommand = commandTokens.first ?? (provider == .gemini ? "gemini" : "claude")
+        let primaryCommand: String
+        switch provider {
+        case .claude:
+            primaryCommand = commandTokens.first ?? "claude"
+        case .gemini:
+            primaryCommand = commandTokens.first ?? "gemini"
+        case .codex:
+            primaryCommand = commandTokens.first ?? KeychainHelper.defaultCodexCodeCommand
+        }
         let commandPrefixArgs = Array(commandTokens.dropFirst())
         let taskArgs = commandPrefixArgs + cliArgs + [prompt]
         
@@ -8151,6 +8378,8 @@ extension ToolExecutor {
             knownLaunchers = ["/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude"]
         case .gemini:
             knownLaunchers = ["/opt/homebrew/bin/gemini", "/usr/local/bin/gemini", "/usr/bin/gemini"]
+        case .codex:
+            knownLaunchers = ["/opt/homebrew/bin/codex", "/usr/local/bin/codex", "/usr/bin/codex"]
         }
         
         if primaryCommand == provider.rawValue {
@@ -8652,6 +8881,8 @@ extension ToolExecutor {
             return containsClaudePermissionPromptSignal(text: text)
         case .gemini:
             return containsGeminiPermissionPromptSignal(text: text)
+        case .codex:
+            return containsCodexPermissionPromptSignal(text: text)
         }
     }
     
@@ -8691,6 +8922,24 @@ extension ToolExecutor {
         return signals.contains(where: { lower.contains($0) })
     }
     
+    private func containsCodexPermissionPromptSignal(text: String) -> Bool {
+        let lower = text.lowercased()
+        let signals = [
+            "requires approval",
+            "approval required",
+            "ask-for-approval",
+            "blocked by approval policy",
+            "cannot run command without approval"
+        ]
+        if signals.contains(where: { lower.contains($0) }) {
+            return true
+        }
+        
+        let permissionErrors = lower.contains("permission denied") || lower.contains("operation not permitted")
+        let approvalContext = lower.contains("approval") || lower.contains("ask-for-approval")
+        return permissionErrors && approvalContext
+    }
+    
     private func shouldRetryGeminiWithoutResume(
         stdout: String,
         stderr: String,
@@ -8704,6 +8953,23 @@ extension ToolExecutor {
             "failed to find session",
             "use --list-sessions",
             "could not resume"
+        ]
+        return signals.contains(where: { lower.contains($0) })
+    }
+    
+    private func shouldRetryCodexWithoutResume(
+        stdout: String,
+        stderr: String,
+        arguments: [String]
+    ) -> Bool {
+        guard codexArgumentsContainResume(arguments) else { return false }
+        let lower = (stdout + "\n" + stderr).lowercased()
+        let signals = [
+            "could not find session",
+            "no session history found",
+            "session not found",
+            "invalid session identifier",
+            "failed to parse session id"
         ]
         return signals.contains(where: { lower.contains($0) })
     }
@@ -8738,6 +9004,48 @@ extension ToolExecutor {
             }
             
             cleaned.append(token)
+        }
+        
+        return cleaned
+    }
+    
+    private func codexArgumentsContainResume(_ arguments: [String]) -> Bool {
+        let lowerArgs = arguments.map { $0.lowercased() }
+        for (index, token) in lowerArgs.enumerated() where token == "resume" {
+            if index > 0, lowerArgs[index - 1] == "exec" {
+                return true
+            }
+        }
+        return false
+    }
+    
+    private func removingCodexResumeArguments(from arguments: [String]) -> [String] {
+        guard !arguments.isEmpty else { return arguments }
+        
+        var cleaned: [String] = []
+        var index = 0
+        
+        while index < arguments.count {
+            let token = arguments[index]
+            let lower = token.lowercased()
+            
+            let isExecResumeSubcommand = lower == "resume" && index > 0 && arguments[index - 1].lowercased() == "exec"
+            if isExecResumeSubcommand {
+                index += 1
+                
+                if index < arguments.count {
+                    let nextLower = arguments[index].lowercased()
+                    if nextLower == "--last" || nextLower == "--all" {
+                        index += 1
+                    } else if !arguments[index].hasPrefix("-") {
+                        index += 1
+                    }
+                }
+                continue
+            }
+            
+            cleaned.append(token)
+            index += 1
         }
         
         return cleaned

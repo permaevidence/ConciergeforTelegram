@@ -64,6 +64,17 @@ class ConversationManager: ObservableObject {
     init() {
         loadConversation()
     }
+
+    private func currentVoiceTranscriptionProvider() -> VoiceTranscriptionProvider {
+        VoiceTranscriptionProvider.fromStoredValue(
+            KeychainHelper.load(key: KeychainHelper.voiceTranscriptionProviderKey)
+        )
+    }
+
+    private func openAITranscriptionAPIKey() -> String {
+        (KeychainHelper.load(key: KeychainHelper.openAITranscriptionApiKeyKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     
     // MARK: - Configuration
     
@@ -156,9 +167,11 @@ class ConversationManager: ObservableObject {
         isPolling = true
         statusMessage = "Polling for messages..."
         
-        // Warm up Whisper in the background when activation is enabled.
-        Task {
-            await WhisperKitService.shared.checkModelStatus()
+        // Warm up Whisper only when local transcription is active.
+        if currentVoiceTranscriptionProvider() == .local {
+            Task {
+                await WhisperKitService.shared.checkModelStatus()
+            }
         }
         
         pollingTask = Task {
@@ -220,8 +233,8 @@ class ConversationManager: ObservableObject {
             return
         }
         
-        if let text = telegramMessage.text, isStopCommand(text) {
-            await stopActiveExecution()
+        if let text = telegramMessage.text,
+           await handleControlCommandIfNeeded(text) {
             return
         }
         
@@ -395,21 +408,37 @@ class ConversationManager: ObservableObject {
         }
         // Voice message → transcription triggers processing
         else if let voice = telegramMessage.voice {
-            statusMessage = "Transcribing audio..."
-            
-            guard WhisperKitService.shared.isModelReady else {
-                self.error = "Voice model not ready. Please download it in Settings."
-                statusMessage = "Voice model not ready"
-                return
-            }
+            let transcriptionProvider = currentVoiceTranscriptionProvider()
+            statusMessage = transcriptionProvider == .openAI
+                ? "Transcribing audio with OpenAI..."
+                : "Transcribing audio locally..."
             
             do {
                 let audioURL = try await telegramService.downloadVoiceFile(fileId: voice.fileId)
-                
-                if let transcription = await WhisperKitService.shared.transcribeAudioFile(url: audioURL) {
+                defer { try? FileManager.default.removeItem(at: audioURL) }
+
+                let transcription: String?
+                switch transcriptionProvider {
+                case .openAI:
+                    let apiKey = openAITranscriptionAPIKey()
+                    guard !apiKey.isEmpty else {
+                        self.error = "OpenAI API key not set. Add it in Settings > Voice Transcription."
+                        statusMessage = "OpenAI API key missing"
+                        return
+                    }
+                    transcription = await OpenAITranscriptionService.shared.transcribeAudioFile(url: audioURL, apiKey: apiKey)
+                case .local:
+                    guard WhisperKitService.shared.isModelReady else {
+                        self.error = "Voice model not ready. Please download it in Settings."
+                        statusMessage = "Voice model not ready"
+                        return
+                    }
+                    transcription = await WhisperKitService.shared.transcribeAudioFile(url: audioURL)
+                }
+
+                if let transcription {
                     triggerText = transcription
                     print("[ConversationManager] Transcribed voice: \(transcription)")
-                    try? FileManager.default.removeItem(at: audioURL)
                 } else {
                     self.error = "Failed to transcribe audio"
                     statusMessage = "Transcription failed"
@@ -660,15 +689,82 @@ class ConversationManager: ObservableObject {
         }
     }
     
-    private func isStopCommand(_ text: String) -> Bool {
+    private func commandToken(from text: String) -> String {
         let firstToken = text
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .split(whereSeparator: { $0.isWhitespace })
             .first?
             .lowercased() ?? ""
-        let commandToken = firstToken.split(separator: "@", maxSplits: 1).first.map(String.init) ?? ""
+        return firstToken.split(separator: "@", maxSplits: 1).first.map(String.init) ?? ""
+    }
+    
+    private func handleControlCommandIfNeeded(_ text: String) async -> Bool {
+        let token = commandToken(from: text)
         
-        return commandToken == "/stop"
+        switch token {
+        case "/stop":
+            await stopActiveExecution()
+            return true
+        case "/claude":
+            await switchCodeCLIProvider(to: "claude")
+            return true
+        case "/gemini":
+            await switchCodeCLIProvider(to: "gemini")
+            return true
+        case "/codex":
+            await switchCodeCLIProvider(to: "codex")
+            return true
+        default:
+            return false
+        }
+    }
+    
+    private func switchCodeCLIProvider(to provider: String) async {
+        let normalizedProvider = provider
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        
+        guard ["claude", "gemini", "codex"].contains(normalizedProvider) else {
+            return
+        }
+        
+        let currentProvider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        
+        let providerDisplayName: String
+        switch normalizedProvider {
+        case "gemini":
+            providerDisplayName = "Gemini CLI"
+        case "codex":
+            providerDisplayName = "Codex CLI"
+        default:
+            providerDisplayName = "Claude Code"
+        }
+        
+        let message: String
+        if currentProvider == normalizedProvider {
+            message = "✅ Code CLI already set to \(providerDisplayName)."
+        } else {
+            do {
+                try KeychainHelper.save(key: KeychainHelper.codeCLIProviderKey, value: normalizedProvider)
+                if activeRunId != nil {
+                    message = "✅ Switched Code CLI to \(providerDisplayName). It will apply to the next delegated run."
+                } else {
+                    message = "✅ Switched Code CLI to \(providerDisplayName)."
+                }
+            } catch {
+                message = "❌ Failed to switch Code CLI to \(providerDisplayName): \(error.localizedDescription)"
+            }
+        }
+        
+        if let chatId = pairedChatId {
+            try? await telegramService.sendMessage(chatId: chatId, text: message)
+        }
+        
+        if activeRunId == nil {
+            statusMessage = "Listening... (Last check: \(formattedTime()))"
+        }
     }
     
     private func stopActiveExecution() async {
@@ -1155,7 +1251,14 @@ class ConversationManager: ObservableObject {
             let provider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
                 .trimmingCharacters(in: .whitespacesAndNewlines)
                 .lowercased()
-            return provider == "gemini" ? "🤖 Running Gemini CLI..." : "🤖 Running Claude Code..."
+            switch provider {
+            case "gemini":
+                return "🤖 Running Gemini CLI..."
+            case "codex":
+                return "🤖 Running Codex CLI..."
+            default:
+                return "🤖 Running Claude Code..."
+            }
         } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") {
             return "📁 Managing project workspace..."
         } else if toolNames.contains("send_project_result") {

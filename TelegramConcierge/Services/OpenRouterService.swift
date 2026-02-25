@@ -367,7 +367,15 @@ actor OpenRouterService {
         let codeCLIProvider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        let codeCLIProviderName = codeCLIProvider == "gemini" ? "Gemini CLI" : "Claude Code"
+        let codeCLIProviderName: String
+        switch codeCLIProvider {
+        case "gemini":
+            codeCLIProviderName = "Gemini CLI"
+        case "codex":
+            codeCLIProviderName = "Codex CLI"
+        default:
+            codeCLIProviderName = "Claude Code"
+        }
         
         // Build persona intro
         var personaIntro: String

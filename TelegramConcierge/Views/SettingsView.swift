@@ -50,6 +50,10 @@ struct SettingsView: View {
     
     // Image generation settings
     @State private var geminiApiKey: String = ""
+
+    // Voice transcription settings
+    @State private var voiceTranscriptionProvider: VoiceTranscriptionProvider = .defaultProvider
+    @State private var openAITranscriptionApiKey: String = ""
     
     // Code CLI settings
     @State private var codeCLIProvider: String = KeychainHelper.defaultCodeCLIProvider
@@ -60,6 +64,10 @@ struct SettingsView: View {
     @State private var geminiCodeArgs: String = KeychainHelper.defaultGeminiCodeArgs
     @State private var geminiCodeModel: String = KeychainHelper.defaultGeminiCodeModel
     @State private var geminiCodeTimeout: String = KeychainHelper.defaultGeminiCodeTimeout
+    @State private var codexCodeCommand: String = KeychainHelper.defaultCodexCodeCommand
+    @State private var codexCodeArgs: String = KeychainHelper.defaultCodexCodeArgs
+    @State private var codexCodeModel: String = KeychainHelper.defaultCodexCodeModel
+    @State private var codexCodeTimeout: String = KeychainHelper.defaultCodexCodeTimeout
     @State private var claudeCodeDisableLegacyDocumentGenerationTools: Bool = false
     
     // Vercel deployment settings
@@ -140,6 +148,17 @@ struct SettingsView: View {
             return value
         }
         return defaultToolSpendLimitPerTurnUSD
+    }
+    
+    private var activeCodeCLIProviderName: String {
+        switch codeCLIProvider {
+        case "gemini":
+            return "Gemini CLI"
+        case "codex":
+            return "Codex CLI"
+        default:
+            return "Claude Code"
+        }
     }
     
     var body: some View {
@@ -340,15 +359,14 @@ struct SettingsView: View {
             }
             
             Section {
-                Toggle(
-                    "Use Gemini CLI instead of Claude Code",
-                    isOn: Binding(
-                        get: { codeCLIProvider == "gemini" },
-                        set: { codeCLIProvider = $0 ? "gemini" : "claude" }
-                    )
-                )
+                Picker("Code CLI Provider", selection: $codeCLIProvider) {
+                    Text("Claude Code").tag("claude")
+                    Text("Gemini CLI").tag("gemini")
+                    Text("Codex CLI").tag("codex")
+                }
+                .pickerStyle(.segmented)
                 
-                Text("Active provider: \(codeCLIProvider == "gemini" ? "Gemini CLI" : "Claude Code")")
+                Text("Active provider: \(activeCodeCLIProviderName)")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -376,26 +394,51 @@ struct SettingsView: View {
                         .font(.caption)
                         .foregroundColor(.secondary)
                     
-                    TextField("Default Timeout (seconds)", text: $geminiCodeTimeout)
-                        .textFieldStyle(.roundedBorder)
-                } else {
-                    TextField("CLI Command", text: $claudeCodeCommand)
-                        .textFieldStyle(.roundedBorder)
+                        TextField("Default Timeout (seconds)", text: $geminiCodeTimeout)
+                            .textFieldStyle(.roundedBorder)
+                    } else if codeCLIProvider == "codex" {
+                        TextField("CLI Command", text: $codexCodeCommand)
+                            .textFieldStyle(.roundedBorder)
+                        
+                        Text("Default: \(KeychainHelper.defaultCodexCodeCommand)")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     
-                    Text("Default: claude")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        TextField("Default CLI Args", text: $codexCodeArgs)
+                            .textFieldStyle(.roundedBorder)
                     
-                    TextField("Default CLI Args", text: $claudeCodeArgs)
-                        .textFieldStyle(.roundedBorder)
+                        Text("Default: \(KeychainHelper.defaultCodexCodeArgs). You can override per tool call.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     
-                    Text("Default: \(KeychainHelper.defaultClaudeCodeArgs). You can override per tool call.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                        TextField("CLI Model (optional)", text: $codexCodeModel)
+                            .textFieldStyle(.roundedBorder)
+                            .disableAutocorrection(true)
+                        
+                        Text("Optional model to use for Codex CLI. e.g., o4-mini")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
                     
-                    TextField("Default Timeout (seconds)", text: $claudeCodeTimeout)
-                        .textFieldStyle(.roundedBorder)
-                }
+                        TextField("Default Timeout (seconds)", text: $codexCodeTimeout)
+                            .textFieldStyle(.roundedBorder)
+                    } else {
+                        TextField("CLI Command", text: $claudeCodeCommand)
+                            .textFieldStyle(.roundedBorder)
+                    
+                        Text("Default: claude")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    
+                        TextField("Default CLI Args", text: $claudeCodeArgs)
+                            .textFieldStyle(.roundedBorder)
+                    
+                        Text("Default: \(KeychainHelper.defaultClaudeCodeArgs). You can override per tool call.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                    
+                        TextField("Default Timeout (seconds)", text: $claudeCodeTimeout)
+                            .textFieldStyle(.roundedBorder)
+                    }
                 
                     Text("Used by run_claude_code when timeout_seconds is omitted. Range: 30-3600.")
                         .font(.caption)
@@ -785,13 +828,22 @@ struct SettingsView: View {
             structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
             structuredContextDraft = structuredUserContext
             Task {
-                await WhisperKitService.shared.checkModelStatus()
+                if voiceTranscriptionProvider == .local {
+                    await WhisperKitService.shared.checkModelStatus()
+                }
                 calendarEventCount = await CalendarService.shared.totalEventCount()
             }
         }
         .onChange(of: structuredUserContext) { newValue in
             if !isEditingStructuredContext {
                 structuredContextDraft = newValue
+            }
+        }
+        .onChange(of: voiceTranscriptionProvider) { newValue in
+            if newValue == .local {
+                Task {
+                    await WhisperKitService.shared.checkModelStatus()
+                }
             }
         }
         .sheet(isPresented: $showingContextViewer) {
@@ -881,65 +933,84 @@ struct SettingsView: View {
     @ViewBuilder
     private var voiceTranscriptionContent: some View {
         let whisper = WhisperKitService.shared
-        
-        HStack {
-            // Status icon
-            Group {
-                if whisper.isModelReady {
-                    Image(systemName: "checkmark.circle.fill")
-                        .foregroundColor(.green)
-                } else if whisper.isDownloading || whisper.isCompiling || whisper.isLoading {
-                    ProgressView()
-                        .scaleEffect(0.7)
-                } else {
-                    Image(systemName: "arrow.down.circle")
+
+        Picker("Method", selection: $voiceTranscriptionProvider) {
+            ForEach(VoiceTranscriptionProvider.allCases) { provider in
+                Text(provider.displayName).tag(provider)
+            }
+        }
+        .pickerStyle(.menu)
+
+        if voiceTranscriptionProvider == .openAI {
+            SecureField("OpenAI API Key", text: $openAITranscriptionApiKey)
+                .textFieldStyle(.roundedBorder)
+
+            Text("Used for `gpt-4o-transcribe`. Your key is stored in macOS Keychain.")
+                .font(.caption)
+                .foregroundColor(.secondary)
+        } else {
+            HStack {
+                Group {
+                    if whisper.isModelReady {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                    } else if whisper.isDownloading || whisper.isCompiling || whisper.isLoading {
+                        ProgressView()
+                            .scaleEffect(0.7)
+                    } else {
+                        Image(systemName: "arrow.down.circle")
+                            .foregroundColor(.secondary)
+                    }
+                }
+
+                VStack(alignment: .leading, spacing: 4) {
+                    Text("Whisper Model")
+                        .font(.body)
+                    Text(whisper.statusMessage)
+                        .font(.caption)
                         .foregroundColor(.secondary)
                 }
-            }
-            
-            VStack(alignment: .leading, spacing: 4) {
-                Text("Whisper Model")
-                    .font(.body)
-                Text(whisper.statusMessage)
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-            }
-            
-            Spacer()
-            
-            // Action buttons
-            if !whisper.hasModelOnDisk && !whisper.isDownloading {
-                Button("Download") {
-                    Task {
-                        await whisper.startDownload()
+
+                Spacer()
+
+                if !whisper.hasModelOnDisk && !whisper.isDownloading {
+                    Button("Download") {
+                        Task {
+                            await whisper.startDownload()
+                        }
                     }
-                }
-                .buttonStyle(.bordered)
-            } else if whisper.hasModelOnDisk && !whisper.isModelReady && !whisper.isCompiling && !whisper.isLoading {
-                Button("Compile") {
-                    Task {
-                        await whisper.loadModel()
+                    .buttonStyle(.bordered)
+                } else if whisper.hasModelOnDisk && !whisper.isModelReady && !whisper.isCompiling && !whisper.isLoading {
+                    Button("Compile") {
+                        Task {
+                            await whisper.loadModel()
+                        }
                     }
+                    .buttonStyle(.bordered)
+                } else if whisper.isModelReady {
+                    Button("Delete") {
+                        try? whisper.deleteModelFromDisk()
+                    }
+                    .buttonStyle(.bordered)
+                    .foregroundColor(.red)
                 }
-                .buttonStyle(.bordered)
-            } else if whisper.isModelReady {
-                Button("Delete") {
-                    try? whisper.deleteModelFromDisk()
-                }
-                .buttonStyle(.bordered)
-                .foregroundColor(.red)
+            }
+
+            if whisper.isDownloading {
+                ProgressView(value: Double(whisper.downloadProgress))
+                    .progressViewStyle(.linear)
             }
         }
-        
-        // Download progress bar
-        if whisper.isDownloading {
-            ProgressView(value: Double(whisper.downloadProgress))
-                .progressViewStyle(.linear)
-        }
-        
-        Text("The Whisper model enables voice message transcription from Telegram.")
+
+        Text(voiceTranscriptionProvider == .local
+             ? "Local Whisper runs on-device and remains the default."
+             : "OpenAI transcribes voice messages using `gpt-4o-transcribe` and requires your OpenAI API key.")
             .font(.caption)
             .foregroundColor(.secondary)
+
+        sectionSaveButton("voice-transcription") {
+            saveVoiceTranscriptionSection()
+        }
     }
     
     // MARK: - Persona Settings Content
@@ -1503,12 +1574,23 @@ struct SettingsView: View {
         
         // Load image generation settings
         geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey) ?? ""
+
+        // Load voice transcription settings
+        voiceTranscriptionProvider = VoiceTranscriptionProvider.fromStoredValue(
+            KeychainHelper.load(key: KeychainHelper.voiceTranscriptionProviderKey)
+        )
+        openAITranscriptionApiKey = KeychainHelper.load(key: KeychainHelper.openAITranscriptionApiKeyKey) ?? ""
         
         // Load Code CLI settings
         let loadedProvider = (KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? KeychainHelper.defaultCodeCLIProvider)
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .lowercased()
-        codeCLIProvider = loadedProvider == "gemini" ? "gemini" : "claude"
+        switch loadedProvider {
+        case "gemini", "codex":
+            codeCLIProvider = loadedProvider
+        default:
+            codeCLIProvider = "claude"
+        }
         claudeCodeCommand = KeychainHelper.load(key: KeychainHelper.claudeCodeCommandKey) ?? "claude"
         claudeCodeArgs = KeychainHelper.load(key: KeychainHelper.claudeCodeArgsKey) ?? KeychainHelper.defaultClaudeCodeArgs
         claudeCodeTimeout = KeychainHelper.load(key: KeychainHelper.claudeCodeTimeoutKey) ?? KeychainHelper.defaultClaudeCodeTimeout
@@ -1516,6 +1598,10 @@ struct SettingsView: View {
         geminiCodeArgs = KeychainHelper.load(key: KeychainHelper.geminiCodeArgsKey) ?? KeychainHelper.defaultGeminiCodeArgs
         geminiCodeModel = KeychainHelper.load(key: KeychainHelper.geminiCodeModelKey) ?? KeychainHelper.defaultGeminiCodeModel
         geminiCodeTimeout = KeychainHelper.load(key: KeychainHelper.geminiCodeTimeoutKey) ?? KeychainHelper.defaultGeminiCodeTimeout
+        codexCodeCommand = KeychainHelper.load(key: KeychainHelper.codexCodeCommandKey) ?? KeychainHelper.defaultCodexCodeCommand
+        codexCodeArgs = KeychainHelper.load(key: KeychainHelper.codexCodeArgsKey) ?? KeychainHelper.defaultCodexCodeArgs
+        codexCodeModel = KeychainHelper.load(key: KeychainHelper.codexCodeModelKey) ?? KeychainHelper.defaultCodexCodeModel
+        codexCodeTimeout = KeychainHelper.load(key: KeychainHelper.codexCodeTimeoutKey) ?? KeychainHelper.defaultCodexCodeTimeout
         claudeCodeDisableLegacyDocumentGenerationTools =
             (KeychainHelper.load(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey) ?? "false")
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1705,6 +1791,22 @@ struct SettingsView: View {
             if !geminiApiKey.isEmpty {
                 try KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: geminiApiKey)
             }
+
+            // Save voice transcription settings
+            let normalizedVoiceProvider = VoiceTranscriptionProvider.fromStoredValue(voiceTranscriptionProvider.rawValue)
+            try KeychainHelper.save(
+                key: KeychainHelper.voiceTranscriptionProviderKey,
+                value: normalizedVoiceProvider.rawValue
+            )
+            voiceTranscriptionProvider = normalizedVoiceProvider
+
+            let normalizedOpenAIKey = openAITranscriptionApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedOpenAIKey.isEmpty {
+                try? KeychainHelper.delete(key: KeychainHelper.openAITranscriptionApiKeyKey)
+            } else {
+                try KeychainHelper.save(key: KeychainHelper.openAITranscriptionApiKeyKey, value: normalizedOpenAIKey)
+            }
+            openAITranscriptionApiKey = normalizedOpenAIKey
             
             // Save Code CLI settings
             try saveCodeCLISettings()
@@ -1923,13 +2025,42 @@ struct SettingsView: View {
             try? KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: geminiApiKey)
         }
     }
+
+    private func saveVoiceTranscriptionSection() {
+        let normalizedProvider = VoiceTranscriptionProvider.fromStoredValue(voiceTranscriptionProvider.rawValue)
+        try? KeychainHelper.save(
+            key: KeychainHelper.voiceTranscriptionProviderKey,
+            value: normalizedProvider.rawValue
+        )
+        voiceTranscriptionProvider = normalizedProvider
+
+        let normalizedOpenAIKey = openAITranscriptionApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedOpenAIKey.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.openAITranscriptionApiKeyKey)
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.openAITranscriptionApiKeyKey, value: normalizedOpenAIKey)
+        }
+        openAITranscriptionApiKey = normalizedOpenAIKey
+
+        if voiceTranscriptionProvider == .local {
+            Task {
+                await WhisperKitService.shared.checkModelStatus()
+            }
+        }
+    }
     
     private func saveClaudeCodeSection() {
         try? saveCodeCLISettings()
     }
     
     private func saveCodeCLISettings() throws {
-        let normalizedProvider = codeCLIProvider == "gemini" ? "gemini" : "claude"
+        let normalizedProvider: String
+        switch codeCLIProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "gemini", "codex":
+            normalizedProvider = codeCLIProvider.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        default:
+            normalizedProvider = "claude"
+        }
         
         let normalizedClaudeCommand = claudeCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
         let normalizedClaudeArgs = claudeCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1941,6 +2072,12 @@ struct SettingsView: View {
         let normalizedGeminiModel = geminiCodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
         let geminiTimeout = Int(geminiCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
         let clampedGeminiTimeout = min(max(geminiTimeout, 30), 3600)
+        
+        let normalizedCodexCommand = codexCodeCommand.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCodexArgs = codexCodeArgs.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCodexModel = codexCodeModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        let codexTimeout = Int(codexCodeTimeout.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 300
+        let clampedCodexTimeout = min(max(codexTimeout, 30), 3600)
         
         let saveOp = {
             try KeychainHelper.save(key: KeychainHelper.codeCLIProviderKey, value: normalizedProvider)
@@ -1967,6 +2104,19 @@ struct SettingsView: View {
                 value: normalizedGeminiModel.isEmpty ? KeychainHelper.defaultGeminiCodeModel : normalizedGeminiModel
             )
             try KeychainHelper.save(key: KeychainHelper.geminiCodeTimeoutKey, value: "\(clampedGeminiTimeout)")
+            try KeychainHelper.save(
+                key: KeychainHelper.codexCodeCommandKey,
+                value: normalizedCodexCommand.isEmpty ? KeychainHelper.defaultCodexCodeCommand : normalizedCodexCommand
+            )
+            try KeychainHelper.save(
+                key: KeychainHelper.codexCodeArgsKey,
+                value: normalizedCodexArgs.isEmpty ? KeychainHelper.defaultCodexCodeArgs : normalizedCodexArgs
+            )
+            try KeychainHelper.save(
+                key: KeychainHelper.codexCodeModelKey,
+                value: normalizedCodexModel.isEmpty ? KeychainHelper.defaultCodexCodeModel : normalizedCodexModel
+            )
+            try KeychainHelper.save(key: KeychainHelper.codexCodeTimeoutKey, value: "\(clampedCodexTimeout)")
             
             try KeychainHelper.save(
                 key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey,
@@ -1985,6 +2135,11 @@ struct SettingsView: View {
         geminiCodeArgs = normalizedGeminiArgs.isEmpty ? KeychainHelper.defaultGeminiCodeArgs : normalizedGeminiArgs
         geminiCodeModel = normalizedGeminiModel.isEmpty ? KeychainHelper.defaultGeminiCodeModel : normalizedGeminiModel
         geminiCodeTimeout = "\(clampedGeminiTimeout)"
+        
+        codexCodeCommand = normalizedCodexCommand.isEmpty ? KeychainHelper.defaultCodexCodeCommand : normalizedCodexCommand
+        codexCodeArgs = normalizedCodexArgs.isEmpty ? KeychainHelper.defaultCodexCodeArgs : normalizedCodexArgs
+        codexCodeModel = normalizedCodexModel.isEmpty ? KeychainHelper.defaultCodexCodeModel : normalizedCodexModel
+        codexCodeTimeout = "\(clampedCodexTimeout)"
     }
     
     private func saveVercelSection() {

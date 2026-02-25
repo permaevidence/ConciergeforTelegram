@@ -109,42 +109,50 @@ The app uses `gemini-3-pro-image-preview` for generation. The assistant can see 
 
 ---
 
-## 6 — Claude Code *(optional)*
+## 6 — Code CLI *(optional)*
 
-If you want the assistant to delegate coding tasks to [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview), you need to install the Claude Code CLI on your Mac first.
+If you want the assistant to delegate coding tasks, configure one of the supported providers in Settings:
+- [Claude Code](https://docs.anthropic.com/en/docs/claude-code/overview)
+- Gemini CLI
+- [Codex CLI](https://developers.openai.com/codex/cli)
 
-### 6a — Install Claude Code
+### 6a — Install the CLI you want to use
 
-Pick **one** of the following methods:
-
-| Method | Command |
+| Provider | Install command |
 |---|---|
-| **Native install** *(recommended)* | Open Terminal and run: `curl -fsSL https://claude.ai/install.sh \| bash` |
-| **Homebrew** | `brew install --cask claude-code` |
+| **Claude Code** | `curl -fsSL https://claude.ai/install.sh \| bash` |
+| **Codex CLI** | `npm i -g @openai/codex` |
 
-After installation, verify it works by running `claude --version` in Terminal.
+Then verify the installed binary in Terminal (for example: `claude --version` or `codex --version`).
 
-### 6b — Authenticate
+### 6b — Authenticate in Terminal
 
-You need an Anthropic account with either:
-- A **Claude subscription** (Pro, Max, Teams, or Enterprise), **or**
-- **API credits** in the [Anthropic Console](https://console.anthropic.com/).
-
-Run `claude` in Terminal for the first time — it will walk you through authentication.
+Complete the provider's first-run login flow in Terminal before using it from Telegram Concierge.
 
 ### 6c — Configure in the app
 
-Back in Telegram Concierge, the **Claude Code** section has these fields:
+In Telegram Concierge, open **Settings → Code CLI** and pick a provider.
 
-| Field | Default | Notes |
-|---|---|---|
-| **CLI Command** | `claude` | Path or name of the Claude Code binary. Change only if you installed it in a non-standard location. |
-| **Default CLI Args** | `--print --output-format=json` | Arguments passed on every invocation. You can override per tool call. |
-| **Default Timeout** | `120` seconds | Max execution time (range: 30–3600). |
-| **Use Claude Code for document generation** | Off | When enabled, Gemini uses Claude project tools instead of the legacy `generate_document` tool for PDFs, spreadsheets, and text deliverables. |
+| Provider | Default command | Default args | Notes |
+|---|---|---|---|
+| **Claude Code** | `claude` | `-p --permission-mode bypassPermissions` | Uses Claude's print mode for headless runs. |
+| **Gemini CLI** | `gemini` | `--yolo --output-format json` | Optional model override is supported in Settings. |
+| **Codex CLI** | `codex` | `exec --sandbox workspace-write --skip-git-repo-check` | Uses non-interactive `codex exec` defaults suitable for project tool runs. |
+
+All providers support timeout configuration (30–3600 seconds), and you can override CLI args per `run_claude_code` call.
+
+### 6d — Remote provider switch from Telegram
+
+You can switch provider remotely by sending one of these commands in Telegram:
+
+- `/claude` → use Claude Code
+- `/gemini` → use Gemini CLI
+- `/codex` → use Codex CLI
+
+The change is saved immediately and applies to the next delegated Code CLI run.
 
 > [!TIP]
-> To view Claude Code working directories, click the **folder icon** in the main chat header (next to the Settings gear). This opens the projects folder directly in Finder, where you can delete project folders manually when needed.
+> To view project working directories, click the **folder icon** in the main chat header (next to the Settings gear). This opens the projects folder directly in Finder, where you can delete project folders manually when needed.
 
 ---
 
