@@ -31,6 +31,17 @@ actor OpenRouterService {
         }
         return effort
     }
+
+    private func formatUSD(_ value: Double) -> String {
+        var formatted = String(format: "%.6f", value)
+        while formatted.contains(".") && formatted.last == "0" {
+            formatted.removeLast()
+        }
+        if formatted.last == "." {
+            formatted.removeLast()
+        }
+        return formatted
+    }
     
     func configure(apiKey: String) {
         self.apiKey = apiKey
@@ -326,7 +337,8 @@ actor OpenRouterService {
         totalChunkCount: Int = 0,
         currentUserMessageId: UUID? = nil,
         deploymentToolsUnlockedForTurn: Bool = false,
-        turnStartDate: Date? = nil
+        turnStartDate: Date? = nil,
+        finalResponseInstruction: String? = nil
     ) async throws -> LLMResponse {
         guard !apiKey.isEmpty else {
             throw OpenRouterError.notConfigured
@@ -465,6 +477,9 @@ actor OpenRouterService {
             
             🕐 **Reminder: The turn started at exactly \(currentDateTime) (\(timezone))**
             """
+            if let finalResponseInstruction, !finalResponseInstruction.isEmpty {
+                prompt += "\n\n\(finalResponseInstruction)"
+            }
             systemPrompt = prompt
         } else {
             var prompt = """
@@ -506,6 +521,9 @@ actor OpenRouterService {
             }
             
             prompt += "\n\n🕐 **Reminder: The turn started at exactly \(currentDateTime) (\(timezone))**"
+            if let finalResponseInstruction, !finalResponseInstruction.isEmpty {
+                prompt += "\n\n\(finalResponseInstruction)"
+            }
             systemPrompt = prompt
         }
         
@@ -889,9 +907,20 @@ actor OpenRouterService {
         let promptTokens = decoded.usage?.promptTokens
         let completionTokens = decoded.usage?.completionTokens
         let cachedTokens = decoded.usage?.promptTokensDetails?.cachedTokens ?? 0
+        let directCost = decoded.usage?.cost?.value
+        let upstreamInferenceCost = decoded.usage?.costDetails?.upstreamInferenceCost?.value
+        let callSpendUSD = [directCost, upstreamInferenceCost]
+            .compactMap { $0 }
+            .filter { $0.isFinite && $0 >= 0 }
+            .max()
         
         if let pt = promptTokens, let ct = completionTokens {
             print("[OpenRouterService] Usage: \(pt - cachedTokens) uncached prompt + \(cachedTokens) cached prompt, \(ct) completion tokens")
+        }
+        if let spend = callSpendUSD {
+            print("[OpenRouterService] Usage spend: $\(formatUSD(spend)) (direct=\(directCost.map { formatUSD($0) } ?? "n/a"), upstream=\(upstreamInferenceCost.map { formatUSD($0) } ?? "n/a"))")
+        } else {
+            print("[OpenRouterService] Usage spend: unavailable")
         }
         
         // Check if the model wants to call tools
@@ -904,7 +933,8 @@ actor OpenRouterService {
                     reasoningDetails: choice.message.reasoningDetails
                 ),
                 calls: toolCalls,
-                promptTokens: promptTokens
+                promptTokens: promptTokens,
+                spendUSD: callSpendUSD
             )
         }
         
@@ -913,7 +943,7 @@ actor OpenRouterService {
             throw OpenRouterError.noContent
         }
         
-        return .text(content, promptTokens: promptTokens)
+        return .text(content, promptTokens: promptTokens, spendUSD: callSpendUSD)
     }
     
     // MARK: - File Description Generation
@@ -1229,12 +1259,67 @@ struct OpenRouterUsage: Codable {
     let completionTokens: Int?
     let totalTokens: Int?
     let promptTokensDetails: PromptTokensDetails?
+    let cost: LossyDouble?
+    let costDetails: OpenRouterCostDetails?
     
     enum CodingKeys: String, CodingKey {
         case promptTokens = "prompt_tokens"
         case completionTokens = "completion_tokens"
         case totalTokens = "total_tokens"
         case promptTokensDetails = "prompt_tokens_details"
+        case cost
+        case costDetails = "cost_details"
+    }
+}
+
+struct OpenRouterCostDetails: Codable {
+    let upstreamInferenceCost: LossyDouble?
+    
+    enum CodingKeys: String, CodingKey {
+        case upstreamInferenceCost = "upstream_inference_cost"
+    }
+}
+
+struct LossyDouble: Codable {
+    let value: Double
+    
+    init(_ value: Double) {
+        self.value = value
+    }
+    
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        
+        if let doubleValue = try? container.decode(Double.self) {
+            self.value = doubleValue
+            return
+        }
+        
+        if let intValue = try? container.decode(Int.self) {
+            self.value = Double(intValue)
+            return
+        }
+        
+        if let stringValue = try? container.decode(String.self) {
+            let trimmed = stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let parsed = Double(trimmed) {
+                self.value = parsed
+                return
+            }
+        }
+        
+        throw DecodingError.typeMismatch(
+            LossyDouble.self,
+            DecodingError.Context(
+                codingPath: decoder.codingPath,
+                debugDescription: "Expected a numeric value or numeric string"
+            )
+        )
+    }
+    
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        try container.encode(value)
     }
 }
 

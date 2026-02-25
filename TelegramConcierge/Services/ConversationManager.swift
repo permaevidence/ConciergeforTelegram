@@ -28,6 +28,9 @@ class ConversationManager: ObservableObject {
     private let toolRunLogPrefix = "[TOOL RUN LOG - compact]"
     private let maxRetainedToolRunLogs = 5
     private let maxAssistantMessageChars = 4000
+    private let defaultToolSpendLimitPerTurnUSD = 0.20
+    private let minimumToolSpendLimitPerTurnUSD = 0.001
+    private let maxToolRoundsSafetyLimit = 120
     
     private struct ToolAwareResponse {
         let finalText: String
@@ -759,13 +762,34 @@ class ConversationManager: ObservableObject {
             print("[TIMING] Archive took: \(String(format: "%.2f", Date().timeIntervalSince(archiveStartTime)))s")
         }
         
-        // Tool interaction loop - allow up to 20 rounds of tool calls
-        let maxToolRounds = 20
+        // Tool interaction loop with per-turn, daily, and monthly spend caps (USD).
+        let toolSpendLimitPerTurnUSD = configuredToolSpendLimitPerTurnUSD()
+        let toolSpendLimitDailyUSD = configuredDailyToolSpendLimitUSD()
+        let toolSpendLimitMonthlyUSD = configuredMonthlyToolSpendLimitUSD()
+        var cumulativeToolSpendUSD: Double = 0
         var toolInteractions: [ToolInteraction] = []
+        var didHitToolSpendLimit = false
+        let spendSnapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
+        var todaySpentUSD = spendSnapshot.today
+        var monthSpentUSD = spendSnapshot.month
+
+        if let exceededMessage = spendLimitExceededMessage(
+            todaySpentUSD: todaySpentUSD,
+            monthSpentUSD: monthSpentUSD,
+            dailyLimitUSD: toolSpendLimitDailyUSD,
+            monthlyLimitUSD: toolSpendLimitMonthlyUSD
+        ) {
+            print("[ConversationManager] Daily/monthly spend limit already reached before tool loop: \(exceededMessage)")
+            return ToolAwareResponse(
+                finalText: exceededMessage,
+                compactToolLog: nil,
+                accessedProjects: []
+            )
+        }
         
-        for round in 1...maxToolRounds {
+        toolLoop: for round in 1...maxToolRoundsSafetyLimit {
             try Task.checkCancellation()
-            print("[ConversationManager] Tool round \(round)/\(maxToolRounds)")
+            print("[ConversationManager] Tool round \(round) (turn spend: $\(formatUSD(cumulativeToolSpendUSD)) / $\(formatUSD(toolSpendLimitPerTurnUSD)), today: $\(formatUSD(todaySpentUSD)), month: $\(formatUSD(monthSpentUSD)))")
             
             // Call LLM (with tools available for chaining)
             let llmStartTime = Date()
@@ -792,9 +816,19 @@ class ConversationManager: ObservableObject {
                 turnStartDate: turnStartDate
             )
             print("[TIMING] LLM API call took: \(String(format: "%.2f", Date().timeIntervalSince(llmStartTime)))s")
+            let roundSpendUSD = spendUSD(from: response)
+            if let roundSpendUSD, roundSpendUSD > 0 {
+                cumulativeToolSpendUSD += roundSpendUSD
+                todaySpentUSD += roundSpendUSD
+                monthSpentUSD += roundSpendUSD
+                KeychainHelper.recordOpenRouterSpend(roundSpendUSD)
+                print("[ConversationManager] Round \(round) spend: +$\(formatUSD(roundSpendUSD)) (total $\(formatUSD(cumulativeToolSpendUSD)))")
+            } else {
+                print("[ConversationManager] Round \(round) spend unavailable or zero")
+            }
             
             switch response {
-            case .text(let content, let promptTokens):
+            case .text(let content, let promptTokens, _):
                 // LLM decided to respond with text - we're done
                 if let tokens = promptTokens {
                     print("[ConversationManager] LLM returned text response after \(round) round(s) (\(tokens) prompt tokens)")
@@ -808,9 +842,30 @@ class ConversationManager: ObservableObject {
                     accessedProjects: accessedProjects
                 )
                 
-            case .toolCalls(let assistantMessage, let calls, _):
+            case .toolCalls(let assistantMessage, let calls, _, _):
                 // Model wants to use more tools
                 print("[ConversationManager] Round \(round): LLM requested \(calls.count) tool(s): \(calls.map { $0.function.name })")
+                
+                if cumulativeToolSpendUSD >= toolSpendLimitPerTurnUSD {
+                    didHitToolSpendLimit = true
+                    statusMessage = "Spend limit reached, preparing response..."
+                    print("[ConversationManager] Tool spend limit reached ($\(formatUSD(cumulativeToolSpendUSD)) >= $\(formatUSD(toolSpendLimitPerTurnUSD))); forcing final response")
+                    break toolLoop
+                }
+
+                if let exceededMessage = spendLimitExceededMessage(
+                    todaySpentUSD: todaySpentUSD,
+                    monthSpentUSD: monthSpentUSD,
+                    dailyLimitUSD: toolSpendLimitDailyUSD,
+                    monthlyLimitUSD: toolSpendLimitMonthlyUSD
+                ) {
+                    print("[ConversationManager] Daily/monthly spend limit reached during tool loop: \(exceededMessage)")
+                    return ToolAwareResponse(
+                        finalText: exceededMessage,
+                        compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                        accessedProjects: extractAccessedProjects(from: toolInteractions)
+                    )
+                }
                 
                 let executableCalls = calls.filter { allowedToolNames.contains($0.function.name) }
                 let blockedCalls = calls.filter { !allowedToolNames.contains($0.function.name) }
@@ -880,8 +935,25 @@ class ConversationManager: ObservableObject {
             }
         }
         
-        // If we've exhausted all rounds, make one final call WITHOUT tools to force a text response
-        print("[ConversationManager] Max tool rounds reached, forcing final response")
+        let didHitSafetyLimit = !didHitToolSpendLimit
+        if didHitSafetyLimit {
+            print("[ConversationManager] Safety tool round limit (\(maxToolRoundsSafetyLimit)) reached, forcing final response")
+        }
+
+        // Force one final call WITHOUT tools to produce a user-facing response
+        let finalResponseInstruction: String
+        if didHitToolSpendLimit {
+            finalResponseInstruction = """
+            The tool spend limit for this turn has been reached (spent approximately $\(formatUSD(cumulativeToolSpendUSD)), limit $\(formatUSD(toolSpendLimitPerTurnUSD))).
+            Provide the best possible final response to the user using the information you already have. Do not call additional tools.
+            """
+        } else {
+            finalResponseInstruction = """
+            You have reached the tool-round safety limit for this turn.
+            Provide the best possible final response to the user using the information you already have. Do not call additional tools.
+            """
+        }
+
         try Task.checkCancellation()
         let finalResponse = try await openRouterService.generateResponse(
             messages: contextResult.messagesToSend,
@@ -895,25 +967,107 @@ class ConversationManager: ObservableObject {
             totalChunkCount: totalChunkCount,
             currentUserMessageId: currentUserMessageId,
             deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
-            turnStartDate: turnStartDate
+            turnStartDate: turnStartDate,
+            finalResponseInstruction: finalResponseInstruction
         )
+        if let finalSpendUSD = spendUSD(from: finalResponse), finalSpendUSD > 0 {
+            KeychainHelper.recordOpenRouterSpend(finalSpendUSD)
+        }
         
         let accessedProjects = extractAccessedProjects(from: toolInteractions)
         
         switch finalResponse {
-        case .text(let content, _):
+        case .text(let content, _, _):
             return ToolAwareResponse(
                 finalText: content,
                 compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
                 accessedProjects: accessedProjects
             )
-        case .toolCalls(_, _, _):
+        case .toolCalls(_, _, _, _):
             return ToolAwareResponse(
                 finalText: "I completed the requested actions but had trouble summarizing the results.",
                 compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
                 accessedProjects: accessedProjects
             )
         }
+    }
+    
+    private func configuredToolSpendLimitPerTurnUSD() -> Double {
+        guard let rawValue = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitPerTurnUSDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty,
+              let parsed = Double(rawValue),
+              parsed.isFinite,
+              parsed >= minimumToolSpendLimitPerTurnUSD else {
+            return defaultToolSpendLimitPerTurnUSD
+        }
+        return parsed
+    }
+
+    private func configuredDailyToolSpendLimitUSD() -> Double? {
+        guard let rawValue = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitDailyUSDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty,
+              let parsed = Double(rawValue),
+              parsed.isFinite,
+              parsed >= minimumToolSpendLimitPerTurnUSD else {
+            return nil
+        }
+        return parsed
+    }
+
+    private func configuredMonthlyToolSpendLimitUSD() -> Double? {
+        guard let rawValue = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitMonthlyUSDKey)?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !rawValue.isEmpty,
+              let parsed = Double(rawValue),
+              parsed.isFinite,
+              parsed >= minimumToolSpendLimitPerTurnUSD else {
+            return nil
+        }
+        return parsed
+    }
+
+    private func spendLimitExceededMessage(
+        todaySpentUSD: Double,
+        monthSpentUSD: Double,
+        dailyLimitUSD: Double?,
+        monthlyLimitUSD: Double?
+    ) -> String? {
+        let dailyExceeded = dailyLimitUSD.map { todaySpentUSD >= $0 } ?? false
+        let monthlyExceeded = monthlyLimitUSD.map { monthSpentUSD >= $0 } ?? false
+        guard dailyExceeded || monthlyExceeded else { return nil }
+
+        if dailyExceeded, monthlyExceeded, let dailyLimitUSD, let monthlyLimitUSD {
+            return "I paused tool usage because both spend limits were reached (today: $\(formatUSD(todaySpentUSD)) / $\(formatUSD(dailyLimitUSD)); this month: $\(formatUSD(monthSpentUSD)) / $\(formatUSD(monthlyLimitUSD))). You can raise limits in Settings > OpenRouter."
+        }
+        if dailyExceeded, let dailyLimitUSD {
+            return "I paused tool usage because the daily spend limit was reached (today: $\(formatUSD(todaySpentUSD)) / $\(formatUSD(dailyLimitUSD))). You can raise it in Settings > OpenRouter."
+        }
+        if monthlyExceeded, let monthlyLimitUSD {
+            return "I paused tool usage because the monthly spend limit was reached (this month: $\(formatUSD(monthSpentUSD)) / $\(formatUSD(monthlyLimitUSD))). You can raise it in Settings > OpenRouter."
+        }
+        return nil
+    }
+    
+    private func spendUSD(from response: LLMResponse) -> Double? {
+        switch response {
+        case .text(_, _, let spendUSD):
+            return spendUSD
+        case .toolCalls(_, _, _, let spendUSD):
+            return spendUSD
+        }
+    }
+    
+    private func formatUSD(_ value: Double) -> String {
+        var formatted = String(format: "%.6f", value)
+        while formatted.contains(".") && formatted.last == "0" {
+            formatted.removeLast()
+        }
+        if formatted.last == "." {
+            formatted.removeLast()
+        }
+        return formatted
     }
     
     private func extractAccessedProjects(from interactions: [ToolInteraction]) -> [String] {

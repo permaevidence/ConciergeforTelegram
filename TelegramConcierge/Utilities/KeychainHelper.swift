@@ -134,6 +134,9 @@ extension KeychainHelper {
     static let openRouterModelKey = "openrouter_model"
     static let openRouterProvidersKey = "openrouter_providers"
     static let openRouterReasoningEffortKey = "openrouter_reasoning_effort"
+    static let openRouterToolSpendLimitPerTurnUSDKey = "openrouter_tool_spend_limit_per_turn_usd"
+    static let openRouterToolSpendLimitDailyUSDKey = "openrouter_tool_spend_limit_daily_usd"
+    static let openRouterToolSpendLimitMonthlyUSDKey = "openrouter_tool_spend_limit_monthly_usd"
     
     // Archive Settings
     static let archiveChunkSizeKey = "archive_chunk_size"
@@ -147,4 +150,81 @@ extension KeychainHelper {
     static let gmailAccessTokenKey = "gmail_access_token"
     static let gmailRefreshTokenKey = "gmail_refresh_token"
     static let gmailTokenExpiryKey = "gmail_token_expiry"
+}
+
+// MARK: - OpenRouter Spend Ledger (UserDefaults-backed)
+extension KeychainHelper {
+    private static let openRouterSpendLedgerDefaultsKey = "openrouter_spend_ledger_v1"
+    private static let openRouterSpendLedgerRetentionDays = 500
+
+    private struct OpenRouterSpendLedger: Codable {
+        var byDay: [String: Double]
+    }
+
+    static func recordOpenRouterSpend(_ amountUSD: Double, at date: Date = Date()) {
+        guard amountUSD.isFinite, amountUSD > 0 else { return }
+        var ledger = loadOpenRouterSpendLedger()
+        pruneOldSpendEntries(&ledger, referenceDate: date)
+        let key = dayKey(for: date)
+        ledger.byDay[key, default: 0] += amountUSD
+        saveOpenRouterSpendLedger(ledger)
+    }
+
+    static func openRouterSpendSnapshot(referenceDate: Date = Date()) -> (today: Double, month: Double) {
+        var ledger = loadOpenRouterSpendLedger()
+        pruneOldSpendEntries(&ledger, referenceDate: referenceDate)
+        saveOpenRouterSpendLedger(ledger)
+
+        let todayKey = dayKey(for: referenceDate)
+        let monthPrefix = monthPrefixKey(for: referenceDate)
+
+        let today = ledger.byDay[todayKey] ?? 0
+        let month = ledger.byDay
+            .filter { $0.key.hasPrefix(monthPrefix) }
+            .reduce(0) { $0 + $1.value }
+
+        return (today: max(0, today), month: max(0, month))
+    }
+
+    private static func loadOpenRouterSpendLedger() -> OpenRouterSpendLedger {
+        guard let data = UserDefaults.standard.data(forKey: openRouterSpendLedgerDefaultsKey),
+              let ledger = try? JSONDecoder().decode(OpenRouterSpendLedger.self, from: data) else {
+            return OpenRouterSpendLedger(byDay: [:])
+        }
+        return ledger
+    }
+
+    private static func saveOpenRouterSpendLedger(_ ledger: OpenRouterSpendLedger) {
+        guard let data = try? JSONEncoder().encode(ledger) else { return }
+        UserDefaults.standard.set(data, forKey: openRouterSpendLedgerDefaultsKey)
+    }
+
+    private static func pruneOldSpendEntries(_ ledger: inout OpenRouterSpendLedger, referenceDate: Date) {
+        guard !ledger.byDay.isEmpty else { return }
+
+        let calendar = Calendar.current
+        let cutoffDate = calendar.date(byAdding: .day, value: -openRouterSpendLedgerRetentionDays, to: referenceDate) ?? referenceDate
+        let cutoffKey = dayKey(for: cutoffDate)
+
+        ledger.byDay = ledger.byDay.filter { day, value in
+            day >= cutoffKey && value.isFinite && value > 0
+        }
+    }
+
+    private static func dayKey(for date: Date) -> String {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month, .day], from: date)
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        let day = components.day ?? 1
+        return String(format: "%04d-%02d-%02d", year, month, day)
+    }
+
+    private static func monthPrefixKey(for date: Date) -> String {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month], from: date)
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        return String(format: "%04d-%02d-", year, month)
+    }
 }

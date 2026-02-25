@@ -11,6 +11,11 @@ struct SettingsView: View {
     @State private var openRouterModel: String = ""
     @State private var openRouterProviders: String = ""
     @State private var openRouterReasoningEffort: String = "high"
+    @State private var openRouterToolSpendLimit: String = ""
+    @State private var openRouterDailySpendLimit: String = ""
+    @State private var openRouterMonthlySpendLimit: String = ""
+    @State private var openRouterTodaySpendUSD: Double = 0
+    @State private var openRouterMonthSpendUSD: Double = 0
     @State private var serperApiKey: String = ""
     @State private var jinaApiKey: String = ""
     @State private var showingSaveConfirmation: Bool = false
@@ -116,6 +121,8 @@ struct SettingsView: View {
     private let telegramService = TelegramBotService()
     private let defaultArchiveChunkSize = 10000
     private let minimumArchiveChunkSize = 5000
+    private let defaultToolSpendLimitPerTurnUSD = 0.20
+    private let minimumToolSpendLimitPerTurnUSD = 0.001
     
     private var activeArchiveChunkSize: Int {
         if let savedChunkSize = KeychainHelper.load(key: KeychainHelper.archiveChunkSizeKey),
@@ -124,6 +131,15 @@ struct SettingsView: View {
             return chunkValue
         }
         return defaultArchiveChunkSize
+    }
+
+    private var activeToolSpendLimitPerTurnUSD: Double {
+        if let saved = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitPerTurnUSDKey),
+           let value = Double(saved),
+           value >= minimumToolSpendLimitPerTurnUSD {
+            return value
+        }
+        return defaultToolSpendLimitPerTurnUSD
     }
     
     var body: some View {
@@ -229,6 +245,47 @@ struct SettingsView: View {
                 .pickerStyle(.menu)
                 
                 Text("Controls thinking depth for supported models (Gemini 3, o1/o3, Grok).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    Text("Tool Spend Limit / Turn (USD)")
+                    Spacer()
+                    TextField(formatUSD(activeToolSpendLimitPerTurnUSD), text: $openRouterToolSpendLimit)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                        .multilineTextAlignment(.trailing)
+                }
+
+                Text("Stops tool chaining when this turn's cumulative OpenRouter usage cost reaches the limit. BYOK-aware when upstream cost is reported. Min: 0.001. Leave empty to use default (\(formatUSD(defaultToolSpendLimitPerTurnUSD))).")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    Text("Daily Spend Limit (USD)")
+                    Spacer()
+                    Text("Spent today: $\(formatUSD(openRouterTodaySpendUSD))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    TextField("none", text: $openRouterDailySpendLimit)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                        .multilineTextAlignment(.trailing)
+                }
+
+                HStack {
+                    Text("Monthly Spend Limit (USD)")
+                    Spacer()
+                    Text("Spent month: $\(formatUSD(openRouterMonthSpendUSD))")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    TextField("none", text: $openRouterMonthlySpendLimit)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 90)
+                        .multilineTextAlignment(.trailing)
+                }
+
+                Text("Daily/monthly limits pause further tool usage once reached. Leave blank for no cap. Min when set: 0.001.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -1343,6 +1400,47 @@ struct SettingsView: View {
     private var isFormValid: Bool {
         !telegramToken.isEmpty && !chatId.isEmpty && !openRouterApiKey.isEmpty
     }
+
+    private func normalizedToolSpendLimitValue(_ rawValue: String) -> String {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty,
+              let parsed = Double(normalized),
+              parsed.isFinite,
+              parsed >= minimumToolSpendLimitPerTurnUSD else {
+            return formatUSD(defaultToolSpendLimitPerTurnUSD)
+        }
+        return formatUSD(parsed)
+    }
+
+    private func normalizedOptionalSpendLimitValue(_ rawValue: String) -> String? {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return nil
+        }
+        guard let parsed = Double(normalized),
+              parsed.isFinite,
+              parsed >= minimumToolSpendLimitPerTurnUSD else {
+            return nil
+        }
+        return formatUSD(parsed)
+    }
+
+    private func formatUSD(_ value: Double) -> String {
+        var formatted = String(format: "%.6f", value)
+        while formatted.contains(".") && formatted.last == "0" {
+            formatted.removeLast()
+        }
+        if formatted.last == "." {
+            formatted.removeLast()
+        }
+        return formatted
+    }
+
+    private func refreshOpenRouterSpendCounters() {
+        let snapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
+        openRouterTodaySpendUSD = snapshot.today
+        openRouterMonthSpendUSD = snapshot.month
+    }
     
     private func loadSettings() {
         telegramToken = KeychainHelper.load(key: KeychainHelper.telegramBotTokenKey) ?? ""
@@ -1351,6 +1449,29 @@ struct SettingsView: View {
         openRouterModel = KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? ""
         openRouterProviders = KeychainHelper.load(key: KeychainHelper.openRouterProvidersKey) ?? ""
         openRouterReasoningEffort = KeychainHelper.load(key: KeychainHelper.openRouterReasoningEffortKey) ?? "high"
+        if let savedSpendLimit = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitPerTurnUSDKey),
+           let parsed = Double(savedSpendLimit),
+           parsed >= minimumToolSpendLimitPerTurnUSD,
+           abs(parsed - defaultToolSpendLimitPerTurnUSD) > 0.000_000_1 {
+            openRouterToolSpendLimit = formatUSD(parsed)
+        } else {
+            openRouterToolSpendLimit = ""
+        }
+        if let dailyLimit = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitDailyUSDKey),
+           let parsed = Double(dailyLimit),
+           parsed >= minimumToolSpendLimitPerTurnUSD {
+            openRouterDailySpendLimit = formatUSD(parsed)
+        } else {
+            openRouterDailySpendLimit = ""
+        }
+        if let monthlyLimit = KeychainHelper.load(key: KeychainHelper.openRouterToolSpendLimitMonthlyUSDKey),
+           let parsed = Double(monthlyLimit),
+           parsed >= minimumToolSpendLimitPerTurnUSD {
+            openRouterMonthlySpendLimit = formatUSD(parsed)
+        } else {
+            openRouterMonthlySpendLimit = ""
+        }
+        refreshOpenRouterSpendCounters()
         serperApiKey = KeychainHelper.load(key: KeychainHelper.serperApiKeyKey) ?? ""
         jinaApiKey = KeychainHelper.load(key: KeychainHelper.jinaApiKeyKey) ?? ""
         
@@ -1541,6 +1662,24 @@ struct SettingsView: View {
             } else {
                 try? KeychainHelper.delete(key: KeychainHelper.openRouterReasoningEffortKey)
             }
+            let spendLimitToSave = normalizedToolSpendLimitValue(openRouterToolSpendLimit)
+            try KeychainHelper.save(key: KeychainHelper.openRouterToolSpendLimitPerTurnUSDKey, value: spendLimitToSave)
+            openRouterToolSpendLimit = (Double(spendLimitToSave) == defaultToolSpendLimitPerTurnUSD) ? "" : spendLimitToSave
+            if let dailyLimit = normalizedOptionalSpendLimitValue(openRouterDailySpendLimit) {
+                try KeychainHelper.save(key: KeychainHelper.openRouterToolSpendLimitDailyUSDKey, value: dailyLimit)
+                openRouterDailySpendLimit = dailyLimit
+            } else {
+                openRouterDailySpendLimit = ""
+                try? KeychainHelper.delete(key: KeychainHelper.openRouterToolSpendLimitDailyUSDKey)
+            }
+            if let monthlyLimit = normalizedOptionalSpendLimitValue(openRouterMonthlySpendLimit) {
+                try KeychainHelper.save(key: KeychainHelper.openRouterToolSpendLimitMonthlyUSDKey, value: monthlyLimit)
+                openRouterMonthlySpendLimit = monthlyLimit
+            } else {
+                openRouterMonthlySpendLimit = ""
+                try? KeychainHelper.delete(key: KeychainHelper.openRouterToolSpendLimitMonthlyUSDKey)
+            }
+            refreshOpenRouterSpendCounters()
             
             // Save email settings (always save, even if empty, to allow clearing values)
             try KeychainHelper.save(key: KeychainHelper.imapHostKey, value: imapHost)
@@ -1750,6 +1889,24 @@ struct SettingsView: View {
         } else {
             try? KeychainHelper.delete(key: KeychainHelper.openRouterReasoningEffortKey)
         }
+        let spendLimitToSave = normalizedToolSpendLimitValue(openRouterToolSpendLimit)
+        try? KeychainHelper.save(key: KeychainHelper.openRouterToolSpendLimitPerTurnUSDKey, value: spendLimitToSave)
+        openRouterToolSpendLimit = (Double(spendLimitToSave) == defaultToolSpendLimitPerTurnUSD) ? "" : spendLimitToSave
+        if let dailyLimit = normalizedOptionalSpendLimitValue(openRouterDailySpendLimit) {
+            try? KeychainHelper.save(key: KeychainHelper.openRouterToolSpendLimitDailyUSDKey, value: dailyLimit)
+            openRouterDailySpendLimit = dailyLimit
+        } else {
+            openRouterDailySpendLimit = ""
+            try? KeychainHelper.delete(key: KeychainHelper.openRouterToolSpendLimitDailyUSDKey)
+        }
+        if let monthlyLimit = normalizedOptionalSpendLimitValue(openRouterMonthlySpendLimit) {
+            try? KeychainHelper.save(key: KeychainHelper.openRouterToolSpendLimitMonthlyUSDKey, value: monthlyLimit)
+            openRouterMonthlySpendLimit = monthlyLimit
+        } else {
+            openRouterMonthlySpendLimit = ""
+            try? KeychainHelper.delete(key: KeychainHelper.openRouterToolSpendLimitMonthlyUSDKey)
+        }
+        refreshOpenRouterSpendCounters()
     }
     
     private func saveWebSearchSection() {

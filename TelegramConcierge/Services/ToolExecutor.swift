@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import Foundation
 
 // MARK: - Tool Executor
@@ -18,7 +19,7 @@ actor ToolExecutor {
         Task { await archiveService.configure(apiKey: openRouterKey) }
     }
     
-    func cancelAllRunningProcesses() async {
+    nonisolated func cancelAllRunningProcesses() async {
         let processes = Self.snapshotRunningProcesses()
         guard !processes.isEmpty else { return }
         
@@ -31,6 +32,25 @@ actor ToolExecutor {
         
         for process in processes where process.isRunning {
             process.interrupt()
+        }
+        
+        try? await Task.sleep(nanoseconds: 300_000_000)
+        
+        for process in processes where process.isRunning {
+            let pid = process.processIdentifier
+            if pid > 0 {
+                _ = kill(pid, SIGKILL)
+            }
+        }
+    }
+    
+    private nonisolated static func waitForProcessExit(_ process: Process, timeoutNanoseconds: UInt64) async {
+        let pollInterval: UInt64 = 50_000_000
+        var elapsed: UInt64 = 0
+        
+        while process.isRunning && elapsed < timeoutNanoseconds {
+            try? await Task.sleep(nanoseconds: pollInterval)
+            elapsed += pollInterval
         }
     }
     
@@ -3111,10 +3131,23 @@ extension ToolExecutor {
                 try? await Task.sleep(nanoseconds: 100_000_000)
             }
             
-            process.waitUntilExit()
+            if process.isRunning {
+                await Self.waitForProcessExit(process, timeoutNanoseconds: 500_000_000)
+            }
+            if process.isRunning {
+                let pid = process.processIdentifier
+                if pid > 0 {
+                    _ = kill(pid, SIGKILL)
+                }
+                await Self.waitForProcessExit(process, timeoutNanoseconds: 500_000_000)
+            }
             
             if Task.isCancelled {
                 return #"{"error": "Shortcut listing cancelled"}"#
+            }
+            
+            if process.isRunning {
+                return #"{"error": "Shortcut listing did not terminate cleanly"}"#
             }
             
             let outputData = outputPipe.fileHandleForReading.readDataToEndOfFile()
@@ -8495,7 +8528,22 @@ extension ToolExecutor {
             }
         }
         
-        process.waitUntilExit()
+        if process.isRunning {
+            await Self.waitForProcessExit(process, timeoutNanoseconds: 500_000_000)
+        }
+        if process.isRunning {
+            let pid = process.processIdentifier
+            if pid > 0 {
+                _ = kill(pid, SIGKILL)
+            }
+            await Self.waitForProcessExit(process, timeoutNanoseconds: 500_000_000)
+        }
+        
+        if process.isRunning {
+            throw NSError(domain: "ToolExecutor", code: 3, userInfo: [
+                NSLocalizedDescriptionKey: "Command did not terminate cleanly after cancellation/timeout."
+            ])
+        }
         
         let stdoutData = outputPipe.fileHandleForReading.readDataToEndOfFile()
         let stderrData = errorPipe.fileHandleForReading.readDataToEndOfFile()
