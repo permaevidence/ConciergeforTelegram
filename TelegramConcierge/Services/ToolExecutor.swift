@@ -4184,18 +4184,22 @@ struct DeployProjectToVercelArguments: Codable {
 struct ProvisionProjectDatabaseArguments: Codable {
     let projectId: String
     let provider: String?
+    let environment: String?
     let databaseTitle: String?
     let instantToken: String?
     let useTemporaryApp: Bool?
+    let forceReprovision: Bool?
     let timeoutSeconds: Int?
     let maxOutputChars: Int?
     
     enum CodingKeys: String, CodingKey {
         case projectId = "project_id"
         case provider
+        case environment
         case databaseTitle = "database_title"
         case instantToken = "instant_token"
         case useTemporaryApp = "use_temporary_app"
+        case forceReprovision = "force_reprovision"
         case timeoutSeconds = "timeout_seconds"
         case maxOutputChars = "max_output_chars"
     }
@@ -4204,6 +4208,7 @@ struct ProvisionProjectDatabaseArguments: Codable {
 struct PushProjectDatabaseSchemaArguments: Codable {
     let projectId: String
     let provider: String?
+    let environment: String?
     let relativePath: String?
     let schemaFilePath: String?
     let permsFilePath: String?
@@ -4214,6 +4219,7 @@ struct PushProjectDatabaseSchemaArguments: Codable {
     enum CodingKeys: String, CodingKey {
         case projectId = "project_id"
         case provider
+        case environment
         case relativePath = "relative_path"
         case schemaFilePath = "schema_file_path"
         case permsFilePath = "perms_file_path"
@@ -4225,6 +4231,7 @@ struct PushProjectDatabaseSchemaArguments: Codable {
 
 struct SyncProjectDatabaseEnvToVercelArguments: Codable {
     let projectId: String
+    let environment: String?
     let relativePath: String?
     let includeSavedDatabaseEnv: Bool?
     let includeAdminToken: Bool?
@@ -4237,6 +4244,7 @@ struct SyncProjectDatabaseEnvToVercelArguments: Codable {
     
     enum CodingKeys: String, CodingKey {
         case projectId = "project_id"
+        case environment
         case relativePath = "relative_path"
         case includeSavedDatabaseEnv = "include_saved_database_env"
         case includeAdminToken = "include_admin_token"
@@ -4251,6 +4259,7 @@ struct SyncProjectDatabaseEnvToVercelArguments: Codable {
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         projectId = try container.decode(String.self, forKey: .projectId)
+        environment = try container.decodeIfPresent(String.self, forKey: .environment)
         relativePath = try container.decodeIfPresent(String.self, forKey: .relativePath)
         includeSavedDatabaseEnv = try container.decodeIfPresent(Bool.self, forKey: .includeSavedDatabaseEnv)
         includeAdminToken = try container.decodeIfPresent(Bool.self, forKey: .includeAdminToken)
@@ -4658,6 +4667,14 @@ private struct VercelDeployResult: Codable {
     }
 }
 
+private struct ProjectDatabaseEnvironmentMetadata: Codable {
+    var databaseTitle: String
+    var appId: String?
+    var createdAt: Date?
+    var schemaLastPushedAt: Date?
+    var lastUpdatedAt: Date
+}
+
 private struct ProjectDatabaseMetadata: Codable {
     let provider: String
     var databaseTitle: String
@@ -4665,6 +4682,7 @@ private struct ProjectDatabaseMetadata: Codable {
     var createdAt: Date?
     var schemaLastPushedAt: Date?
     var lastUpdatedAt: Date
+    var environments: [String: ProjectDatabaseEnvironmentMetadata]?
 }
 
 private struct ShowProjectDeploymentToolsResult: Codable {
@@ -6174,13 +6192,43 @@ extension ToolExecutor {
         guard provider == "instantdb" else {
             return #"{"error":"Unsupported provider. Supported providers: instantdb."}"#
         }
+
+        let (databaseEnvironment, environmentError) = parseProjectDatabaseEnvironment(args.environment)
+        if let environmentError {
+            return #"{"error":"\#(environmentError)"}"#
+        }
+        
+        let useTemporary = args.useTemporaryApp ?? false
+        let forceReprovision = args.forceReprovision ?? false
+
+        if !useTemporary && !forceReprovision,
+           let existingMetadata = loadProjectDatabaseMetadata(projectURL: projectURL),
+           existingMetadata.provider == provider,
+           let existingAppId = linkedDatabaseAppId(from: existingMetadata, environment: databaseEnvironment) {
+            let existingAdminToken = loadInstantAdminToken(projectId: args.projectId, environment: databaseEnvironment)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let result = ProvisionProjectDatabaseResult(
+                success: true,
+                projectId: args.projectId,
+                provider: provider,
+                databaseTitle: linkedDatabaseTitle(from: existingMetadata, environment: databaseEnvironment),
+                appId: existingAppId,
+                savedAdminToken: !existingAdminToken.isEmpty,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                diagnosticExcerpt: nil,
+                logFile: nil,
+                message: "Database already provisioned for this project. Reusing saved app_id."
+            )
+            return encodeJSON(result)
+        }
         
         let metadata = loadProjectMetadata(projectURL: projectURL)
         let fallbackTitle = metadata?.name ?? args.projectId
         let rawTitle = args.databaseTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
         let databaseTitle = (rawTitle?.isEmpty == false) ? rawTitle! : fallbackTitle
         
-        let useTemporary = args.useTemporaryApp ?? false
         let configuredCommand = (KeychainHelper.load(key: KeychainHelper.instantCLICommandKey) ?? KeychainHelper.defaultInstantCLICommand)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let command = configuredCommand.isEmpty ? KeychainHelper.defaultInstantCLICommand : configuredCommand
@@ -6218,15 +6266,7 @@ extension ToolExecutor {
             let redactedStderr = redactSensitiveValues(in: output.stderr, values: token.isEmpty ? [] : [token])
             
             let parsed = parseJSONObject(in: output.stdout) ?? parseJSONObject(in: output.stderr)
-            let appId = extractString(
-                from: parsed,
-                candidatePaths: [
-                    ["appId"],
-                    ["app_id"],
-                    ["app", "id"],
-                    ["id"]
-                ]
-            )
+            let appId = extractInstantAppId(parsedObject: parsed, stdout: output.stdout, stderr: output.stderr)
             let adminToken = extractString(
                 from: parsed,
                 candidatePaths: [
@@ -6238,10 +6278,7 @@ extension ToolExecutor {
             )
             
             if let adminToken, !adminToken.isEmpty {
-                try? KeychainHelper.save(
-                    key: instantAdminTokenKey(projectId: args.projectId),
-                    value: adminToken
-                )
+                saveInstantAdminToken(adminToken, projectId: args.projectId, environment: databaseEnvironment)
             }
             
             let additionalSensitive = [token, adminToken ?? ""].filter { !$0.isEmpty }
@@ -6256,25 +6293,47 @@ extension ToolExecutor {
                 stdout: fullyRedactedStdout,
                 stderr: fullyRedactedStderr
             )
-            
-            let metadataToSave = ProjectDatabaseMetadata(
-                provider: provider,
-                databaseTitle: databaseTitle,
-                appId: appId,
-                createdAt: Date(),
-                schemaLastPushedAt: nil,
-                lastUpdatedAt: Date()
-            )
-            saveProjectDatabaseMetadata(metadataToSave, projectURL: projectURL)
-            
-            let success = output.exitCode == 0 && !output.timedOut
+
+            let commandSucceeded = output.exitCode == 0 && !output.timedOut
+            let hasAppId = !(appId?.isEmpty ?? true)
+            let success = commandSucceeded && hasAppId
+
+            if success {
+                var metadataToSave = loadProjectDatabaseMetadata(projectURL: projectURL) ?? ProjectDatabaseMetadata(
+                    provider: provider,
+                    databaseTitle: databaseTitle,
+                    appId: nil,
+                    createdAt: nil,
+                    schemaLastPushedAt: nil,
+                    lastUpdatedAt: Date(),
+                    environments: nil
+                )
+                
+                let now = Date()
+                if let environment = databaseEnvironment {
+                    setLinkedDatabase(
+                        metadata: &metadataToSave,
+                        environment: environment,
+                        appId: appId,
+                        databaseTitle: databaseTitle,
+                        createdAt: now
+                    )
+                } else {
+                    metadataToSave.databaseTitle = databaseTitle
+                    metadataToSave.appId = appId
+                    metadataToSave.createdAt = now
+                    metadataToSave.schemaLastPushedAt = nil
+                    metadataToSave.lastUpdatedAt = now
+                }
+                
+                saveProjectDatabaseMetadata(metadataToSave, projectURL: projectURL)
+            }
+
             let message: String
             if success {
-                if appId == nil || appId?.isEmpty == true {
-                    message = "Database provisioning command succeeded, but app_id could not be parsed from output."
-                } else {
-                    message = "Database provisioned successfully."
-                }
+                message = "Database provisioned successfully."
+            } else if commandSucceeded {
+                message = "Database provisioning command succeeded, but app_id could not be parsed. Project link was not updated."
             } else if output.timedOut {
                 message = "Database provisioning timed out after \(timeoutSeconds)s."
             } else {
@@ -6333,17 +6392,25 @@ extension ToolExecutor {
         guard provider == "instantdb" else {
             return #"{"error":"Unsupported provider. Supported providers: instantdb."}"#
         }
+
+        let (databaseEnvironment, environmentError) = parseProjectDatabaseEnvironment(args.environment)
+        if let environmentError {
+            return #"{"error":"\#(environmentError)"}"#
+        }
         
         guard var databaseMetadata = loadProjectDatabaseMetadata(projectURL: projectURL) else {
             return #"{"error":"No saved project database metadata. Run provision_project_database first."}"#
         }
         
-        guard let appId = databaseMetadata.appId, !appId.isEmpty else {
+        guard let appId = linkedDatabaseAppId(from: databaseMetadata, environment: databaseEnvironment) else {
+            if let databaseEnvironment {
+                return #"{"error":"Saved database metadata does not contain app_id for environment '\#(databaseEnvironment)'. Run provision_project_database with environment set first."}"#
+            }
             return #"{"error":"Saved database metadata does not contain app_id. Re-run provision_project_database."}"#
         }
         
         let tokenOverride = args.instantToken?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let savedAdminToken = KeychainHelper.load(key: instantAdminTokenKey(projectId: args.projectId))
+        let savedAdminToken = loadInstantAdminToken(projectId: args.projectId, environment: databaseEnvironment)
         let defaultToken = KeychainHelper.load(key: KeychainHelper.instantApiTokenKey)
         let token = (tokenOverride?.isEmpty == false)
             ? tokenOverride!
@@ -6408,8 +6475,13 @@ extension ToolExecutor {
             
             let success = output.exitCode == 0 && !output.timedOut
             if success {
-                databaseMetadata.schemaLastPushedAt = Date()
-                databaseMetadata.lastUpdatedAt = Date()
+                let now = Date()
+                if let environment = databaseEnvironment {
+                    setSchemaPushedTimestamp(metadata: &databaseMetadata, environment: environment, at: now)
+                } else {
+                    databaseMetadata.schemaLastPushedAt = now
+                    databaseMetadata.lastUpdatedAt = now
+                }
                 saveProjectDatabaseMetadata(databaseMetadata, projectURL: projectURL)
             }
             
@@ -6498,21 +6570,28 @@ extension ToolExecutor {
         let teamId = (args.teamId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? args.teamId!.trimmingCharacters(in: .whitespacesAndNewlines)
             : projectLink?.orgId
+
+        let (databaseEnvironment, environmentError) = parseProjectDatabaseEnvironment(args.environment)
+        if let environmentError {
+            return #"{"error":"\#(environmentError)"}"#
+        }
         
         let includeSaved = args.includeSavedDatabaseEnv ?? true
         let includeAdminToken = args.includeAdminToken ?? false
-        let targets = normalizeVercelTargets(args.targets)
+        let defaultTargets = defaultVercelTargets(for: databaseEnvironment)
+        let targets = normalizeVercelTargets(args.targets, defaultTargets: defaultTargets)
         let timeoutSeconds = min(max(args.timeoutSeconds ?? 30, 5), 120)
         let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
         
         var envVars: [String: String] = [:]
         if includeSaved, let db = loadProjectDatabaseMetadata(projectURL: projectURL) {
-            if db.provider == "instantdb", let appId = db.appId, !appId.isEmpty {
+            if db.provider == "instantdb",
+               let appId = linkedDatabaseAppId(from: db, environment: databaseEnvironment) {
                 envVars["NEXT_PUBLIC_INSTANT_APP_ID"] = appId
                 envVars["INSTANT_APP_ID"] = appId
                 
                 if includeAdminToken,
-                   let adminToken = KeychainHelper.load(key: instantAdminTokenKey(projectId: args.projectId))?
+                   let adminToken = loadInstantAdminToken(projectId: args.projectId, environment: databaseEnvironment)?
                     .trimmingCharacters(in: .whitespacesAndNewlines),
                    !adminToken.isEmpty {
                     envVars["INSTANT_ADMIN_TOKEN"] = adminToken
@@ -6657,8 +6736,154 @@ extension ToolExecutor {
         }
     }
     
-    private func instantAdminTokenKey(projectId: String) -> String {
+    private func parseProjectDatabaseEnvironment(_ raw: String?) -> (environment: String?, error: String?) {
+        let normalized = raw?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() ?? ""
+        guard !normalized.isEmpty else { return (nil, nil) }
+        
+        switch normalized {
+        case "prod", "production", "live":
+            return ("prod", nil)
+        case "test", "testing", "staging", "preview", "development", "dev":
+            return ("test", nil)
+        default:
+            return (nil, "environment must be 'test' or 'prod'.")
+        }
+    }
+    
+    private func linkedDatabaseTitle(from metadata: ProjectDatabaseMetadata, environment: String?) -> String {
+        if let environment,
+           let entry = metadata.environments?[environment],
+           !entry.databaseTitle.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return entry.databaseTitle
+        }
+        return metadata.databaseTitle
+    }
+    
+    private func linkedDatabaseAppId(from metadata: ProjectDatabaseMetadata, environment: String?) -> String? {
+        func normalized(_ value: String?) -> String? {
+            guard let value else { return nil }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            return trimmed.isEmpty ? nil : trimmed
+        }
+        
+        if let environment {
+            if let appId = normalized(metadata.environments?[environment]?.appId) {
+                return appId
+            }
+            if environment == "prod" {
+                return normalized(metadata.appId)
+            }
+            return nil
+        }
+        
+        return normalized(metadata.appId)
+    }
+    
+    private func setLinkedDatabase(
+        metadata: inout ProjectDatabaseMetadata,
+        environment: String,
+        appId: String?,
+        databaseTitle: String,
+        createdAt: Date
+    ) {
+        let entry = ProjectDatabaseEnvironmentMetadata(
+            databaseTitle: databaseTitle,
+            appId: appId,
+            createdAt: createdAt,
+            schemaLastPushedAt: nil,
+            lastUpdatedAt: createdAt
+        )
+        var environments = metadata.environments ?? [:]
+        environments[environment] = entry
+        metadata.environments = environments
+        metadata.lastUpdatedAt = createdAt
+        
+        // Keep legacy fields aligned with production for backward compatibility.
+        if environment == "prod" {
+            metadata.databaseTitle = databaseTitle
+            metadata.appId = appId
+            metadata.createdAt = createdAt
+            metadata.schemaLastPushedAt = nil
+        }
+    }
+    
+    private func setSchemaPushedTimestamp(
+        metadata: inout ProjectDatabaseMetadata,
+        environment: String,
+        at date: Date
+    ) {
+        var environments = metadata.environments ?? [:]
+        if var entry = environments[environment] {
+            entry.schemaLastPushedAt = date
+            entry.lastUpdatedAt = date
+            environments[environment] = entry
+            metadata.environments = environments
+        }
+        metadata.lastUpdatedAt = date
+        
+        // Keep legacy fields aligned with production for backward compatibility.
+        if environment == "prod" {
+            metadata.schemaLastPushedAt = date
+        }
+    }
+    
+    private func instantAdminTokenLegacyKey(projectId: String) -> String {
         "instant_admin_token_\(projectId)"
+    }
+    
+    private func instantAdminTokenEnvironmentKey(projectId: String, environment: String) -> String {
+        "instant_admin_token_\(projectId)_\(environment)"
+    }
+    
+    private func loadInstantAdminToken(projectId: String, environment: String?) -> String? {
+        switch environment {
+        case "test":
+            return KeychainHelper.load(key: instantAdminTokenEnvironmentKey(projectId: projectId, environment: "test"))
+        case "prod":
+            return KeychainHelper.load(key: instantAdminTokenLegacyKey(projectId: projectId))
+                ?? KeychainHelper.load(key: instantAdminTokenEnvironmentKey(projectId: projectId, environment: "prod"))
+        default:
+            return KeychainHelper.load(key: instantAdminTokenLegacyKey(projectId: projectId))
+                ?? KeychainHelper.load(key: instantAdminTokenEnvironmentKey(projectId: projectId, environment: "prod"))
+        }
+    }
+    
+    private func saveInstantAdminToken(_ token: String, projectId: String, environment: String?) {
+        let trimmed = token.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        
+        switch environment {
+        case "test":
+            try? KeychainHelper.save(
+                key: instantAdminTokenEnvironmentKey(projectId: projectId, environment: "test"),
+                value: trimmed
+            )
+        case "prod":
+            try? KeychainHelper.save(
+                key: instantAdminTokenLegacyKey(projectId: projectId),
+                value: trimmed
+            )
+            try? KeychainHelper.save(
+                key: instantAdminTokenEnvironmentKey(projectId: projectId, environment: "prod"),
+                value: trimmed
+            )
+        default:
+            try? KeychainHelper.save(
+                key: instantAdminTokenLegacyKey(projectId: projectId),
+                value: trimmed
+            )
+        }
+    }
+    
+    private func defaultVercelTargets(for environment: String?) -> [String] {
+        switch environment {
+        case "test":
+            return ["development", "preview"]
+        case "prod":
+            return ["production"]
+        default:
+            return ["development", "preview", "production"]
+        }
     }
     
     private func projectDatabaseMetadataURL(projectURL: URL) -> URL {
@@ -6725,6 +6950,59 @@ extension ToolExecutor {
         
         return nil
     }
+
+    private func extractInstantAppId(parsedObject: [String: Any]?, stdout: String, stderr: String) -> String? {
+        if let direct = extractString(
+            from: parsedObject,
+            candidatePaths: [
+                ["appId"],
+                ["app_id"],
+                ["app", "id"],
+                ["id"]
+            ]
+        ) {
+            let normalized = direct.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalized.count >= 8 {
+                return normalized
+            }
+        }
+        
+        let combined = "\(stdout)\n\(stderr)"
+        let patterns: [String] = [
+            #""app[_-]?id"\s*:\s*"([A-Za-z0-9_-]{8,})""#,
+            #"\bapp[_\s-]?id\b\s*[:=]\s*["']?([A-Za-z0-9_-]{8,})"#,
+            #"[?&]app=([A-Za-z0-9_-]{8,})\b"#,
+            #"/apps?/([A-Za-z0-9_-]{8,})\b"#
+        ]
+        
+        for pattern in patterns {
+            if let match = firstRegexCapture(in: combined, pattern: pattern) {
+                return match
+            }
+        }
+        
+        return nil
+    }
+    
+    private func firstRegexCapture(
+        in text: String,
+        pattern: String,
+        options: NSRegularExpression.Options = [.caseInsensitive]
+    ) -> String? {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
+            return nil
+        }
+        
+        let range = NSRange(text.startIndex..., in: text)
+        guard let match = regex.firstMatch(in: text, options: [], range: range),
+              match.numberOfRanges > 1,
+              let captureRange = Range(match.range(at: 1), in: text) else {
+            return nil
+        }
+        
+        let value = String(text[captureRange]).trimmingCharacters(in: .whitespacesAndNewlines)
+        return value.isEmpty ? nil : value
+    }
     
     private struct VercelProjectLink: Codable {
         let projectId: String?
@@ -6742,9 +7020,15 @@ extension ToolExecutor {
         return try? JSONDecoder().decode(VercelProjectLink.self, from: data)
     }
     
-    private func normalizeVercelTargets(_ rawTargets: [String]?) -> [String] {
+    private func normalizeVercelTargets(
+        _ rawTargets: [String]?,
+        defaultTargets: [String] = ["development", "preview", "production"]
+    ) -> [String] {
         let allowed = Set(["development", "preview", "production"])
-        let defaults = ["development", "preview", "production"]
+        let fallbackDefaults = defaultTargets
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { allowed.contains($0) }
+        let defaults = fallbackDefaults.isEmpty ? ["development", "preview", "production"] : fallbackDefaults
         
         guard let rawTargets, !rawTargets.isEmpty else { return defaults }
         

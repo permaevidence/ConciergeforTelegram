@@ -1024,7 +1024,7 @@ enum AvailableTools {
     static let provisionProjectDatabase = ToolDefinition(
         function: FunctionDefinition(
             name: "provision_project_database",
-            description: "Provision a project database (currently optimized for Instant) and persist project database metadata. Uses Instant CLI in non-interactive mode with an API token from settings or instant_token argument.",
+            description: "Provision a project database (currently optimized for Instant) and persist project database metadata. Uses Instant CLI in non-interactive mode with an API token from settings or instant_token argument. Reuses an already-linked app by default unless force_reprovision=true.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1034,6 +1034,10 @@ enum AvailableTools {
                     "provider": ParameterProperty(
                         type: "string",
                         description: "Database provider. Supported: 'instantdb' (default)."
+                    ),
+                    "environment": ParameterProperty(
+                        type: "string",
+                        description: "Optional database environment. Use 'test' for preview/testing DB or 'prod' for production DB. Default: existing legacy project link."
                     ),
                     "database_title": ParameterProperty(
                         type: "string",
@@ -1046,6 +1050,10 @@ enum AvailableTools {
                     "use_temporary_app": ParameterProperty(
                         type: "boolean",
                         description: "If true, create a temporary Instant app (ephemeral; no long-term token needed). Default false."
+                    ),
+                    "force_reprovision": ParameterProperty(
+                        type: "boolean",
+                        description: "If true, create a new Instant app even when this project already has a saved app_id. Default false."
                     ),
                     "timeout_seconds": ParameterProperty(
                         type: "integer",
@@ -1074,6 +1082,10 @@ enum AvailableTools {
                     "provider": ParameterProperty(
                         type: "string",
                         description: "Database provider. Supported: 'instantdb' (default)."
+                    ),
+                    "environment": ParameterProperty(
+                        type: "string",
+                        description: "Optional database environment to push schema to: 'test' or 'prod'. Default: existing legacy project link."
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1115,6 +1127,10 @@ enum AvailableTools {
                         type: "string",
                         description: "Project ID from list_projects."
                     ),
+                    "environment": ParameterProperty(
+                        type: "string",
+                        description: "Optional database environment source: 'test' or 'prod'. When set and targets are omitted, defaults are test->development+preview, prod->production."
+                    ),
                     "relative_path": ParameterProperty(
                         type: "string",
                         description: "Optional folder inside the project where .vercel/project.json is located. Default '.'."
@@ -1133,7 +1149,7 @@ enum AvailableTools {
                     ),
                     "targets": ParameterProperty(
                         type: "string",
-                        description: "Optional target environments as JSON array string or CSV. Defaults to development,preview,production."
+                        description: "Optional target environments as JSON array string or CSV. Defaults depend on environment: test->development,preview; prod->production; otherwise development,preview,production."
                     ),
                     "project_name": ParameterProperty(
                         type: "string",
