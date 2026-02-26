@@ -722,6 +722,12 @@ class ConversationManager: ObservableObject {
         case "/codex":
             await switchCodeCLIProvider(to: "codex")
             return true
+        case "/transcribe_local":
+            await switchVoiceTranscriptionProvider(to: .local)
+            return true
+        case "/transcribe_openai":
+            await switchVoiceTranscriptionProvider(to: .openAI)
+            return true
         default:
             return false
         }
@@ -770,6 +776,54 @@ class ConversationManager: ObservableObject {
             try? await telegramService.sendMessage(chatId: chatId, text: message)
         }
         
+        if activeRunId == nil {
+            statusMessage = "Listening... (Last check: \(formattedTime()))"
+        }
+    }
+
+    private func switchVoiceTranscriptionProvider(to provider: VoiceTranscriptionProvider) async {
+        let currentProvider = currentVoiceTranscriptionProvider()
+        let providerDisplayName = provider.displayName
+        let switchedMessage: String
+
+        if currentProvider == provider {
+            switchedMessage = "✅ Voice transcription already set to \(providerDisplayName)."
+        } else {
+            do {
+                try KeychainHelper.save(
+                    key: KeychainHelper.voiceTranscriptionProviderKey,
+                    value: provider.rawValue
+                )
+                switchedMessage = "✅ Switched voice transcription to \(providerDisplayName)."
+            } catch {
+                let errorMessage = "❌ Failed to switch voice transcription to \(providerDisplayName): \(error.localizedDescription)"
+                if let chatId = pairedChatId {
+                    try? await telegramService.sendMessage(chatId: chatId, text: errorMessage)
+                }
+                if activeRunId == nil {
+                    statusMessage = "Listening... (Last check: \(formattedTime()))"
+                }
+                return
+            }
+        }
+
+        var advisoryNotes: [String] = []
+        if provider == .openAI {
+            if openAITranscriptionAPIKey().isEmpty {
+                advisoryNotes.append("⚠️ OpenAI API key missing. Add it in Settings > Voice Transcription.")
+            }
+        } else {
+            await WhisperKitService.shared.checkModelStatus()
+            if !WhisperKitService.shared.isModelReady {
+                advisoryNotes.append("⚠️ \(WhisperKitService.shared.statusMessage). Configure the Whisper model in Settings > Voice Transcription.")
+            }
+        }
+
+        let message = ([switchedMessage] + advisoryNotes).joined(separator: "\n")
+        if let chatId = pairedChatId {
+            try? await telegramService.sendMessage(chatId: chatId, text: message)
+        }
+
         if activeRunId == nil {
             statusMessage = "Listening... (Last check: \(formattedTime()))"
         }
