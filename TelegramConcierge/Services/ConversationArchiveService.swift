@@ -21,6 +21,7 @@ actor ConversationArchiveService {
     private var temporaryChunkSize: Int { configuredChunkSize }
     private var consolidatedChunkSize: Int { configuredChunkSize * 4 }
     private let summaryTargetTokens = 1500
+    private let minimumSummaryWordCount = 100
     private let chunksToConsolidate = 4      // 4 × chunk_size = consolidatedChunkSize
     private let consolidationTriggerCount = 6 // Trigger at 6 temps, leaving 2 as buffer
     
@@ -85,25 +86,51 @@ actor ConversationArchiveService {
         loadPendingIndex()
     }
     
-    /// Called on startup to resume any pending chunks from previous crash
-    func recoverPendingChunks() async {
+    /// Called on startup to resume any pending chunks from previous crash.
+    /// Uses the provided summarization context so recovery summaries preserve continuity.
+    func recoverPendingChunks(defaultContext: SummarizationContext = .empty) async {
         guard !pendingIndex.pendingChunks.isEmpty else { return }
         
         print("[ArchiveService] Found \(pendingIndex.pendingChunks.count) pending chunk(s) from previous session, recovering...")
-        
-        for pending in pendingIndex.pendingChunks {
+
+        let personaContext = defaultContext.personaContext ?? KeychainHelper.load(key: KeychainHelper.structuredUserContextKey)
+        let assistantName = defaultContext.assistantName ?? KeychainHelper.load(key: KeychainHelper.assistantNameKey)
+        let userName = defaultContext.userName ?? KeychainHelper.load(key: KeychainHelper.userNameKey)
+        let currentConversationContext = defaultContext.currentConversationContext
+
+        // Recover oldest-first so summaries can build on each other naturally.
+        let pendingChunks = pendingIndex.pendingChunks.sorted { $0.startDate < $1.startDate }
+
+        for pending in pendingChunks {
             do {
                 // Load the raw messages
                 let fileURL = archiveFolder.appendingPathComponent(pending.rawContentFileName)
                 let data = try Data(contentsOf: fileURL)
                 let messages = try JSONDecoder().decode([Message].self, from: data)
+
+                let summariesBeforePending = chunkIndex.orderedChunks
+                    .filter { $0.endDate < pending.startDate }
+                    .map { $0.summary }
+
+                let recoveryContext = SummarizationContext(
+                    personaContext: personaContext,
+                    assistantName: assistantName,
+                    userName: userName,
+                    previousSummaries: summariesBeforePending,
+                    currentConversationContext: currentConversationContext
+                )
                 
                 // Generate summary (with infinite retry)
                 var summary: String? = nil
                 var retryCount = 0
                 while summary == nil {
                     do {
-                        summary = try await generateSummary(for: messages, startDate: pending.startDate, endDate: pending.endDate, context: .empty)
+                        summary = try await generateSummary(
+                            for: messages,
+                            startDate: pending.startDate,
+                            endDate: pending.endDate,
+                            context: recoveryContext
+                        )
                     } catch {
                         retryCount += 1
                         let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
@@ -519,16 +546,25 @@ actor ConversationArchiveService {
         """
         
         let systemPrompt = """
-        You are summarizing a specific segment of an ongoing conversation.\(contextBlock)
+        You are summarizing a specific segment of an ongoing conversation. This summary will be used by you in the future to have a clear idea of the exact contents of this specific chunk of text. It doesn't have to be pretty, just compact, dense, full information that will later let you know all that there is to know in this chunk of text.\(contextBlock)
         YOUR TASK:
-        Summarize ONLY the conversation segment below (make it a detailed ~1000 token summary, approximately 750 words).
+        Summarize ONLY the conversation segment below (make it a detailed ~1000 token summary, approximately 800 words).
         Use any context provided above to understand relationships, references, names, and meaning,
         but the summary should ONLY cover the messages in the segment being archived.
+        The summary must be substantive and at least 500 words.
+        The summary should make chronology of events clear.
         
         Include:
         1. Key topics discussed in this segment
         2. Important decisions or information shared
         3. Any relevant action items or follow-ups mentioned
+        4. Project continuity details: include every project mentioned using its full project name exactly as written in the conversation.
+        5. File continuity details: include the most important files for future continuation, with exact file names and why each file mattered.
+
+        In the summary text, include a short "Project/File Continuity" subsection with:
+        - Projects:
+        - Key files:
+        If there are none, explicitly write "none mentioned".
         
         OUTPUT STRICT JSON:
         { "summary": "...", "key_topics": ["topic1", "topic2", ...] }
@@ -545,12 +581,17 @@ actor ConversationArchiveService {
         
         if let jsonData = extractFirstJSONObjectData(from: response),
            let result = try? JSONDecoder().decode(SummaryExtractionResult.self, from: jsonData) {
+            let validatedSummary = try validateSummaryText(result.summary)
             let topics = result.keyTopics.joined(separator: ", ")
-            return "\(result.summary) [Topics: \(topics)]"
+            if topics.isEmpty {
+                return validatedSummary
+            }
+            return "\(validatedSummary) [Topics: \(topics)]"
         }
         
         // Fallback: use raw response
-        return response.prefix(6000).trimmingCharacters(in: .whitespacesAndNewlines)
+        let fallback = String(response.prefix(6000))
+        return try validateSummaryText(fallback)
     }
     
     // MARK: - Excerpt Extraction
@@ -718,19 +759,7 @@ actor ConversationArchiveService {
         
         for msg in messages {
             let role = msg.role == .user ? "User" : "Assistant"
-            var content = msg.content
-            
-            // Add file indicators with descriptions so the summary captures file context
-            if let imageFile = msg.imageFileName {
-                let desc = await FileDescriptionService.shared.get(filename: imageFile)
-                let descPart = desc.map { " - \"\($0)\"" } ?? ""
-                content = "[Image: \(imageFile)\(descPart)] " + content
-            }
-            if let docFile = msg.documentFileName {
-                let desc = await FileDescriptionService.shared.get(filename: docFile)
-                let descPart = desc.map { " - \"\($0)\"" } ?? ""
-                content = "[Document: \(docFile)\(descPart)] " + content
-            }
+            let content = await decorateMessageContentForArchive(msg.content, message: msg)
             
             formattedMessages.append("[\(role)]: \(content)")
         }
@@ -754,24 +783,54 @@ actor ConversationArchiveService {
         for msg in messages {
             let role = msg.role == .user ? "User" : "Assistant"
             let time = dateFormatter.string(from: msg.timestamp)
-            var content = msg.content
-            
-            // Add file indicators with descriptions for full context
-            if let imageFile = msg.imageFileName {
-                let desc = await FileDescriptionService.shared.get(filename: imageFile)
-                let descPart = desc.map { " - \"\($0)\"" } ?? ""
-                content = "[Image: \(imageFile)\(descPart)] " + content
-            }
-            if let docFile = msg.documentFileName {
-                let desc = await FileDescriptionService.shared.get(filename: docFile)
-                let descPart = desc.map { " - \"\($0)\"" } ?? ""
-                content = "[Document: \(docFile)\(descPart)] " + content
-            }
+            let content = await decorateMessageContentForArchive(msg.content, message: msg)
             
             formattedMessages.append("[\(time)] \(role): \(content)")
         }
         
         return formattedMessages.joined(separator: "\n\n")
+    }
+
+    private func decorateMessageContentForArchive(_ baseContent: String, message: Message) async -> String {
+        var tags: [String] = []
+
+        if !message.accessedProjectIds.isEmpty {
+            tags.append("Projects accessed: \(message.accessedProjectIds.joined(separator: ", "))")
+        }
+
+        for fileName in message.imageFileNames {
+            let desc = await FileDescriptionService.shared.get(filename: fileName)
+            let descPart = desc.map { " - \"\($0)\"" } ?? ""
+            tags.append("Image: \(fileName)\(descPart)")
+        }
+
+        for fileName in message.documentFileNames {
+            let desc = await FileDescriptionService.shared.get(filename: fileName)
+            let descPart = desc.map { " - \"\($0)\"" } ?? ""
+            tags.append("Document: \(fileName)\(descPart)")
+        }
+
+        for fileName in message.referencedImageFileNames {
+            let desc = await FileDescriptionService.shared.get(filename: fileName)
+            let descPart = desc.map { " - \"\($0)\"" } ?? ""
+            tags.append("Referenced image: \(fileName)\(descPart)")
+        }
+
+        for fileName in message.referencedDocumentFileNames {
+            let desc = await FileDescriptionService.shared.get(filename: fileName)
+            let descPart = desc.map { " - \"\($0)\"" } ?? ""
+            tags.append("Referenced document: \(fileName)\(descPart)")
+        }
+
+        for fileName in message.downloadedDocumentFileNames {
+            let desc = await FileDescriptionService.shared.get(filename: fileName)
+            let descPart = desc.map { " - \"\($0)\"" } ?? ""
+            tags.append("Downloaded file: \(fileName)\(descPart)")
+        }
+
+        guard !tags.isEmpty else { return baseContent }
+        let prefix = tags.map { "[\($0)]" }.joined(separator: " ")
+        return "\(prefix) \(baseContent)"
     }
     
     private func extractFirstJSONObjectData(from text: String) -> Data? {
@@ -784,6 +843,20 @@ actor ConversationArchiveService {
         }
         guard let endIdx = end else { return nil }
         return String(text[start...endIdx]).data(using: .utf8)
+    }
+
+    private func validateSummaryText(_ text: String) throws -> String {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            throw ArchiveError.emptySummary
+        }
+
+        let wordCount = trimmed.split(whereSeparator: { $0.isWhitespace }).count
+        guard wordCount >= minimumSummaryWordCount else {
+            throw ArchiveError.summaryTooShort(actualWords: wordCount, minimumWords: minimumSummaryWordCount)
+        }
+
+        return trimmed
     }
     
     // MARK: - Persistence
@@ -839,6 +912,8 @@ enum ArchiveError: LocalizedError {
     case fileNotFound(path: String)
     case notConfigured
     case apiError
+    case emptySummary
+    case summaryTooShort(actualWords: Int, minimumWords: Int)
     
     var errorDescription: String? {
         switch self {
@@ -847,6 +922,9 @@ enum ArchiveError: LocalizedError {
         case .fileNotFound(let path): return "Chunk file not found at: \(path)"
         case .notConfigured: return "Archive service not configured with API key"
         case .apiError: return "API call failed"
+        case .emptySummary: return "Summary generation returned empty output"
+        case .summaryTooShort(let actualWords, let minimumWords):
+            return "Summary too short (\(actualWords) words). Minimum required: \(minimumWords) words"
         }
     }
 }

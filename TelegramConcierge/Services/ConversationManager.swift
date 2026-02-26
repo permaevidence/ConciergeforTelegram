@@ -102,7 +102,12 @@ class ConversationManager: ObservableObject {
         
         // Configure archive service and recover any pending chunks from previous crash
         await archiveService.configure(apiKey: apiKey)
-        await archiveService.recoverPendingChunks()
+        let recoveryChunkSummaries = await archiveService.getRecentChunkSummaries(count: 5)
+        let recoveryContext = buildSummarizationContext(
+            chunkSummaries: recoveryChunkSummaries,
+            currentMessages: messages
+        )
+        await archiveService.recoverPendingChunks(defaultContext: recoveryContext)
         
         // Configure email service: prefer Gmail OAuth if authenticated, fall back to IMAP
         let gmailAuthenticated = await GmailService.shared.isAuthenticated

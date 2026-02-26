@@ -322,12 +322,16 @@ enum AvailableTools {
     static let viewConversationChunk = ToolDefinition(
         function: FunctionDefinition(
             name: "view_conversation_chunk",
-            description: "Access your long-term conversation memory. This tool has TWO uses: (1) LIST ALL ARCHIVED SUMMARIES: Call with no arguments to see summaries of ALL past conversation chunks, including older ones not shown in your context. Use this when the user asks about something from the past that you don't remember. (2) VIEW FULL CHUNK: Call with a chunk_id to retrieve the complete messages from that specific archived chunk. Use this after seeing the summaries to read the actual conversation.",
+            description: "Access your long-term conversation memory. This tool has TWO uses: (1) LIST PAGINATED OLDER SUMMARIES: Call without chunk_id to list archived chunk summaries in pages of 15, newest to oldest, excluding summaries already shown in context. Use page=1 for the most recent older summaries and increment page to go further back. (2) VIEW FULL CHUNK: Call with a chunk_id to retrieve complete messages from that specific archived chunk.",
             parameters: FunctionParameters(
                 properties: [
                     "chunk_id": ParameterProperty(
                         type: "string",
-                        description: "Optional. If provided, returns the full messages from that chunk. If omitted, returns a list of ALL archived chunk summaries with their IDs so you can find what you're looking for."
+                        description: "Optional. If provided, returns the full messages from that chunk."
+                    ),
+                    "page": ParameterProperty(
+                        type: "integer",
+                        description: "Optional for summary listing mode (ignored when chunk_id is provided). 1-based page number. Each page shows 15 older summaries, ordered newest to oldest."
                     )
                 ],
                 required: []

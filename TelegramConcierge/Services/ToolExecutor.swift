@@ -605,33 +605,66 @@ actor ToolExecutor {
     // MARK: - Conversation History Viewing
     
     private func executeViewConversationChunk(_ call: ToolCall) async -> String {
-        // Parse arguments (chunk_id is now optional)
+        let pageSize = 15
+        
+        // Parse arguments (chunk_id is optional; page applies to listing mode)
         var chunkIdStr: String? = nil
+        var requestedPage = 1
         if let argsData = call.function.arguments.data(using: .utf8),
            let args = try? JSONDecoder().decode(ViewConversationChunkArguments.self, from: argsData) {
             chunkIdStr = args.chunkId?.trimmingCharacters(in: .whitespaces)
+            requestedPage = max(args.page ?? 1, 1)
         }
         
         // Get all chunks
         let allChunks = await archiveService.getAllChunks()
         
-        // MODE 1: List all chunk summaries (when no chunk_id provided)
+        // MODE 1: List older chunk summaries not already shown in context
         if chunkIdStr == nil || chunkIdStr?.isEmpty == true {
             if allChunks.isEmpty {
                 return "{\"success\": true, \"message\": \"No archived conversation chunks yet. Chunks are created as conversations grow.\"}"
             }
+            
+            let inContextChunkIds = Set(
+                await archiveService
+                    .getRecentChunkSummaries()
+                    .map { $0.id }
+            )
+            
+            let historicalChunks = allChunks.filter { !inContextChunkIds.contains($0.id) }
+            if historicalChunks.isEmpty {
+                return "{\"success\": true, \"message\": \"No older archived chunks outside the summaries already in context.\"}"
+            }
+            
+            let sortedChunks = historicalChunks.sorted { lhs, rhs in
+                if lhs.endDate != rhs.endDate {
+                    return lhs.endDate > rhs.endDate
+                }
+                return lhs.startDate > rhs.startDate
+            }
+            
+            let totalPages = max(1, Int(ceil(Double(sortedChunks.count) / Double(pageSize))))
+            if requestedPage > totalPages {
+                return "{\"error\": \"Invalid page \(requestedPage). Available pages: 1-\(totalPages).\"}"
+            }
+            
+            let startIndex = (requestedPage - 1) * pageSize
+            let endIndex = min(startIndex + pageSize, sortedChunks.count)
+            let pageChunks = Array(sortedChunks[startIndex..<endIndex])
             
             let dateFormatter = DateFormatter()
             dateFormatter.dateStyle = .short
             dateFormatter.timeStyle = .short
             
             var output = """
-            === ALL ARCHIVED CONVERSATION CHUNKS ===
-            Total: \(allChunks.count) chunk(s)
+            === ARCHIVED CONVERSATION CHUNKS (OLDER THAN IN-CONTEXT SUMMARIES) ===
+            Page: \(requestedPage)/\(totalPages), ordered newest to oldest
+            Showing: \(pageChunks.count) of \(sortedChunks.count) older chunk(s) (15 per page)
+            Excluded (already in context): \(inContextChunkIds.count) chunk(s)
             
             """
             
-            for chunk in allChunks.sorted(by: { $0.startDate < $1.startDate }) {
+            for chunk in pageChunks {
                 let shortId = String(chunk.id.uuidString.prefix(8))
                 let dateRange = "\(dateFormatter.string(from: chunk.startDate)) - \(dateFormatter.string(from: chunk.endDate))"
                 let typeLabel = chunk.type == .consolidated ? "CONSOLIDATED" : "TEMPORARY"
@@ -648,6 +681,12 @@ actor ToolExecutor {
             }
             
             output += "\n\nTo view full messages from a chunk, call: view_conversation_chunk(chunk_id: \"<8-char ID>\")"
+            if requestedPage < totalPages {
+                output += "\nNext page: view_conversation_chunk(page: \(requestedPage + 1))"
+            }
+            if requestedPage > 1 {
+                output += "\nPrevious page: view_conversation_chunk(page: \(requestedPage - 1))"
+            }
             
             return output
         }
@@ -1007,9 +1046,11 @@ struct AddCalendarEventResult: Codable {
 
 struct ViewConversationChunkArguments: Codable {
     let chunkId: String?
+    let page: Int?
     
     enum CodingKeys: String, CodingKey {
         case chunkId = "chunk_id"
+        case page
     }
 }
 
