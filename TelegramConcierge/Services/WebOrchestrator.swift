@@ -614,6 +614,8 @@ final class WebOrchestrator {
         ]
         
         let raw = try await callOpenRouter(
+            stage: "agent.step\(currentStep)",
+            mode: mode,
             model: agentModel(for: mode),
             messages: messages,
             maxTokens: 16000,
@@ -682,6 +684,8 @@ final class WebOrchestrator {
     
     // MARK: - API Calls
     private func callOpenRouter(
+        stage: String,
+        mode: ResearchMode,
         model: String,
         messages: [ORChatReq.Msg],
         maxTokens: Int,
@@ -695,6 +699,17 @@ final class WebOrchestrator {
             sort: nil
         )
 
+        let reasoningLabel: String = {
+            guard let reasoning else { return "none" }
+            if let effort = reasoning.effort, !effort.isEmpty { return effort }
+            if let budget = reasoning.max_tokens { return "budget:\(budget)" }
+            return "configured"
+        }()
+        let providerOrder = providerToUse.order?.joined(separator: ",") ?? "nil"
+        let providerOnly = providerToUse.only?.joined(separator: ",") ?? "nil"
+        let providerFallbacks = providerToUse.allow_fallbacks.map(String.init) ?? "nil"
+        print("[WebOrchestrator] OpenRouter request stage=\(stage) mode=\(modeLabel(mode)) model=\(model) reasoning=\(reasoningLabel) max_tokens=\(maxTokens) provider_order=\(providerOrder) provider_only=\(providerOnly) provider_allow_fallbacks=\(providerFallbacks)")
+
         let body = ORChatReq(
             model: model,
             messages: messages,
@@ -706,7 +721,9 @@ final class WebOrchestrator {
         )
         let data = try await httpJSONPost(url: Endpoints.openrouter, body: body, headers: ["Authorization": "Bearer \(openRouterApiKey)"], timeout: 120)
         let resp = try JSONDecoder().decode(ORChatResp.self, from: data)
-        return resp.choices.first?.message.content ?? ""
+        let content = resp.choices.first?.message.content ?? ""
+        print("[WebOrchestrator] OpenRouter response stage=\(stage) mode=\(modeLabel(mode)) chars=\(content.count)")
+        return content
     }
     
     private func serperSearch(_ q: String) async throws -> SerperSearchResp {
@@ -934,6 +951,8 @@ final class WebOrchestrator {
             .init(role: "user", content: "FOCUS:\n\(focus)\n\nTEXT:\n\(page.prefix(chunkSizeChars))")
         ]
         let raw = try await callOpenRouter(
+            stage: "extract.excerpts",
+            mode: mode,
             model: excerptModel(for: mode),
             messages: msgs,
             maxTokens: 16000,
@@ -1001,6 +1020,8 @@ final class WebOrchestrator {
         ]
 
         let raw = try await callOpenRouter(
+            stage: "extract.assets",
+            mode: mode,
             model: excerptModel(for: mode),
             messages: msgs,
             maxTokens: 8000,
@@ -1118,6 +1139,8 @@ final class WebOrchestrator {
         msgs.append(.init(role: "user", content: userContent))
         
         let raw = try await callOpenRouter(
+            stage: "final.answer",
+            mode: mode,
             model: finalAnswerModel(for: mode),
             messages: msgs,
             maxTokens: 16000,
@@ -1179,7 +1202,8 @@ final class WebOrchestrator {
     }
 
     private func finalAnswerModel(for mode: ResearchMode) -> String {
-        mode == .deepResearch ? configuredMainModel() : ORModel.webFinalAnswer
+        _ = mode
+        return configuredMainModel()
     }
 
     private func agentReasoning(for mode: ResearchMode) -> ORChatReq.Reasoning? {
@@ -1191,11 +1215,19 @@ final class WebOrchestrator {
     }
 
     private func finalAnswerReasoning(for mode: ResearchMode) -> ORChatReq.Reasoning? {
-        mode == .deepResearch ? configuredReasoning() : makeReasoning(ReasoningSettings.finalAns)
+        _ = mode
+        return configuredReasoning()
     }
 
     private func maxSteps(for mode: ResearchMode) -> Int {
         mode == .deepResearch ? maxDeepResearchSteps : maxWebSearchSteps
+    }
+
+    private func modeLabel(_ mode: ResearchMode) -> String {
+        switch mode {
+        case .webSearch: return "web_search"
+        case .deepResearch: return "deep_research"
+        }
     }
     
     // MARK: - Utilities
