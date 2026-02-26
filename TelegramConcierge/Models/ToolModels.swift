@@ -756,7 +756,7 @@ enum AvailableTools {
     static let editUserContext = ToolDefinition(
         function: FunctionDefinition(
             name: "edit_user_context",
-            description: "Single tool for persistent memory edits. Supports append, delete, replace, and full rewrite of user context. Use this for surgical updates (small corrections) and broad updates (reorganization). Context is capped at ~5000 tokens (~20k chars).",
+            description: "Single tool for durable user-profile memory edits. Store stable relationship-network context (family, friends, frequent colleagues, nicknames, pets, homes), enduring preferences, and communication style. Do not store one-off/contingent situation details; those belong in conversation memory, which is managed automatically. Supports append, delete, replace, and full rewrite of user context. Use this for surgical updates (small corrections) and broad updates (reorganization). Context is capped at ~5000 tokens (~20k chars).",
             parameters: FunctionParameters(
                 properties: [
                     "action": ParameterProperty(

@@ -2482,10 +2482,11 @@ struct SettingsView: View {
             Write ONLY the structured context, no explanations. It should:
             1. Establish the assistant's identity and name (if provided)
             2. Establish who the user is and their name (if provided)
-            3. Include relevant preferences and facts from the user input
+            3. Prioritize durable profile information: relationship network (family, friends, frequent colleagues, nicknames, pets, homes), stable preferences, and communication style
             4. Be written in second person ("You are...")
             5. Organize by categories if there's enough information (Personal, Work, Preferences, etc.)
-            6. Stay within the token limit - be concise but comprehensive
+            6. Exclude contingent one-off details tied to a specific moment/situation
+            7. Stay within the token limit - be concise but comprehensive
             """
         } else {
             // Existing context exists - Gemini decides how to handle the update
@@ -2512,6 +2513,8 @@ struct SettingsView: View {
             - If the new input adds new information, APPEND it to the appropriate section.
             - If the new input is a complete rewrite with substantial content, you may restructure entirely.
             - NEVER lose important information from the existing context unless explicitly told to remove it.
+            - Keep only durable profile memory: relationship network (family, friends, frequent colleagues, nicknames, pets, homes), stable preferences, and communication style.
+            - Remove or avoid contingent one-off details (situational comparisons, temporary opinions, single-instance choices).
             - Stay within the 5000 token limit. If space is tight, remove less important details.
             
             Assistant Name: \(assistantName.isEmpty ? "not specified" : assistantName)
