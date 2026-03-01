@@ -16,6 +16,51 @@ actor TelegramBotService {
         let body = String(data: data, encoding: .utf8)
         throw TelegramError.invalidResponse(statusCode: statusCode, body: body)
     }
+
+    /// Convert model-generated Markdown-like content into plain Telegram-friendly text.
+    /// Telegram's parser does not support many common Markdown constructs (headings, **bold**, etc.),
+    /// which can leak raw markers to end users.
+    private func normalizeTelegramText(_ text: String) -> String {
+        var normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        // Normalize line-level structures first.
+        let normalizedLines = normalized
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { rawLine -> String in
+                var line = String(rawLine)
+
+                // Strip Markdown headings like "### Title".
+                line = line.replacingRegexMatches(of: #"^\s{0,3}#{1,6}\s*"#, with: "")
+                // Convert Markdown bullets into plain ASCII bullets.
+                line = line.replacingRegexMatches(of: #"^\s*[-*+]\s+"#, with: "- ")
+                // Remove blockquote markers.
+                line = line.replacingRegexMatches(of: #"^\s*>\s?"#, with: "")
+
+                // Remove code fence delimiter lines.
+                if line.trimmingCharacters(in: .whitespacesAndNewlines).hasPrefix("```") {
+                    return ""
+                }
+
+                return line
+            }
+
+        normalized = normalizedLines.joined(separator: "\n")
+
+        // Convert common inline Markdown patterns to plain text.
+        normalized = normalized.replacingOccurrences(of: "**", with: "")
+        normalized = normalized.replacingOccurrences(of: "__", with: "")
+        normalized = normalized.replacingOccurrences(of: "~~", with: "")
+        normalized = normalized.replacingRegexMatches(of: #"`([^`\n]+)`"#, with: "$1")
+        normalized = normalized.replacingRegexMatches(of: #"\*([^*\n]+)\*"#, with: "$1")
+        normalized = normalized.replacingRegexMatches(of: #"_([^_\n]+)_"#, with: "$1")
+        normalized = normalized.replacingRegexMatches(of: #"\[([^\]]+)\]\(([^)]+)\)"#, with: "$1 ($2)")
+
+        // Keep spacing readable after cleanup.
+        normalized = normalized.replacingRegexMatches(of: #"\n{3,}"#, with: "\n\n")
+        return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
     
     /// Test the bot token by calling getMe endpoint
     func getMe(token: String) async throws -> TelegramBotInfo {
@@ -78,50 +123,26 @@ actor TelegramBotService {
         guard !botToken.isEmpty else {
             throw TelegramError.notConfigured
         }
-        
+
         let url = URL(string: "\(baseURL)\(botToken)/sendMessage")!
-        
+
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        
-        // Try with Markdown parse mode first for nice formatting
+
+        let cleanedText = normalizeTelegramText(text)
+        let finalText = cleanedText.isEmpty ? text : cleanedText
+
         let body = TelegramSendMessageRequest(
             chatId: chatId,
-            text: text,
-            parseMode: "Markdown"
+            text: finalText,
+            parseMode: nil
         )
-        
+
         request.httpBody = try JSONEncoder().encode(body)
-        
+
         let (data, response) = try await URLSession.shared.data(for: request)
-        
-        // If Markdown parsing fails, retry without parse mode
-        if let httpResponse = response as? HTTPURLResponse,
-           httpResponse.statusCode == 400 {
-            // Telegram returns 400 if markdown is invalid - retry as plain text
-            let plainBody = TelegramSendMessageRequest(
-                chatId: chatId,
-                text: text,
-                parseMode: nil
-            )
-            request.httpBody = try JSONEncoder().encode(plainBody)
-            
-            let (retryData, retryResponse) = try await URLSession.shared.data(for: request)
-            
-            guard let retryHttpResponse = retryResponse as? HTTPURLResponse,
-                  retryHttpResponse.statusCode == 200 else {
-                try throwInvalidResponse(retryResponse, data: retryData)
-            }
-            
-            let retryDecoded = try JSONDecoder().decode(TelegramResponse<TelegramMessage>.self, from: retryData)
-            
-            guard retryDecoded.ok else {
-                throw TelegramError.apiError(retryDecoded.description ?? "Failed to send message")
-            }
-            return
-        }
-        
+
         guard let httpResponse = response as? HTTPURLResponse,
               httpResponse.statusCode == 200 else {
             try throwInvalidResponse(response, data: data)
@@ -287,9 +308,12 @@ actor TelegramBotService {
         
         // Add caption if provided
         if let caption = caption {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(caption)\r\n".data(using: .utf8)!)
+            let safeCaption = normalizeTelegramText(caption)
+            if !safeCaption.isEmpty {
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
+                body.append("\(safeCaption)\r\n".data(using: .utf8)!)
+            }
         }
         
         // End boundary
@@ -344,9 +368,12 @@ actor TelegramBotService {
         
         // Add caption if provided
         if let caption = caption {
-            body.append("--\(boundary)\r\n".data(using: .utf8)!)
-            body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
-            body.append("\(caption)\r\n".data(using: .utf8)!)
+            let safeCaption = normalizeTelegramText(caption)
+            if !safeCaption.isEmpty {
+                body.append("--\(boundary)\r\n".data(using: .utf8)!)
+                body.append("Content-Disposition: form-data; name=\"caption\"\r\n\r\n".data(using: .utf8)!)
+                body.append("\(safeCaption)\r\n".data(using: .utf8)!)
+            }
         }
         
         // End boundary
@@ -366,6 +393,16 @@ actor TelegramBotService {
         guard decoded.ok else {
             throw TelegramError.apiError(decoded.description ?? "Failed to send document")
         }
+    }
+}
+
+private extension String {
+    func replacingRegexMatches(of pattern: String, with replacement: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+            return self
+        }
+        let range = NSRange(startIndex..<endIndex, in: self)
+        return regex.stringByReplacingMatches(in: self, options: [], range: range, withTemplate: replacement)
     }
 }
 

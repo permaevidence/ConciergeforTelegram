@@ -103,7 +103,7 @@ extension KeychainHelper {
     static let defaultGeminiCodeModel = ""
     static let defaultGeminiCodeTimeout = "1000"
     static let defaultCodexCodeCommand = "codex"
-    static let defaultCodexCodeArgs = "exec --sandbox workspace-write --skip-git-repo-check"
+    static let defaultCodexCodeArgs = "exec --sandbox danger-full-access -c approval_policy=\"never\" --skip-git-repo-check"
     static let defaultCodexCodeModel = ""
     static let defaultCodexCodeTimeout = "1000"
     static let defaultVercelCommand = "vercel"

@@ -5373,6 +5373,13 @@ extension ToolExecutor {
             configuredArgs = KeychainHelper.defaultClaudeCodeArgs
             try? KeychainHelper.save(key: KeychainHelper.claudeCodeArgsKey, value: configuredArgs)
         }
+        if provider == .codex {
+            let legacyCodexDefaultArgs = "exec --sandbox workspace-write --skip-git-repo-check"
+            if parseCommandLineArguments(configuredArgs) == parseCommandLineArguments(legacyCodexDefaultArgs) {
+                configuredArgs = KeychainHelper.defaultCodexCodeArgs
+                try? KeychainHelper.save(key: KeychainHelper.codexCodeArgsKey, value: configuredArgs)
+            }
+        }
         
         let rawArgString = args.cliArgs?.trimmingCharacters(in: .whitespacesAndNewlines)
         let argString = (rawArgString?.isEmpty == false) ? rawArgString! : configuredArgs
@@ -8509,11 +8516,11 @@ extension ToolExecutor {
         }
         
         if !codexArgumentsContainSandbox(cleanedArgs) {
-            cleanedArgs.append(contentsOf: ["--sandbox", "workspace-write"])
+            cleanedArgs.append(contentsOf: ["--sandbox", "danger-full-access"])
         }
         
         if !codexArgumentsContainConfigOverride(cleanedArgs, key: "sandbox_mode") {
-            cleanedArgs.append(contentsOf: ["-c", "sandbox_mode=\"workspace-write\""])
+            cleanedArgs.append(contentsOf: ["-c", "sandbox_mode=\"danger-full-access\""])
         }
         
         if !codexArgumentsContainConfigOverride(cleanedArgs, key: "approval_policy") {

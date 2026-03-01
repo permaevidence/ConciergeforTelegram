@@ -137,7 +137,7 @@ In Telegram Concierge, open **Settings → Code CLI** and pick a provider.
 |---|---|---|---|
 | **Claude Code** | `claude` | `-p --permission-mode bypassPermissions` | Uses Claude's print mode for headless runs. |
 | **Gemini CLI** | `gemini` | `--yolo --output-format json` | Optional model override is supported in Settings. |
-| **Codex CLI** | `codex` | `exec --sandbox workspace-write --skip-git-repo-check` | Uses non-interactive `codex exec` defaults suitable for project tool runs. |
+| **Codex CLI** | `codex` | `exec --sandbox danger-full-access -c approval_policy="never" --skip-git-repo-check` | Uses non-interactive `codex exec` defaults with full-access parity vs Claude bypass mode. |
 
 All providers support timeout configuration (30–3600 seconds), and you can override CLI args per `run_claude_code` call.
 

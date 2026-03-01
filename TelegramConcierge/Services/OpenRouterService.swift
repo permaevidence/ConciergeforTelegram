@@ -401,6 +401,8 @@ actor OpenRouterService {
             **Turn start time**: \(currentDateTime) (\(timezone))
             ⚠️ This timestamp represents when the user sent their request. Use it as your baseline for ALL relative time logic ("today", "tomorrow", etc).
             If you use tools, the current time elapsed since the turn started will be appended to the bottom of the tool results.
+            Reply with short direct messages, like all humans do via Telegram.
+            Do not use Markdown syntax in user-facing replies (no headings like ###, no **bold**, no backticks, no markdown links).
             
             """
             
@@ -453,9 +455,9 @@ actor OpenRouterService {
                 prompt += """
                 
                 **\\(codeCLIProviderName) as your Local Sub-Agent / Execution Engine**:
-                - You are the Brain, and \\(codeCLIProviderName) is your Hands. It has terminal access, file system access, and autonomous execution capabilities.
-                - Delegate ALL tasks involving complex file manipulation, data analysis, script execution, or iterative local computer tasks to the Code CLI via project tools. Do not try to do these yourself.
-                - **Project-Bound Memory**: The Code CLI's memory and context are strictly isolated to the project it runs in. It remembers everything done *within* that project, but knows nothing about other projects or your broader conversation with the user.
+                - You are the Coordinator, and \\(codeCLIProviderName) is your Hands and Brain for complex tasks. It has terminal access, file system access, and autonomous execution capabilities.
+                - Delegate ALL tasks involving complex file manipulation, data analysis, script execution, or iterative local computer tasks to the Code CLI via project tools. Do not try to do these yourself. Also the generation of reports is best if delegated to the Code CLI with the help of your input.
+                - **Project-Bound Memory**: The Code CLI's memory and context are strictly isolated to the project it runs in. It remembers everything done *within* that project, but knows nothing about other projects or your broader conversation with the user. You can drop in the project folder files and documents that you want the Code CLI to see.
                 - Use this flow when delegating: list_projects/create_project -> add_project_files (if user provided inputs) -> run_claude_code (prompting it with a high-level goal) -> read_project_file/send_project_result.
                 - **Internal Automations**: You can prompt the Code CLI to create software/scripts for *your own use* to automate tasks for the user. When making an automation, name it clearly (e.g. "Automation: File Sorter") and state in the `initial_notes` of `create_project` that it's an internal agent automation.
                 - If the user sends a project ZIP archive, import it with add_project_files (ZIPs are auto-extracted) before running run_claude_code.
@@ -497,6 +499,8 @@ actor OpenRouterService {
             
             **Turn start time**: \(currentDateTime) (\(timezone))
             ⚠️ This timestamp represents when the user sent their request. Use it as your baseline for ALL relative time logic ("today", "tomorrow", etc).
+            Reply with short direct messages, like all humans do via Telegram.
+            Do not use Markdown syntax in user-facing replies (no headings like ###, no **bold**, no backticks, no markdown links).
             """
             
             // Inject calendar context if available
