@@ -1570,10 +1570,11 @@ actor EmailService {
                                                                             let dateString = dateFormatter.string(from: Date())
                                                                             
                                                                             // Build email with proper CRLF line endings and terminating dot
+                                                                            let encodedSubject = encodeRFC2047HeaderValue(subject)
                                                                             var emailLines = [
                                                                                 "From: \(config.displayName) <\(config.username)>",
                                                                                 "To: \(recipientGroups.to)",
-                                                                                "Subject: \(subject)",
+                                                                                "Subject: \(encodedSubject)",
                                                                                 "Date: \(dateString)",
                                                                                 "MIME-Version: 1.0",
                                                                                 "Content-Type: text/plain; charset=UTF-8"
@@ -2466,12 +2467,13 @@ actor EmailService {
                                                                             
                                                                             // Build References header (original + in-reply-to)
                                                                             let refsHeader = references.map { "\($0) \(inReplyTo)" } ?? inReplyTo
+                                                                            let encodedSubject = encodeRFC2047HeaderValue(subject)
                                                                             
                                                                             // Build email with CRLF line endings, threading headers, and terminating dot
                                                                             var emailLines = [
                                                                                 "From: \(config.displayName) <\(config.username)>",
                                                                                 "To: \(recipient)",
-                                                                                "Subject: \(subject)",
+                                                                                "Subject: \(encodedSubject)",
                                                                                 "Date: \(dateString)",
                                                                                 "In-Reply-To: \(inReplyTo)",
                                                                                 "References: \(refsHeader)",
@@ -2724,11 +2726,12 @@ actor EmailService {
                                                                             let dateFormatter = DateFormatter()
                                                                             dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
                                                                             let dateString = dateFormatter.string(from: Date())
+                                                                            let encodedSubject = encodeRFC2047HeaderValue(subject)
                                                                             
                                                                             var emailLines = [
                                                                                 "From: \(config.displayName) <\(config.username)>",
                                                                                 "To: \(recipient)",
-                                                                                "Subject: \(subject)",
+                                                                                "Subject: \(encodedSubject)",
                                                                                 "Date: \(dateString)",
                                                                                 "MIME-Version: 1.0",
                                                                                 "Content-Type: multipart/mixed; boundary=\"\(boundary)\"",
@@ -2998,6 +3001,7 @@ actor EmailService {
                                                                             let dateFormatter = DateFormatter()
                                                                             dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
                                                                             let dateString = dateFormatter.string(from: Date())
+                                                                            let encodedSubject = encodeRFC2047HeaderValue(subject)
                                                                             
                                                                             // Base64 encode attachment
                                                                             let attachmentBase64 = attachmentData.base64EncodedString(options: .lineLength76Characters)
@@ -3005,7 +3009,7 @@ actor EmailService {
                                                                             let emailLines = [
                                                                                 "From: \(config.displayName) <\(config.username)>",
                                                                                 "To: \(recipient)",
-                                                                                "Subject: \(subject)",
+                                                                                "Subject: \(encodedSubject)",
                                                                                 "Date: \(dateString)",
                                                                                 "MIME-Version: 1.0",
                                                                                 "Content-Type: multipart/mixed; boundary=\"\(boundary)\"",
@@ -3137,12 +3141,13 @@ actor EmailService {
                                                                             let dateFormatter = DateFormatter()
                                                                             dateFormatter.dateFormat = "EEE, dd MMM yyyy HH:mm:ss Z"
                                                                             let dateString = dateFormatter.string(from: Date())
+                                                                            let encodedSubject = encodeRFC2047HeaderValue(subject)
                                                                             
                                                                             // Build email lines
                                                                             var emailLines = [
                                                                                 "From: \(config.displayName) <\(config.username)>",
                                                                                 "To: \(recipientGroups.to)",
-                                                                                "Subject: \(subject)",
+                                                                                "Subject: \(encodedSubject)",
                                                                                 "Date: \(dateString)",
                                                                                 "MIME-Version: 1.0",
                                                                                 "Content-Type: multipart/mixed; boundary=\"\(boundary)\""
@@ -3218,6 +3223,18 @@ actor EmailService {
             }
         }
     }
+}
+
+private func encodeRFC2047HeaderValue(_ value: String) -> String {
+    let sanitized = value
+        .replacingOccurrences(of: "\r", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    
+    guard !sanitized.isEmpty else { return sanitized }
+    guard !sanitized.canBeConverted(to: .ascii) else { return sanitized }
+    
+    let base64 = Data(sanitized.utf8).base64EncodedString()
+    return "=?UTF-8?B?\(base64)?="
 }
 
 // MARK: - Errors

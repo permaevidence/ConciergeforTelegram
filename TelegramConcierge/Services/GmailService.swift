@@ -458,10 +458,11 @@ actor GmailService {
         """
         
         // Build RFC 2822 message
+        let encodedSubject = encodeRFC2047HeaderValue(subject)
         var rawMessage = """
         From: \(from)
         To: \(to)
-        Subject: \(subject)
+        Subject: \(encodedSubject)
         """
         if !normalizedCC.isEmpty {
             rawMessage += "\nCc: \(normalizedCC.joined(separator: ", "))"
@@ -976,7 +977,10 @@ struct GmailMessage: Codable {
     let internalDate: String?
     
     func getHeader(_ name: String) -> String? {
-        payload?.headers?.first { $0.name.lowercased() == name.lowercased() }?.value
+        guard let rawValue = payload?.headers?.first(where: { $0.name.lowercased() == name.lowercased() })?.value else {
+            return nil
+        }
+        return decodeRFC2047HeaderValue(rawValue)
     }
     
     func getPlainTextBody() -> String {
@@ -1065,6 +1069,146 @@ struct GmailThread: Decodable {
     let id: String
     let historyId: String?
     let messages: [GmailMessage]?
+}
+
+private func encodeRFC2047HeaderValue(_ value: String) -> String {
+    let sanitized = value
+        .replacingOccurrences(of: "\r", with: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    
+    guard !sanitized.isEmpty else { return sanitized }
+    guard !sanitized.canBeConverted(to: .ascii) else { return sanitized }
+    
+    let base64 = Data(sanitized.utf8).base64EncodedString()
+    return "=?UTF-8?B?\(base64)?="
+}
+
+private func decodeRFC2047HeaderValue(_ value: String) -> String {
+    let pattern = #"=\?([^?]+)\?([bBqQ])\?([^?]*)\?="#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: []) else {
+        return repairUTF8Mojibake(value)
+    }
+    
+    let fullRange = NSRange(value.startIndex..<value.endIndex, in: value)
+    let matches = regex.matches(in: value, options: [], range: fullRange)
+    guard !matches.isEmpty else {
+        return repairUTF8Mojibake(value)
+    }
+    
+    var output = ""
+    var cursor = value.startIndex
+    
+    for match in matches {
+        guard
+            let matchRange = Range(match.range, in: value),
+            let charsetRange = Range(match.range(at: 1), in: value),
+            let encodingRange = Range(match.range(at: 2), in: value),
+            let encodedTextRange = Range(match.range(at: 3), in: value)
+        else {
+            continue
+        }
+        
+        output += value[cursor..<matchRange.lowerBound]
+        
+        let charset = String(value[charsetRange])
+        let encoding = String(value[encodingRange])
+        let encodedText = String(value[encodedTextRange])
+        let decodedWord = decodeRFC2047Word(charset: charset, encoding: encoding, payload: encodedText)
+        
+        output += decodedWord ?? String(value[matchRange])
+        cursor = matchRange.upperBound
+    }
+    
+    output += value[cursor...]
+    
+    return repairUTF8Mojibake(output)
+}
+
+private func decodeRFC2047Word(charset: String, encoding: String, payload: String) -> String? {
+    let data: Data?
+    if encoding.caseInsensitiveCompare("B") == .orderedSame {
+        data = Data(base64Encoded: payload)
+    } else if encoding.caseInsensitiveCompare("Q") == .orderedSame {
+        data = decodeRFC2047QPayload(payload)
+    } else {
+        data = nil
+    }
+    
+    guard let data else { return nil }
+    
+    let lowerCharset = charset.lowercased()
+    if lowerCharset.contains("utf-8"), let text = String(data: data, encoding: .utf8) {
+        return text
+    }
+    if (lowerCharset.contains("iso-8859-1") || lowerCharset.contains("latin1")),
+       let text = String(data: data, encoding: .isoLatin1) {
+        return text
+    }
+    if lowerCharset.contains("windows-1252"),
+       let text = String(data: data, encoding: .windowsCP1252) {
+        return text
+    }
+    
+    return String(data: data, encoding: .utf8)
+        ?? String(data: data, encoding: .isoLatin1)
+        ?? String(data: data, encoding: .windowsCP1252)
+}
+
+private func decodeRFC2047QPayload(_ payload: String) -> Data {
+    let bytes = Array(payload.utf8)
+    var output: [UInt8] = []
+    output.reserveCapacity(bytes.count)
+    
+    var index = 0
+    while index < bytes.count {
+        let byte = bytes[index]
+        
+        if byte == 95 { // "_"
+            output.append(32) // space
+            index += 1
+            continue
+        }
+        
+        if byte == 61, index + 2 < bytes.count, // "="
+           let high = hexNibble(bytes[index + 1]),
+           let low = hexNibble(bytes[index + 2]) {
+            output.append((high << 4) | low)
+            index += 3
+            continue
+        }
+        
+        output.append(byte)
+        index += 1
+    }
+    
+    return Data(output)
+}
+
+private func hexNibble(_ byte: UInt8) -> UInt8? {
+    switch byte {
+    case 48...57: return byte - 48      // 0-9
+    case 65...70: return byte - 55      // A-F
+    case 97...102: return byte - 87     // a-f
+    default: return nil
+    }
+}
+
+private func repairUTF8Mojibake(_ value: String) -> String {
+    var repaired = value
+    for _ in 0..<2 {
+        guard repaired.contains("Ã") || repaired.contains("Â") || repaired.contains("â") || repaired.contains("ð") else {
+            break
+        }
+        
+        guard let latin1Data = repaired.data(using: .isoLatin1),
+              let utf8 = String(data: latin1Data, encoding: .utf8),
+              utf8 != repaired else {
+            break
+        }
+        
+        repaired = utf8
+    }
+    return repaired
 }
 
 // MARK: - Errors
