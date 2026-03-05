@@ -507,11 +507,19 @@ struct ContextViewerView: View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Summary")
+                    Text("Full Summary")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    Text(chunk.summary)
-                        .font(.body)
+                    ScrollView {
+                        Text(chunk.summary)
+                            .font(.system(.caption, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .frame(maxHeight: 220)
+                    .padding(8)
+                    .background(Color.orange.opacity(0.05))
+                    .cornerRadius(6)
                     
                     Text("Period: \(formatDateRange(start: chunk.startDate, end: chunk.endDate)) • \(chunk.messageCount) messages • \(chunk.sizeLabel)")
                         .font(.caption)
@@ -519,6 +527,10 @@ struct ContextViewerView: View {
                 }
                 
                 Divider()
+
+                Text("Full Chunk Content")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 
                 if isChunkContentLoading {
                     HStack(spacing: 8) {

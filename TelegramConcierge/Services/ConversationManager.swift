@@ -570,7 +570,10 @@ class ConversationManager: ObservableObject {
         startActiveProcessing(for: userMessage)
     }
 
-    private func startActiveProcessing(for userMessage: Message) {
+    private func startActiveProcessing(
+        for userMessage: Message,
+        postRunUserMessageContent: String? = nil
+    ) {
         guard activeRunId == nil, activeProcessingTask == nil else {
             print("[ConversationManager] Ignoring startActiveProcessing because a run is already active")
             return
@@ -580,12 +583,28 @@ class ConversationManager: ObservableObject {
         activeRunId = runId
         
         activeProcessingTask = Task { [weak self] in
-            await self?.runActiveProcessing(for: userMessage, runId: runId)
+            await self?.runActiveProcessing(
+                for: userMessage,
+                runId: runId,
+                postRunUserMessageContent: postRunUserMessageContent
+            )
         }
     }
     
-    private func runActiveProcessing(for userMessage: Message, runId: UUID) async {
+    private func runActiveProcessing(
+        for userMessage: Message,
+        runId: UUID,
+        postRunUserMessageContent: String?
+    ) async {
+        func compactStoredEmailPromptIfNeeded() -> Bool {
+            guard let compacted = postRunUserMessageContent else { return false }
+            return replaceMessageContent(for: userMessage.id, with: compacted)
+        }
+
         defer {
+            if compactStoredEmailPromptIfNeeded() {
+                saveConversation()
+            }
             if activeRunId == runId {
                 activeRunId = nil
                 activeProcessingTask = nil
@@ -600,9 +619,12 @@ class ConversationManager: ObservableObject {
             
             guard activeRunId == runId else { return }
             
+            var didMutateHistory = false
+
             if let toolLog = response.compactToolLog, !toolLog.isEmpty {
                 messages.append(Message(role: .assistant, content: toolLog))
                 pruneOldToolLogMessages()
+                didMutateHistory = true
             }
             
             // Add assistant message with any downloaded files and accessed projects tracked
@@ -618,7 +640,14 @@ class ConversationManager: ObservableObject {
                 accessedProjectIds: response.accessedProjects ?? []
             )
             messages.append(assistantMessage)
-            saveConversation()
+            didMutateHistory = true
+
+            if compactStoredEmailPromptIfNeeded() {
+                didMutateHistory = true
+            }
+            if didMutateHistory {
+                saveConversation()
+            }
             
             if let chatId = pairedChatId {
                 try Task.checkCancellation()
@@ -1571,7 +1600,7 @@ class ConversationManager: ObservableObject {
     /// and generate a personalized notification message.
     /// Runs in a detached context to avoid blocking user interactions.
     private func processNewEmails(_ emails: [EmailMessage]) async {
-        guard let chatId = pairedChatId, !emails.isEmpty else { return }
+        guard pairedChatId != nil, !emails.isEmpty else { return }
         
         print("[ConversationManager] Processing \(emails.count) new email(s) for notification")
         
@@ -1612,15 +1641,17 @@ class ConversationManager: ObservableObject {
         
         let userMessage = Message(role: .user, content: emailContent)
         messages.append(userMessage)
-        saveConversation()
         
         statusMessage = "Processing new emails..."
-        startActiveProcessing(for: userMessage)
+        startActiveProcessing(
+            for: userMessage,
+            postRunUserMessageContent: compactedEmailNotificationContent(from: emails)
+        )
     }
     
     /// Process new Gmail emails (Gmail API version of processNewEmails)
     private func processNewGmailEmails(_ emails: [GmailMessage]) async {
-        guard let chatId = pairedChatId, !emails.isEmpty else { return }
+        guard pairedChatId != nil, !emails.isEmpty else { return }
         
         print("[ConversationManager] Processing \(emails.count) new Gmail email(s) for notification")
         
@@ -1667,10 +1698,98 @@ class ConversationManager: ObservableObject {
         
         let userMessage = Message(role: .user, content: emailContent)
         messages.append(userMessage)
-        saveConversation()
         
         statusMessage = "Processing new Gmail emails..."
-        startActiveProcessing(for: userMessage)
+        startActiveProcessing(
+            for: userMessage,
+            postRunUserMessageContent: compactedGmailNotificationContent(from: emails)
+        )
+    }
+
+    private func compactedEmailNotificationContent(from emails: [EmailMessage]) -> String {
+        var lines: [String] = [
+            "[SYSTEM: NEW EMAILS ARRIVED - CONTENT PURGED]",
+            "Body removed to save context.",
+            "Before acting/replying: fetch full text with email/Gmail tools first; never act blindly.",
+            "",
+            "Metadata:"
+        ]
+        
+        for email in emails {
+            lines.append("---")
+            lines.append("From: \(email.from)")
+            lines.append("Subject: \(email.subject)")
+            lines.append("Date: \(email.date)")
+            lines.append("UID: \(email.id)")
+            if !email.messageId.isEmpty {
+                lines.append("Message-ID: \(email.messageId)")
+            }
+            if let inReplyTo = email.inReplyTo, !inReplyTo.isEmpty {
+                lines.append("In-Reply-To: \(inReplyTo)")
+            }
+            if let references = email.references, !references.isEmpty {
+                lines.append("References: \(references)")
+            }
+            if !email.attachments.isEmpty {
+                let names = email.attachments.map { "\($0.filename) (\($0.mimeType))" }.joined(separator: ", ")
+                lines.append("Attachments: \(names)")
+            }
+        }
+        
+        return lines.joined(separator: "\n")
+    }
+
+    private func compactedGmailNotificationContent(from emails: [GmailMessage]) -> String {
+        var lines: [String] = [
+            "[SYSTEM: NEW EMAILS ARRIVED - CONTENT PURGED]",
+            "Body removed to save context.",
+            "Before acting/replying: fetch full text with Gmail tools first; never act blindly.",
+            "",
+            "Metadata:"
+        ]
+        
+        for email in emails {
+            let from = email.getHeader("From") ?? "Unknown"
+            let subject = email.getHeader("Subject") ?? "(No subject)"
+            let date = email.getHeader("Date") ?? ""
+            lines.append("---")
+            lines.append("From: \(from)")
+            lines.append("Subject: \(subject)")
+            lines.append("Date: \(date)")
+            lines.append("Message ID: \(email.id)")
+            lines.append("Thread ID: \(email.threadId)")
+            let attachments = email.payload?.getAttachmentParts() ?? []
+            if !attachments.isEmpty {
+                let names = attachments.compactMap { "\($0.filename ?? "file") (\($0.mimeType ?? "unknown"))" }.joined(separator: ", ")
+                lines.append("Attachments: \(names)")
+            }
+        }
+        
+        return lines.joined(separator: "\n")
+    }
+
+    @discardableResult
+    private func replaceMessageContent(for messageId: UUID, with content: String) -> Bool {
+        guard let index = messages.firstIndex(where: { $0.id == messageId }) else { return false }
+        let existing = messages[index]
+        guard existing.content != content else { return false }
+        
+        messages[index] = Message(
+            id: existing.id,
+            role: existing.role,
+            content: content,
+            timestamp: existing.timestamp,
+            imageFileNames: existing.imageFileNames,
+            documentFileNames: existing.documentFileNames,
+            imageFileSizes: existing.imageFileSizes,
+            documentFileSizes: existing.documentFileSizes,
+            referencedImageFileNames: existing.referencedImageFileNames,
+            referencedDocumentFileNames: existing.referencedDocumentFileNames,
+            referencedDocumentFileSizes: existing.referencedDocumentFileSizes,
+            downloadedDocumentFileNames: existing.downloadedDocumentFileNames,
+            accessedProjectIds: existing.accessedProjectIds
+        )
+        return true
     }
     
     // MARK: - Persistence
