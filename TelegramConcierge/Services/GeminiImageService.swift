@@ -20,8 +20,14 @@ actor GeminiImageService {
     ///   - prompt: The text description of the image to generate or transformation to apply
     ///   - sourceImageData: Optional source image data for image-to-image transformation
     ///   - sourceMimeType: MIME type of the source image (e.g., "image/jpeg", "image/png")
+    ///   - imageSize: Optional image size override. Supported values: 1K, 2K, 4K.
     /// - Returns: Image data (PNG/JPEG) and MIME type
-    func generateImage(prompt: String, sourceImageData: Data? = nil, sourceMimeType: String? = nil) async throws -> (data: Data, mimeType: String) {
+    func generateImage(
+        prompt: String,
+        sourceImageData: Data? = nil,
+        sourceMimeType: String? = nil,
+        imageSize: String? = nil
+    ) async throws -> (data: Data, mimeType: String) {
         guard !apiKey.isEmpty else {
             throw GeminiImageError.notConfigured
         }
@@ -55,7 +61,8 @@ actor GeminiImageService {
                 GeminiContent(parts: parts)
             ],
             generationConfig: GeminiGenerationConfig(
-                responseModalities: ["TEXT", "IMAGE"]
+                responseModalities: ["TEXT", "IMAGE"],
+                imageConfig: imageSize.map { GeminiImageConfig(imageSize: $0) }
             )
         )
         
@@ -164,6 +171,38 @@ struct GeminiInlineData: Codable {
 
 struct GeminiGenerationConfig: Codable {
     let responseModalities: [String]
+    let imageConfig: GeminiImageConfig?
+}
+
+struct GeminiImageConfig: Codable {
+    let imageSize: String
+}
+
+enum GeminiImageSize: String {
+    case oneK = "1K"
+    case twoK = "2K"
+    case fourK = "4K"
+    
+    static func parse(_ rawValue: String?) -> GeminiImageSize? {
+        guard let rawValue else { return nil }
+        let normalized = rawValue
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+            .replacingOccurrences(of: " ", with: "")
+        
+        guard !normalized.isEmpty else { return nil }
+        
+        switch normalized {
+        case "1K", "1", "1024":
+            return .oneK
+        case "2K", "2", "2048":
+            return .twoK
+        case "4K", "4", "4096", "UHD", "ULTRAHD", "ULTRA":
+            return .fourK
+        default:
+            return nil
+        }
+    }
 }
 
 // MARK: - Response Models

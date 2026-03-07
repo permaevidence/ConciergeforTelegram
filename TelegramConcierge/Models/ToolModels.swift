@@ -686,6 +686,10 @@ enum AvailableTools {
                     "source_image": ParameterProperty(
                         type: "string",
                         description: "Optional. The filename of an image previously sent in the conversation to use as source for transformation/editing. Use the exact filename (e.g., 'abc123.jpg') from a previously received image. Leave empty to generate a new image from scratch."
+                    ),
+                    "size": ParameterProperty(
+                        type: "string",
+                        description: "Optional output size. Supported values: '1K' (default), '2K', '4K'. Use '4K' when the user requests ultra-high resolution or when high-detail output is important."
                     )
                 ],
                 required: ["prompt"]

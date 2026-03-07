@@ -3094,11 +3094,24 @@ extension ToolExecutor {
             }
         }
         
+        let requestedSize = args.size?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedImageSize = GeminiImageSize.parse(requestedSize)
+        if let requestedSize, !requestedSize.isEmpty, normalizedImageSize == nil {
+            let escapedSize = requestedSize
+                .replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: "{\"error\": \"Invalid size '\(escapedSize)'. Supported values: 1K, 2K, 4K.\"}"
+            )
+        }
+        
         do {
             let (imageData, mimeType) = try await GeminiImageService.shared.generateImage(
                 prompt: args.prompt,
                 sourceImageData: sourceImageData,
-                sourceMimeType: sourceMimeType
+                sourceMimeType: sourceMimeType,
+                imageSize: normalizedImageSize?.rawValue
             )
             
             // Save generated image to documents folder so Gemini can reference it later
@@ -3130,7 +3143,7 @@ extension ToolExecutor {
             
             // Result text (image will be injected as multimodal content)
             let result = """
-            {"success": true, "filename": "\(fileName)", "mimeType": "\(mimeType)", "sizeBytes": \(imageData.count), "message": "\(isEdit ? "Image transformed" : "Image generated") successfully. You can now see and analyze the result."}
+            {"success": true, "filename": "\(fileName)", "mimeType": "\(mimeType)", "sizeBytes": \(imageData.count), "resolution": "\(normalizedImageSize?.rawValue ?? "default")", "message": "\(isEdit ? "Image transformed" : "Image generated") successfully. You can now see and analyze the result."}
             """
             
             return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
@@ -3662,10 +3675,12 @@ extension ToolExecutor {
 struct GenerateImageArguments: Codable {
     let prompt: String
     let sourceImage: String?
+    let size: String?
     
     enum CodingKeys: String, CodingKey {
         case prompt
         case sourceImage = "source_image"
+        case size
     }
 }
 
