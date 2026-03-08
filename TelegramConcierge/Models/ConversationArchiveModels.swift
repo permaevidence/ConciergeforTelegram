@@ -28,15 +28,98 @@ struct ConversationChunk: Codable, Identifiable {
     }
 }
 
+// MARK: - Historical Meta Summaries
+
+/// Represents a prompt-only summary derived from older consolidated chunk summaries.
+struct HistoricalMetaSummary: Codable, Identifiable {
+    let id: UUID
+    let kind: MetaSummaryKind
+    let startDate: Date
+    let endDate: Date
+    let childChunkIds: [UUID]
+    let summary: String
+    let createdAt: Date
+    let updatedAt: Date
+
+    enum MetaSummaryKind: String, Codable {
+        case sealedBatch
+        case rolling
+    }
+}
+
+/// Unified prompt-facing view over archived history.
+struct ArchivedSummaryItem: Identifiable {
+    let id: UUID
+    let kind: Kind
+    let startDate: Date
+    let endDate: Date
+    let tokenCount: Int
+    let messageCount: Int
+    let summary: String
+    let sourceChunkCount: Int
+
+    enum Kind {
+        case temporaryChunk
+        case consolidatedChunk
+        case rollingMetaSummary
+        case sealedMetaSummary
+    }
+
+    var sizeLabel: String {
+        switch kind {
+        case .temporaryChunk, .consolidatedChunk:
+            if tokenCount >= 1000 {
+                return "\(tokenCount / 1000)k"
+            } else {
+                return "\(tokenCount)"
+            }
+        case .rollingMetaSummary:
+            return "rolling-\(sourceChunkCount)"
+        case .sealedMetaSummary:
+            return "meta-\(sourceChunkCount)"
+        }
+    }
+
+    var historyLabel: String {
+        switch kind {
+        case .temporaryChunk:
+            return "Temporary chunk"
+        case .consolidatedChunk:
+            return "Consolidated chunk"
+        case .rollingMetaSummary:
+            return "Rolling history summary"
+        case .sealedMetaSummary:
+            return "Historical meta-summary"
+        }
+    }
+}
+
 // MARK: - Chunk Index (persisted list of all chunks)
 
 struct ChunkIndex: Codable {
     var chunks: [ConversationChunk]
-    
-    static func empty() -> ChunkIndex {
-        ChunkIndex(chunks: [])
+    var historicalMetaSummaries: [HistoricalMetaSummary]
+
+    enum CodingKeys: String, CodingKey {
+        case chunks
+        case historicalMetaSummaries
     }
-    
+
+    static func empty() -> ChunkIndex {
+        ChunkIndex(chunks: [], historicalMetaSummaries: [])
+    }
+
+    init(chunks: [ConversationChunk], historicalMetaSummaries: [HistoricalMetaSummary]) {
+        self.chunks = chunks
+        self.historicalMetaSummaries = historicalMetaSummaries
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        chunks = try container.decodeIfPresent([ConversationChunk].self, forKey: .chunks) ?? []
+        historicalMetaSummaries = try container.decodeIfPresent([HistoricalMetaSummary].self, forKey: .historicalMetaSummaries) ?? []
+    }
+
     /// Get chunks ordered by date (oldest first)
     var orderedChunks: [ConversationChunk] {
         chunks.sorted { $0.startDate < $1.startDate }
@@ -110,3 +193,23 @@ struct PendingChunkIndex: Codable {
     }
 }
 
+// MARK: - Pending Meta Summaries (for crash recovery)
+
+/// Represents a meta-summary that should exist but has not been successfully generated yet.
+struct PendingMetaSummary: Codable, Identifiable {
+    let id: UUID
+    let kind: HistoricalMetaSummary.MetaSummaryKind
+    let startDate: Date
+    let endDate: Date
+    let childChunkIds: [UUID]
+    let createdAt: Date
+    let updatedAt: Date
+}
+
+struct PendingMetaSummaryIndex: Codable {
+    var pendingMetaSummaries: [PendingMetaSummary]
+
+    static func empty() -> PendingMetaSummaryIndex {
+        PendingMetaSummaryIndex(pendingMetaSummaries: [])
+    }
+}

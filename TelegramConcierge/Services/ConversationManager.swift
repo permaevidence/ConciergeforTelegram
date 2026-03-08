@@ -167,7 +167,7 @@ class ConversationManager: ObservableObject {
         
         // Configure archive service and recover any pending chunks from previous crash
         await archiveService.configure(apiKey: apiKey)
-        let recoveryChunkSummaries = await archiveService.getRecentChunkSummaries(count: 5)
+        let recoveryChunkSummaries = await archiveService.getPromptSummaryItems(recentConsolidatedCount: 5)
         let recoveryContext = buildSummarizationContext(
             chunkSummaries: recoveryChunkSummaries,
             currentMessages: messages
@@ -1064,7 +1064,7 @@ class ConversationManager: ObservableObject {
         let contextStartTime = Date()
         async let calendarContextTask = CalendarService.shared.getCalendarContextForSystemPrompt()
         async let emailContextTask = EmailService.shared.getEmailContextForSystemPrompt()
-        async let chunkSummariesTask = archiveService.getRecentChunkSummaries(count: 5)
+        async let chunkSummariesTask = archiveService.getPromptSummaryItems(recentConsolidatedCount: 5)
         async let totalChunkCountTask = archiveService.getAllChunks()
         async let contextResultTask = openRouterService.processContextWindow(messages)
         
@@ -2116,8 +2116,8 @@ class ConversationManager: ObservableObject {
     
     /// Get conversation context for the "Process & Save" feature in Settings.
     /// Returns recent messages and chunk summaries so Gemini has full awareness.
-    func getContextForStructuring() async -> (recentMessages: [Message], chunkSummaries: [ConversationChunk]) {
-        let chunkSummaries = await archiveService.getRecentChunkSummaries(count: 10)
+    func getContextForStructuring() async -> (recentMessages: [Message], chunkSummaries: [ArchivedSummaryItem]) {
+        let chunkSummaries = await archiveService.getPromptSummaryItems(recentConsolidatedCount: 5)
         // Return last 20 messages for recent context
         let recentMessages = Array(messages.suffix(20))
         return (recentMessages, chunkSummaries)
@@ -2134,7 +2134,7 @@ class ConversationManager: ObservableObject {
     /// relationships, references, and meaning in the chunk being archived.
     /// Note: Calendar is deliberately excluded - it contains future events not relevant to historical summarization.
     private func buildSummarizationContext(
-        chunkSummaries: [ConversationChunk],
+        chunkSummaries: [ArchivedSummaryItem],
         currentMessages: [Message]
     ) -> ConversationArchiveService.SummarizationContext {
         // Get persona settings

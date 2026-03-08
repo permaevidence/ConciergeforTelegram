@@ -8,14 +8,14 @@ struct ContextViewerView: View {
     
     @State private var isLoading = true
     @State private var currentMessages: [Message] = []
-    @State private var chunkSummaries: [ConversationChunk] = []
+    @State private var chunkSummaries: [ArchivedSummaryItem] = []
     @State private var userContext: String = ""
     @State private var structuredUserContext: String = ""
     @State private var assistantName: String = ""
     @State private var userName: String = ""
     @State private var calendarContext: String = ""
     @State private var emailContext: String = ""
-    @State private var selectedChunk: ConversationChunk?
+    @State private var selectedChunk: ArchivedSummaryItem?
     @State private var selectedChunkContent: String = ""
     @State private var isChunkContentLoading = false
     @State private var chunkContentError: String?
@@ -102,10 +102,10 @@ struct ContextViewerView: View {
                     
                     // MARK: - Archived Chunks Section
                     CollapsibleSection(
-                        title: "Archived Chunk Summaries",
+                        title: "Archived History Timeline",
                         systemImage: "archivebox",
                         color: .orange,
-                        badge: "\(chunkSummaries.count) chunks",
+                        badge: "\(chunkSummaries.count) items",
                         isExpanded: $isChunksExpanded
                     ) {
                         chunksContent
@@ -271,15 +271,22 @@ struct ContextViewerView: View {
                 ForEach(Array(chunkSummaries.enumerated()), id: \.element.id) { index, chunk in
                     VStack(alignment: .leading, spacing: 4) {
                         HStack {
-                            Text("Chunk \(index + 1)")
+                            Text("Item \(index + 1)")
                                 .font(.caption)
                                 .fontWeight(.semibold)
+
+                            Text(chunk.historyLabel)
+                                .font(.caption2)
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 2)
+                                .background(chunkBackgroundColor(for: chunk).opacity(0.2))
+                                .cornerRadius(4)
                             
                             Text(chunk.sizeLabel)
                                 .font(.caption2)
                                 .padding(.horizontal, 6)
                                 .padding(.vertical, 2)
-                                .background(chunk.type == .consolidated ? Color.purple.opacity(0.2) : Color.gray.opacity(0.2))
+                                .background(chunkBackgroundColor(for: chunk).opacity(0.12))
                                 .cornerRadius(4)
                             
                             Spacer()
@@ -300,14 +307,14 @@ struct ContextViewerView: View {
                                     await loadChunkContent(for: chunk)
                                 }
                             }
-                            .help("Click to view full chunk content")
+                            .help(chunkSupportsFullContent(chunk) ? "Click to view full summary and full chunk content" : "Click to view full summary and metadata")
                         
-                        Text("ID: \(chunk.id.uuidString.prefix(8))... • \(chunk.messageCount) messages")
+                        Text(chunkMetadataText(for: chunk))
                             .font(.caption2)
                             .foregroundColor(.secondary)
                     }
                     .padding(8)
-                    .background(Color.orange.opacity(0.05))
+                    .background(chunkBackgroundColor(for: chunk).opacity(0.05))
                     .cornerRadius(5)
                 }
             }
@@ -476,9 +483,10 @@ struct ContextViewerView: View {
         
         // Chunks
         if !chunkSummaries.isEmpty {
+            let representedChunkCount = chunkSummaries.reduce(0) { $0 + max($1.sourceChunkCount, 1) }
             preview += """
             [ARCHIVED CONVERSATION HISTORY]
-            You have access to \(chunkSummaries.count) chunk(s) of older conversation history.
+            You have access to \(chunkSummaries.count) chronological summary item(s), representing \(representedChunkCount) archived chunk(s) of older conversation history.
             Use `search_conversation_history` to retrieve details.
             
             """
@@ -503,7 +511,7 @@ struct ContextViewerView: View {
     }
     
     @ViewBuilder
-    private func chunkDetailSheet(for chunk: ConversationChunk) -> some View {
+    private func chunkDetailSheet(for chunk: ArchivedSummaryItem) -> some View {
         NavigationStack {
             VStack(alignment: .leading, spacing: 12) {
                 VStack(alignment: .leading, spacing: 6) {
@@ -518,49 +526,56 @@ struct ContextViewerView: View {
                     }
                     .frame(maxHeight: 220)
                     .padding(8)
-                    .background(Color.orange.opacity(0.05))
+                    .background(chunkBackgroundColor(for: chunk).opacity(0.05))
                     .cornerRadius(6)
                     
-                    Text("Period: \(formatDateRange(start: chunk.startDate, end: chunk.endDate)) • \(chunk.messageCount) messages • \(chunk.sizeLabel)")
+                    Text(detailMetadataText(for: chunk))
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
                 
-                Divider()
+                if chunkSupportsFullContent(chunk) {
+                    Divider()
 
-                Text("Full Chunk Content")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                if isChunkContentLoading {
-                    HStack(spacing: 8) {
-                        ProgressView()
-                        Text("Loading full chunk content...")
-                            .foregroundColor(.secondary)
-                    }
-                } else if let chunkContentError {
-                    Text("Failed to load chunk: \(chunkContentError)")
+                    Text("Full Chunk Content")
                         .font(.caption)
-                        .foregroundColor(.red)
-                } else if selectedChunkContent.isEmpty {
-                    Text("No content available for this chunk.")
+                        .foregroundColor(.secondary)
+                    
+                    if isChunkContentLoading {
+                        HStack(spacing: 8) {
+                            ProgressView()
+                            Text("Loading full chunk content...")
+                                .foregroundColor(.secondary)
+                        }
+                    } else if let chunkContentError {
+                        Text("Failed to load chunk: \(chunkContentError)")
+                            .font(.caption)
+                            .foregroundColor(.red)
+                    } else if selectedChunkContent.isEmpty {
+                        Text("No content available for this chunk.")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                            .italic()
+                    } else {
+                        ScrollView {
+                            Text(selectedChunkContent)
+                                .font(.system(.caption, design: .monospaced))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        .padding(8)
+                        .background(chunkBackgroundColor(for: chunk).opacity(0.05))
+                        .cornerRadius(6)
+                    }
+                } else {
+                    Text("This is a prompt-only meta-summary. Full archived messages remain available through the underlying real chunks in conversation memory.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                         .italic()
-                } else {
-                    ScrollView {
-                        Text(selectedChunkContent)
-                            .font(.system(.caption, design: .monospaced))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(8)
-                    .background(Color.orange.opacity(0.05))
-                    .cornerRadius(6)
                 }
             }
             .padding()
-            .navigationTitle("Chunk \(chunk.id.uuidString.prefix(8))")
+            .navigationTitle("\(chunk.historyLabel) \(chunk.id.uuidString.prefix(8))")
             .toolbar {
                 ToolbarItem(placement: .cancellationAction) {
                     Button("Close") {
@@ -572,12 +587,14 @@ struct ContextViewerView: View {
         .frame(minWidth: 700, minHeight: 560)
     }
     
-    private func loadChunkContent(for chunk: ConversationChunk) async {
+    private func loadChunkContent(for chunk: ArchivedSummaryItem) async {
         let chunkId = chunk.id
         selectedChunk = chunk
         selectedChunkContent = ""
         chunkContentError = nil
-        isChunkContentLoading = true
+        isChunkContentLoading = chunkSupportsFullContent(chunk)
+
+        guard chunkSupportsFullContent(chunk) else { return }
         
         do {
             let content = try await conversationManager.getArchivedChunkContent(chunkId: chunkId)
@@ -591,6 +608,48 @@ struct ContextViewerView: View {
         if selectedChunk?.id == chunkId {
             isChunkContentLoading = false
         }
+    }
+
+    private func chunkSupportsFullContent(_ chunk: ArchivedSummaryItem) -> Bool {
+        switch chunk.kind {
+        case .temporaryChunk, .consolidatedChunk:
+            return true
+        case .rollingMetaSummary, .sealedMetaSummary:
+            return false
+        }
+    }
+
+    private func chunkBackgroundColor(for chunk: ArchivedSummaryItem) -> Color {
+        switch chunk.kind {
+        case .temporaryChunk:
+            return .gray
+        case .consolidatedChunk:
+            return .purple
+        case .rollingMetaSummary:
+            return .blue
+        case .sealedMetaSummary:
+            return .orange
+        }
+    }
+
+    private func chunkMetadataText(for chunk: ArchivedSummaryItem) -> String {
+        let base = "ID: \(chunk.id.uuidString.prefix(8))... • \(chunk.messageCount) messages"
+        if chunk.sourceChunkCount > 1 {
+            return "\(base) • covers \(chunk.sourceChunkCount) chunks"
+        }
+        return base
+    }
+
+    private func detailMetadataText(for chunk: ArchivedSummaryItem) -> String {
+        var parts = [
+            "Period: \(formatDateRange(start: chunk.startDate, end: chunk.endDate))",
+            "\(chunk.messageCount) messages",
+            chunk.sizeLabel
+        ]
+        if chunk.sourceChunkCount > 1 {
+            parts.append("covers \(chunk.sourceChunkCount) chunks")
+        }
+        return parts.joined(separator: " • ")
     }
 }
 

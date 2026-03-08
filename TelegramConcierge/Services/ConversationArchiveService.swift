@@ -20,6 +20,9 @@ actor ConversationArchiveService {
     private var maxContextTokens: Int { configuredChunkSize * 2 }
     private var temporaryChunkSize: Int { configuredChunkSize }
     private var consolidatedChunkSize: Int { configuredChunkSize * 4 }
+    private let metaSummaryBatchSize = 5
+    private let maxVisibleMetaSummaryCount = 10
+    private let rollingMetaSummaryMinimumChunkCount = 2
     private let summaryTargetTokens = 1500
     private let minimumSummaryWordCount = 100
     private let summaryMaxCharacters = 10_000
@@ -82,9 +85,14 @@ actor ConversationArchiveService {
     private var pendingIndexFileURL: URL {
         archiveFolder.appendingPathComponent("pending_chunks.json")
     }
+
+    private var pendingMetaIndexFileURL: URL {
+        archiveFolder.appendingPathComponent("pending_meta_summaries.json")
+    }
     
     private var chunkIndex: ChunkIndex = .empty()
     private var pendingIndex: PendingChunkIndex = .empty()
+    private var pendingMetaIndex: PendingMetaSummaryIndex = .empty()
     
     // Cached live context for consolidation (updated when archiveMessages is called)
     private var cachedLiveContext: String?
@@ -94,87 +102,90 @@ actor ConversationArchiveService {
     init() {
         loadIndex()
         loadPendingIndex()
+        loadPendingMetaIndex()
     }
     
     /// Called on startup to resume any pending chunks from previous crash.
     /// Uses the provided summarization context so recovery summaries preserve continuity.
     func recoverPendingChunks(defaultContext: SummarizationContext = .empty) async {
-        guard !pendingIndex.pendingChunks.isEmpty else { return }
-        
-        print("[ArchiveService] Found \(pendingIndex.pendingChunks.count) pending chunk(s) from previous session, recovering...")
+        if !pendingIndex.pendingChunks.isEmpty {
+            print("[ArchiveService] Found \(pendingIndex.pendingChunks.count) pending chunk(s) from previous session, recovering...")
 
-        let personaContext = defaultContext.personaContext ?? KeychainHelper.load(key: KeychainHelper.structuredUserContextKey)
-        let assistantName = defaultContext.assistantName ?? KeychainHelper.load(key: KeychainHelper.assistantNameKey)
-        let userName = defaultContext.userName ?? KeychainHelper.load(key: KeychainHelper.userNameKey)
-        let currentConversationContext = defaultContext.currentConversationContext
+            let personaContext = defaultContext.personaContext ?? KeychainHelper.load(key: KeychainHelper.structuredUserContextKey)
+            let assistantName = defaultContext.assistantName ?? KeychainHelper.load(key: KeychainHelper.assistantNameKey)
+            let userName = defaultContext.userName ?? KeychainHelper.load(key: KeychainHelper.userNameKey)
+            let currentConversationContext = defaultContext.currentConversationContext
 
-        // Recover oldest-first so summaries can build on each other naturally.
-        let pendingChunks = pendingIndex.pendingChunks.sorted { $0.startDate < $1.startDate }
+            // Recover oldest-first so summaries can build on each other naturally.
+            let pendingChunks = pendingIndex.pendingChunks.sorted { $0.startDate < $1.startDate }
 
-        for pending in pendingChunks {
-            do {
-                // Load the raw messages
-                let fileURL = archiveFolder.appendingPathComponent(pending.rawContentFileName)
-                let data = try Data(contentsOf: fileURL)
-                let messages = try JSONDecoder().decode([Message].self, from: data)
+            for pending in pendingChunks {
+                do {
+                    // Load the raw messages
+                    let fileURL = archiveFolder.appendingPathComponent(pending.rawContentFileName)
+                    let data = try Data(contentsOf: fileURL)
+                    let messages = try JSONDecoder().decode([Message].self, from: data)
 
-                let summariesBeforePending = chunkIndex.orderedChunks
-                    .filter { $0.endDate < pending.startDate }
-                    .map { $0.summary }
+                    let summariesBeforePending = chunkIndex.orderedChunks
+                        .filter { $0.endDate < pending.startDate }
+                        .map { $0.summary }
 
-                let recoveryContext = SummarizationContext(
-                    personaContext: personaContext,
-                    assistantName: assistantName,
-                    userName: userName,
-                    previousSummaries: summariesBeforePending,
-                    currentConversationContext: currentConversationContext
-                )
-                
-                // Generate summary (with infinite retry)
-                var summary: String? = nil
-                var retryCount = 0
-                while summary == nil {
-                    do {
-                        summary = try await generateSummary(
-                            for: messages,
-                            startDate: pending.startDate,
-                            endDate: pending.endDate,
-                            context: recoveryContext
-                        )
-                    } catch {
-                        retryCount += 1
-                        let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
-                        print("[ArchiveService] Recovery summary failed (attempt \(retryCount)): \(error). Retrying in \(Int(delay))s...")
-                        try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    let recoveryContext = SummarizationContext(
+                        personaContext: personaContext,
+                        assistantName: assistantName,
+                        userName: userName,
+                        previousSummaries: summariesBeforePending,
+                        currentConversationContext: currentConversationContext
+                    )
+                    
+                    // Generate summary (with infinite retry)
+                    var summary: String? = nil
+                    var retryCount = 0
+                    while summary == nil {
+                        do {
+                            summary = try await generateSummary(
+                                for: messages,
+                                startDate: pending.startDate,
+                                endDate: pending.endDate,
+                                context: recoveryContext
+                            )
+                        } catch {
+                            retryCount += 1
+                            let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                            print("[ArchiveService] Recovery summary failed (attempt \(retryCount)): \(error). Retrying in \(Int(delay))s...")
+                            try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                        }
                     }
+                    
+                    // Create the completed chunk
+                    let chunk = ConversationChunk(
+                        id: pending.id,
+                        type: .temporary,
+                        startDate: pending.startDate,
+                        endDate: pending.endDate,
+                        tokenCount: pending.tokenCount,
+                        messageCount: pending.messageCount,
+                        summary: summary!,
+                        rawContentFileName: pending.rawContentFileName
+                    )
+                    
+                    chunkIndex.chunks.append(chunk)
+                    print("[ArchiveService] Recovered pending chunk \(pending.id.uuidString.prefix(8))...")
+                } catch {
+                    print("[ArchiveService] Failed to recover pending chunk \(pending.id): \(error)")
                 }
-                
-                // Create the completed chunk
-                let chunk = ConversationChunk(
-                    id: pending.id,
-                    type: .temporary,
-                    startDate: pending.startDate,
-                    endDate: pending.endDate,
-                    tokenCount: pending.tokenCount,
-                    messageCount: pending.messageCount,
-                    summary: summary!,
-                    rawContentFileName: pending.rawContentFileName
-                )
-                
-                chunkIndex.chunks.append(chunk)
-                print("[ArchiveService] Recovered pending chunk \(pending.id.uuidString.prefix(8))...")
-            } catch {
-                print("[ArchiveService] Failed to recover pending chunk \(pending.id): \(error)")
             }
+            
+            // Clear pending chunk records and save
+            pendingIndex.pendingChunks.removeAll()
+            savePendingIndex()
+            saveIndex()
         }
-        
-        // Clear pending and save
-        pendingIndex.pendingChunks.removeAll()
-        savePendingIndex()
-        saveIndex()
-        
-        // Check if consolidation is needed
+
+        // Check if consolidation is needed before recovering meta summaries,
+        // so the historical consolidated set is up to date.
         await checkAndConsolidate()
+        await recoverPendingMetaSummaries()
     }
     
     func configure(apiKey: String) {
@@ -186,6 +197,7 @@ actor ConversationArchiveService {
     func reloadFromDisk() {
         loadIndex()
         loadPendingIndex()
+        loadPendingMetaIndex()
         print("[ArchiveService] Reloaded index from disk (\(chunkIndex.chunks.count) chunks)")
     }
     
@@ -206,11 +218,13 @@ actor ConversationArchiveService {
         // Reset indices
         chunkIndex = .empty()
         pendingIndex = .empty()
+        pendingMetaIndex = .empty()
         cachedLiveContext = nil
         
         // Save empty indices
         saveIndex()
         savePendingIndex()
+        savePendingMetaIndex()
         
         print("[ArchiveService] Cleared all archives")
     }
@@ -300,6 +314,108 @@ actor ConversationArchiveService {
         // Combine and sort chronologically
         let combined = Array(consolidatedChunks) + temporaryChunks
         return combined.sorted { $0.startDate < $1.startDate }
+    }
+
+    /// Get the prompt-facing archived history timeline.
+    /// Older consolidated chunks are compressed into chronological meta-summaries,
+    /// while the most recent consolidated and temporary chunks remain visible individually.
+    func getPromptSummaryItems(recentConsolidatedCount count: Int = 5) async -> [ArchivedSummaryItem] {
+        await refreshHistoricalMetaSummariesIfNeeded(recentConsolidatedCount: count)
+
+        let chunksById = Dictionary(uniqueKeysWithValues: chunkIndex.chunks.map { ($0.id, $0) })
+        let consolidatedChunks = chunkIndex.chunks
+            .filter { $0.type == .consolidated }
+            .sorted { $0.startDate < $1.startDate }
+        let recentConsolidatedChunks = Array(consolidatedChunks.suffix(count))
+        let historicalConsolidatedChunks = Array(consolidatedChunks.dropLast(min(count, consolidatedChunks.count)))
+        let temporaryChunks = chunkIndex.temporaryChunks
+
+        let visibleMetaSummaries = Array(
+            chunkIndex.historicalMetaSummaries
+                .sorted { lhs, rhs in
+                    if lhs.startDate != rhs.startDate {
+                        return lhs.startDate < rhs.startDate
+                    }
+                    return lhs.endDate < rhs.endDate
+                }
+                .suffix(maxVisibleMetaSummaryCount)
+        )
+
+        let metaItems = visibleMetaSummaries
+            .sorted { lhs, rhs in
+                if lhs.startDate != rhs.startDate {
+                    return lhs.startDate < rhs.startDate
+                }
+                return lhs.endDate < rhs.endDate
+            }
+            .map { meta -> ArchivedSummaryItem in
+                let childChunks = meta.childChunkIds.compactMap { chunksById[$0] }
+                let tokenCount = childChunks.reduce(0) { $0 + $1.tokenCount }
+                let messageCount = childChunks.reduce(0) { $0 + $1.messageCount }
+                let kind: ArchivedSummaryItem.Kind = meta.kind == .rolling ? .rollingMetaSummary : .sealedMetaSummary
+
+                return ArchivedSummaryItem(
+                    id: meta.id,
+                    kind: kind,
+                    startDate: meta.startDate,
+                    endDate: meta.endDate,
+                    tokenCount: tokenCount,
+                    messageCount: messageCount,
+                    summary: meta.summary,
+                    sourceChunkCount: max(meta.childChunkIds.count, 1)
+                )
+            }
+
+        let representedHistoricalChunkIds = Set(
+            chunkIndex.historicalMetaSummaries.flatMap(\.childChunkIds)
+        )
+        let uncoveredHistoricalItems = historicalConsolidatedChunks
+            .filter { !representedHistoricalChunkIds.contains($0.id) }
+            .map {
+                ArchivedSummaryItem(
+                    id: $0.id,
+                    kind: .consolidatedChunk,
+                    startDate: $0.startDate,
+                    endDate: $0.endDate,
+                    tokenCount: $0.tokenCount,
+                    messageCount: $0.messageCount,
+                    summary: $0.summary,
+                    sourceChunkCount: 1
+                )
+            }
+
+        let chunkItems = recentConsolidatedChunks.map {
+            ArchivedSummaryItem(
+                id: $0.id,
+                kind: .consolidatedChunk,
+                startDate: $0.startDate,
+                endDate: $0.endDate,
+                tokenCount: $0.tokenCount,
+                messageCount: $0.messageCount,
+                summary: $0.summary,
+                sourceChunkCount: 1
+            )
+        }
+
+        let temporaryItems = temporaryChunks.map {
+            ArchivedSummaryItem(
+                id: $0.id,
+                kind: .temporaryChunk,
+                startDate: $0.startDate,
+                endDate: $0.endDate,
+                tokenCount: $0.tokenCount,
+                messageCount: $0.messageCount,
+                summary: $0.summary,
+                sourceChunkCount: 1
+            )
+        }
+
+        return (metaItems + uncoveredHistoricalItems + chunkItems + temporaryItems).sorted { lhs, rhs in
+            if lhs.startDate != rhs.startDate {
+                return lhs.startDate < rhs.startDate
+            }
+            return lhs.endDate < rhs.endDate
+        }
     }
     
     /// Get all chunk summaries (for deep search)
@@ -502,8 +618,194 @@ actor ConversationArchiveService {
         // Add consolidated chunk
         chunkIndex.chunks.append(consolidatedChunk)
         saveIndex()
-        
+
         print("[ArchiveService] Consolidated \(chunks.count) chunks into \(consolidatedId.uuidString.prefix(8))... (\(totalTokens) tokens)")
+    }
+
+    private func refreshHistoricalMetaSummariesIfNeeded(recentConsolidatedCount: Int) async {
+        let specs = desiredHistoricalMetaSummarySpecs(recentConsolidatedCount: recentConsolidatedCount)
+
+        guard !specs.isEmpty else {
+            if !chunkIndex.historicalMetaSummaries.isEmpty {
+                chunkIndex.historicalMetaSummaries = []
+                saveIndex()
+            }
+            if !pendingMetaIndex.pendingMetaSummaries.isEmpty {
+                pendingMetaIndex.pendingMetaSummaries = []
+                savePendingMetaIndex()
+            }
+            return
+        }
+
+        let existingSummaries = chunkIndex.historicalMetaSummaries
+        var desiredSummaries: [HistoricalMetaSummary] = []
+        let desiredSignatures = Set(
+            specs.map { historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.chunks.map(\.id)) }
+        )
+
+        for spec in specs {
+            if let summary = await historicalMetaSummary(
+                for: spec.chunks,
+                kind: spec.kind,
+                existingSummaries: existingSummaries
+            ) {
+                desiredSummaries.append(summary)
+            }
+        }
+
+        desiredSummaries.sort { lhs, rhs in
+            if lhs.startDate != rhs.startDate {
+                return lhs.startDate < rhs.startDate
+            }
+            return lhs.endDate < rhs.endDate
+        }
+
+        if historicalMetaSummariesDiffer(existingSummaries, desiredSummaries) {
+            chunkIndex.historicalMetaSummaries = desiredSummaries
+            saveIndex()
+            for summary in desiredSummaries {
+                let signature = historicalMetaSummarySignature(kind: summary.kind, childChunkIds: summary.childChunkIds)
+                clearPendingMetaSummary(signature: signature)
+            }
+        }
+
+        let filteredPending = pendingMetaIndex.pendingMetaSummaries.filter {
+            desiredSignatures.contains(historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.childChunkIds))
+        }
+        if filteredPending.count != pendingMetaIndex.pendingMetaSummaries.count {
+            pendingMetaIndex.pendingMetaSummaries = filteredPending
+            savePendingMetaIndex()
+        }
+    }
+
+    private func historicalMetaSummary(
+        for chunks: [ConversationChunk],
+        kind: HistoricalMetaSummary.MetaSummaryKind,
+        existingSummaries: [HistoricalMetaSummary]
+    ) async -> HistoricalMetaSummary? {
+        guard let first = chunks.first, let last = chunks.last else { return nil }
+        let context = buildHistoricalMetaSummaryContext(for: chunks)
+
+        let signature = historicalMetaSummarySignature(kind: kind, childChunkIds: chunks.map(\.id))
+        if let existing = existingSummaries.first(where: {
+            historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.childChunkIds) == signature
+        }) {
+            clearPendingMetaSummary(signature: signature)
+            return existing
+        }
+
+        let pending = upsertPendingMetaSummary(for: chunks, kind: kind)
+
+        var summary: String? = nil
+        var retryCount = 0
+
+        while summary == nil {
+            do {
+                try Task.checkCancellation()
+                summary = try await generateHistoricalMetaSummary(for: chunks, kind: kind, context: context)
+            } catch is CancellationError {
+                return nil
+            } catch {
+                retryCount += 1
+                let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                print("[ArchiveService] \(kind == .rolling ? "Rolling" : "Sealed") meta-summary failed (attempt \(retryCount)): \(error). Retrying in \(Int(delay))s...")
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+
+        let now = Date()
+        return HistoricalMetaSummary(
+            id: pending.id,
+            kind: kind,
+            startDate: first.startDate,
+            endDate: last.endDate,
+            childChunkIds: chunks.map(\.id),
+            summary: summary!,
+            createdAt: pending.createdAt,
+            updatedAt: now
+        )
+    }
+
+    private func recoverPendingMetaSummaries(recentConsolidatedCount: Int = 5) async {
+        guard !pendingMetaIndex.pendingMetaSummaries.isEmpty else { return }
+
+        print("[ArchiveService] Found \(pendingMetaIndex.pendingMetaSummaries.count) pending meta-summary item(s), recovering...")
+
+        let desiredSignatures = Set(
+            desiredHistoricalMetaSummarySpecs(recentConsolidatedCount: recentConsolidatedCount).map {
+                historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.chunks.map(\.id))
+            }
+        )
+
+        let chunksById = Dictionary(uniqueKeysWithValues: chunkIndex.chunks.map { ($0.id, $0) })
+
+        for pending in pendingMetaIndex.pendingMetaSummaries.sorted(by: { $0.startDate < $1.startDate }) {
+            let signature = historicalMetaSummarySignature(kind: pending.kind, childChunkIds: pending.childChunkIds)
+
+            if chunkIndex.historicalMetaSummaries.contains(where: {
+                historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.childChunkIds) == signature
+            }) {
+                clearPendingMetaSummary(signature: signature)
+                continue
+            }
+
+            guard desiredSignatures.contains(signature) else {
+                print("[ArchiveService] Dropping stale pending meta-summary \(pending.id.uuidString.prefix(8))...")
+                clearPendingMetaSummary(signature: signature)
+                continue
+            }
+
+            let sourceChunks = pending.childChunkIds.compactMap { chunksById[$0] }
+                .sorted { $0.startDate < $1.startDate }
+            guard sourceChunks.count == pending.childChunkIds.count else {
+                print("[ArchiveService] Pending meta-summary \(pending.id.uuidString.prefix(8))... is missing source chunks, dropping it")
+                clearPendingMetaSummary(signature: signature)
+                continue
+            }
+
+            let context = buildHistoricalMetaSummaryContext(for: sourceChunks)
+            var summary: String? = nil
+            var retryCount = 0
+
+            while summary == nil {
+                do {
+                    try Task.checkCancellation()
+                    summary = try await generateHistoricalMetaSummary(for: sourceChunks, kind: pending.kind, context: context)
+                } catch is CancellationError {
+                    return
+                } catch {
+                    retryCount += 1
+                    let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                    print("[ArchiveService] Pending meta-summary recovery failed (attempt \(retryCount)): \(error). Retrying in \(Int(delay))s...")
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                }
+            }
+
+            let completed = HistoricalMetaSummary(
+                id: pending.id,
+                kind: pending.kind,
+                startDate: pending.startDate,
+                endDate: pending.endDate,
+                childChunkIds: pending.childChunkIds,
+                summary: summary!,
+                createdAt: pending.createdAt,
+                updatedAt: Date()
+            )
+
+            chunkIndex.historicalMetaSummaries.removeAll {
+                historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.childChunkIds) == signature
+            }
+            chunkIndex.historicalMetaSummaries.append(completed)
+            chunkIndex.historicalMetaSummaries.sort {
+                if $0.startDate != $1.startDate {
+                    return $0.startDate < $1.startDate
+                }
+                return $0.endDate < $1.endDate
+            }
+            saveIndex()
+            clearPendingMetaSummary(signature: signature)
+            print("[ArchiveService] Recovered pending meta-summary \(pending.id.uuidString.prefix(8))...")
+        }
     }
     
     // MARK: - Summarization
@@ -576,6 +878,192 @@ actor ConversationArchiveService {
         let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: nil)
         let clippedResponse = String(response.prefix(summaryMaxCharacters))
         return try validateSummaryText(clippedResponse)
+    }
+
+    private func generateHistoricalMetaSummary(
+        for chunks: [ConversationChunk],
+        kind: HistoricalMetaSummary.MetaSummaryKind,
+        context: SummarizationContext
+    ) async throws -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+
+        var contextSections: [String] = []
+
+        if let persona = context.personaContext, !persona.isEmpty {
+            contextSections.append("USER PROFILE:\n\(persona)")
+        } else {
+            var identityParts: [String] = []
+            if let assistantName = context.assistantName, !assistantName.isEmpty {
+                identityParts.append("Assistant name: \(assistantName)")
+            }
+            if let userName = context.userName, !userName.isEmpty {
+                identityParts.append("User name: \(userName)")
+            }
+            if !identityParts.isEmpty {
+                contextSections.append("IDENTITY:\n\(identityParts.joined(separator: "\n"))")
+            }
+        }
+
+        if !context.previousSummaries.isEmpty {
+            let summariesText = context.previousSummaries.enumerated().map { idx, summary in
+                "[Chunk \(idx + 1)] \(summary)"
+            }.joined(separator: "\n\n")
+            contextSections.append("PREVIOUS CONVERSATION SUMMARIES:\n\(summariesText)")
+        }
+
+        if let current = context.currentConversationContext, !current.isEmpty {
+            contextSections.append("CURRENT CONVERSATION (most recent, for context only):\n\(current)")
+        }
+
+        let contextBlock = contextSections.isEmpty ? "" : """
+
+        === CONTEXT (for understanding only, DO NOT include in summary) ===
+        \(contextSections.joined(separator: "\n\n"))
+        === END CONTEXT ===
+
+        """
+
+        let sourceText = chunks.enumerated().map { index, chunk in
+            """
+            [Source \(index + 1)]
+            Chunk ID: \(chunk.id.uuidString)
+            Period: \(dateFormatter.string(from: chunk.startDate)) to \(dateFormatter.string(from: chunk.endDate))
+            Tokens: \(chunk.tokenCount)
+            Messages: \(chunk.messageCount)
+            Summary:
+            \(chunk.summary)
+            """
+        }.joined(separator: "\n\n")
+
+        let kindLabel = kind == .rolling ? "rolling pre-batch summary" : "sealed historical meta-summary"
+        let systemPrompt = """
+        You are summarizing a specific historical span of an ongoing conversation. This summary will be used by you in the future to have a clear idea of the exact contents of this \(kindLabel). The source material below is already summarized conversation history rather than raw messages.\(contextBlock)
+        YOUR TASK:
+        Summarize ONLY the source chunk summaries below.
+        The summary should ONLY cover the source chunk summaries in the batch being compressed.
+        Preserve chronology of events clearly, event after event, from earliest to latest.
+        Do not invent details not present in the source summaries.
+        Merge repeated facts once, but make changes over time explicit.
+        Keep durable context: people, relationships, projects, preferences, decisions, constraints, and unresolved threads.
+        VERY IMPORTANT: You should cite the file names (in full with extension) of the most important files referenced in these source summaries so they can be easily referenced in the future (project names don't have extensions). This applies to photos, documents and projects that were either sent by the user, generated by the assistant or the Code CLI or one of the tools, or received via email.
+        This summary will replace these underlying summaries in active prompt memory, so you should produce a compact but information-dense summary that retains as much as possible.
+        Make it a detailed historical summary of roughly 500-800 words.
+        """
+
+        let userPrompt = """
+        SOURCE CHUNK SUMMARIES
+        Batch size: \(chunks.count)
+        Covered period: \(dateFormatter.string(from: chunks.first!.startDate)) to \(dateFormatter.string(from: chunks.last!.endDate))
+
+        \(sourceText.prefix(60000))
+        """
+
+        let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 1400)
+        let clippedResponse = String(response.prefix(summaryMaxCharacters))
+        return try validateSummaryText(clippedResponse)
+    }
+
+    private func buildHistoricalMetaSummaryContext(for batch: [ConversationChunk]) -> SummarizationContext {
+        guard let first = batch.first, let last = batch.last else { return .empty }
+
+        let personaContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey)
+        let assistantName = KeychainHelper.load(key: KeychainHelper.assistantNameKey)
+        let userName = KeychainHelper.load(key: KeychainHelper.userNameKey)
+        let batchIds = Set(batch.map(\.id))
+
+        var previousSummaries: [String] = []
+        var newerSummaries: [String] = []
+
+        for chunk in chunkIndex.orderedChunks {
+            guard !batchIds.contains(chunk.id) else { continue }
+
+            if chunk.endDate < first.startDate {
+                previousSummaries.append("[\(chunk.sizeLabel) chunk, \(formatDateRange(chunk.startDate, chunk.endDate))]: \(chunk.summary)")
+            } else if chunk.startDate > last.endDate {
+                newerSummaries.append("[\(chunk.sizeLabel) chunk, \(formatDateRange(chunk.startDate, chunk.endDate))]: \(chunk.summary)")
+            }
+        }
+
+        var currentContextParts = newerSummaries
+        if let liveContext = cachedLiveContext, !liveContext.isEmpty {
+            currentContextParts.append("[CURRENT LIVE CONVERSATION]:\n\(liveContext)")
+        }
+
+        return SummarizationContext(
+            personaContext: personaContext,
+            assistantName: assistantName,
+            userName: userName,
+            previousSummaries: previousSummaries,
+            currentConversationContext: currentContextParts.isEmpty ? nil : currentContextParts.joined(separator: "\n\n")
+        )
+    }
+
+    private func desiredHistoricalMetaSummarySpecs(
+        recentConsolidatedCount: Int
+    ) -> [(kind: HistoricalMetaSummary.MetaSummaryKind, chunks: [ConversationChunk])] {
+        let consolidatedChunks = chunkIndex.chunks
+            .filter { $0.type == .consolidated }
+            .sorted { $0.startDate < $1.startDate }
+        let historicalCount = max(0, consolidatedChunks.count - recentConsolidatedCount)
+        let historicalChunks = Array(consolidatedChunks.prefix(historicalCount))
+
+        guard !historicalChunks.isEmpty else { return [] }
+
+        var specs: [(kind: HistoricalMetaSummary.MetaSummaryKind, chunks: [ConversationChunk])] = []
+        var index = 0
+
+        while index + metaSummaryBatchSize <= historicalChunks.count {
+            specs.append((
+                kind: .sealedBatch,
+                chunks: Array(historicalChunks[index..<(index + metaSummaryBatchSize)])
+            ))
+            index += metaSummaryBatchSize
+        }
+
+        let limboChunks = Array(historicalChunks.suffix(from: index))
+        if limboChunks.count >= rollingMetaSummaryMinimumChunkCount {
+            specs.append((kind: .rolling, chunks: limboChunks))
+        }
+
+        return specs
+    }
+
+    private func upsertPendingMetaSummary(
+        for chunks: [ConversationChunk],
+        kind: HistoricalMetaSummary.MetaSummaryKind
+    ) -> PendingMetaSummary {
+        let signature = historicalMetaSummarySignature(kind: kind, childChunkIds: chunks.map(\.id))
+        if let existing = pendingMetaIndex.pendingMetaSummaries.first(where: {
+            historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.childChunkIds) == signature
+        }) {
+            return existing
+        }
+
+        let now = Date()
+        let pending = PendingMetaSummary(
+            id: UUID(),
+            kind: kind,
+            startDate: chunks.first!.startDate,
+            endDate: chunks.last!.endDate,
+            childChunkIds: chunks.map(\.id),
+            createdAt: now,
+            updatedAt: now
+        )
+        pendingMetaIndex.pendingMetaSummaries.append(pending)
+        savePendingMetaIndex()
+        return pending
+    }
+
+    private func clearPendingMetaSummary(signature: String) {
+        let originalCount = pendingMetaIndex.pendingMetaSummaries.count
+        pendingMetaIndex.pendingMetaSummaries.removeAll {
+            historicalMetaSummarySignature(kind: $0.kind, childChunkIds: $0.childChunkIds) == signature
+        }
+        if pendingMetaIndex.pendingMetaSummaries.count != originalCount {
+            savePendingMetaIndex()
+        }
     }
     
     // MARK: - Excerpt Extraction
@@ -845,7 +1333,34 @@ actor ConversationArchiveService {
 
         return trimmed
     }
-    
+
+    private func historicalMetaSummarySignature(
+        kind: HistoricalMetaSummary.MetaSummaryKind,
+        childChunkIds: [UUID]
+    ) -> String {
+        let ids = childChunkIds.map(\.uuidString).joined(separator: ",")
+        return "\(kind.rawValue)|\(ids)"
+    }
+
+    private func historicalMetaSummariesDiffer(
+        _ lhs: [HistoricalMetaSummary],
+        _ rhs: [HistoricalMetaSummary]
+    ) -> Bool {
+        guard lhs.count == rhs.count else { return true }
+
+        for (left, right) in zip(lhs, rhs) {
+            if left.kind != right.kind ||
+                left.startDate != right.startDate ||
+                left.endDate != right.endDate ||
+                left.childChunkIds != right.childChunkIds ||
+                left.summary != right.summary {
+                return true
+            }
+        }
+
+        return false
+    }
+
     // MARK: - Persistence
     
     private func loadIndex() {
@@ -887,6 +1402,28 @@ actor ConversationArchiveService {
             try data.write(to: pendingIndexFileURL)
         } catch {
             print("[ArchiveService] Failed to save pending index: \(error)")
+        }
+    }
+
+    private func loadPendingMetaIndex() {
+        guard FileManager.default.fileExists(atPath: pendingMetaIndexFileURL.path) else { return }
+        do {
+            let data = try Data(contentsOf: pendingMetaIndexFileURL)
+            pendingMetaIndex = try JSONDecoder().decode(PendingMetaSummaryIndex.self, from: data)
+            if !pendingMetaIndex.pendingMetaSummaries.isEmpty {
+                print("[ArchiveService] Loaded \(pendingMetaIndex.pendingMetaSummaries.count) pending meta-summary item(s) awaiting recovery")
+            }
+        } catch {
+            print("[ArchiveService] Failed to load pending meta-summary index: \(error)")
+        }
+    }
+
+    private func savePendingMetaIndex() {
+        do {
+            let data = try JSONEncoder().encode(pendingMetaIndex)
+            try data.write(to: pendingMetaIndexFileURL)
+        } catch {
+            print("[ArchiveService] Failed to save pending meta-summary index: \(error)")
         }
     }
 }

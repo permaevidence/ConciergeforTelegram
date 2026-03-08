@@ -271,13 +271,14 @@ actor OpenRouterService {
     // MARK: - Chunk Summary Formatting
     
     /// Formats chunk summaries for system prompt injection
-    private func formatChunkSummaries(_ chunks: [ConversationChunk], totalChunkCount: Int) -> String {
-        guard !chunks.isEmpty else { return "" }
+    private func formatChunkSummaries(_ items: [ArchivedSummaryItem], totalChunkCount: Int) -> String {
+        guard !items.isEmpty else { return "" }
         
         let dateFormatter = DateFormatter()
         dateFormatter.dateFormat = "MMM d"
         
-        let hiddenCount = totalChunkCount - chunks.count
+        let representedChunkCount = items.reduce(0) { $0 + max($1.sourceChunkCount, 1) }
+        let hiddenCount = max(0, totalChunkCount - representedChunkCount)
         
         var output: String
         if hiddenCount > 0 {
@@ -286,12 +287,12 @@ actor OpenRouterService {
             
             ## ARCHIVED CONVERSATION HISTORY
             
-            Showing \(chunks.count) recent chunks. **\(hiddenCount) older chunk(s) not shown.**
+            Showing a chronological history timeline with \(items.count) summary item(s), covering \(representedChunkCount) archived chunk(s). **\(hiddenCount) older chunk(s) not shown.**
             - To view a chunk's full messages: `view_conversation_chunk(chunk_id: "ID")`
             - To see ALL \(totalChunkCount) chunks: `view_conversation_chunk()` with no arguments
             
-            | # | ID | Size | Date Range | Summary |
-            |---|-----|------|------------|---------|
+            | # | Type | ID | Size | Date Range | Summary |
+            |---|------|-----|------|------------|---------|
             """
         } else {
             output = """
@@ -299,21 +300,21 @@ actor OpenRouterService {
             
             ## ARCHIVED CONVERSATION HISTORY
             
-            All \(chunks.count) archived chunk(s) shown below.
+            Showing all \(totalChunkCount) archived chunk(s) via \(items.count) chronological summary item(s).
             - To view a chunk's full messages: `view_conversation_chunk(chunk_id: "ID")`
             
-            | # | ID | Size | Date Range | Summary |
-            |---|-----|------|------------|---------|
+            | # | Type | ID | Size | Date Range | Summary |
+            |---|------|-----|------|------------|---------|
             """
         }
         
-        for (index, chunk) in chunks.enumerated() {
-            let startStr = dateFormatter.string(from: chunk.startDate)
-            let endStr = dateFormatter.string(from: chunk.endDate)
-            let shortId = String(chunk.id.uuidString.prefix(8))
-            let formattedSummary = chunk.summary.replacingOccurrences(of: "\n", with: " ")
+        for (index, item) in items.enumerated() {
+            let startStr = dateFormatter.string(from: item.startDate)
+            let endStr = dateFormatter.string(from: item.endDate)
+            let shortId = String(item.id.uuidString.prefix(8))
+            let formattedSummary = item.summary.replacingOccurrences(of: "\n", with: " ")
             
-            output += "\n| \(index + 1) | \(shortId) | \(chunk.sizeLabel) | \(startStr)-\(endStr) | \(formattedSummary) |"
+            output += "\n| \(index + 1) | \(item.historyLabel) | \(shortId) | \(item.sizeLabel) | \(startStr)-\(endStr) | \(formattedSummary) |"
         }
         
         return output
@@ -333,7 +334,7 @@ actor OpenRouterService {
         toolResultMessages: [ToolInteraction]? = nil,
         calendarContext: String? = nil,
         emailContext: String? = nil,
-        chunkSummaries: [ConversationChunk]? = nil,
+        chunkSummaries: [ArchivedSummaryItem]? = nil,
         totalChunkCount: Int = 0,
         currentUserMessageId: UUID? = nil,
         deploymentToolsUnlockedForTurn: Bool = false,
