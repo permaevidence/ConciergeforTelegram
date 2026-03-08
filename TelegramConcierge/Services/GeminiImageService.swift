@@ -1,14 +1,22 @@
 import Foundation
 
-/// Service for generating images using Google's Gemini 2.0 Flash model
+/// Service for generating images using a configurable Gemini image model
 actor GeminiImageService {
     static let shared = GeminiImageService()
     
     private var apiKey: String = ""
-    private let baseURL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-image-preview:generateContent"
+    private var model: String = "gemini-3-pro-image-preview"
+    private var pricing = GeminiImagePricing.default
     
-    func configure(apiKey: String) {
+    func configure(apiKey: String, model: String? = nil, pricing: GeminiImagePricing? = nil) {
         self.apiKey = apiKey
+        if let model {
+            let normalizedModel = model.trimmingCharacters(in: .whitespacesAndNewlines)
+            self.model = normalizedModel.isEmpty ? GeminiImagePricing.defaultModel : normalizedModel
+        } else {
+            self.model = GeminiImagePricing.defaultModel
+        }
+        self.pricing = pricing ?? .default
     }
     
     func isConfigured() -> Bool {
@@ -21,18 +29,19 @@ actor GeminiImageService {
     ///   - sourceImageData: Optional source image data for image-to-image transformation
     ///   - sourceMimeType: MIME type of the source image (e.g., "image/jpeg", "image/png")
     ///   - imageSize: Optional image size override. Supported values: 1K, 2K, 4K.
-    /// - Returns: Image data (PNG/JPEG) and MIME type
+    /// - Returns: Image data (PNG/JPEG), MIME type, and estimated Gemini API spend in USD
     func generateImage(
         prompt: String,
         sourceImageData: Data? = nil,
         sourceMimeType: String? = nil,
         imageSize: String? = nil
-    ) async throws -> (data: Data, mimeType: String) {
+    ) async throws -> (data: Data, mimeType: String, spendUSD: Double?) {
         guard !apiKey.isEmpty else {
             throw GeminiImageError.notConfigured
         }
         
         // Build request URL with API key
+        let baseURL = "https://generativelanguage.googleapis.com/v1beta/models/\(model):generateContent"
         guard var urlComponents = URLComponents(string: baseURL) else {
             throw GeminiImageError.invalidURL
         }
@@ -90,6 +99,10 @@ actor GeminiImageService {
         
         // Parse response
         let geminiResponse = try JSONDecoder().decode(GeminiImageResponse.self, from: data)
+        let spendUSD = estimatedSpendUSD(
+            from: geminiResponse.usageMetadata,
+            imageSize: imageSize
+        )
         
         // Find the image part in the response
         for candidate in geminiResponse.candidates ?? [] {
@@ -98,13 +111,73 @@ actor GeminiImageService {
                     guard let imageData = Data(base64Encoded: inlineData.data) else {
                         throw GeminiImageError.invalidImageData
                     }
-                    return (imageData, inlineData.mimeType)
+                    return (imageData, inlineData.mimeType, spendUSD)
                 }
             }
         }
         
         throw GeminiImageError.noImageGenerated
     }
+
+    private func estimatedSpendUSD(
+        from usageMetadata: GeminiUsageMetadata?,
+        imageSize: String?
+    ) -> Double? {
+        var totalUSD = 0.0
+        var didCalculate = false
+
+        if let promptTokenCount = usageMetadata?.promptTokenCount,
+           promptTokenCount > 0 {
+            totalUSD += (Double(promptTokenCount) / 1_000_000.0) * pricing.inputCostPerMillionTokensUSD
+            didCalculate = true
+        }
+
+        let candidateDetails = usageMetadata?.candidatesTokensDetails ?? []
+        let candidateTextTokens = candidateDetails
+            .filter { $0.modality == .text }
+            .reduce(0) { $0 + $1.tokenCount }
+        if candidateTextTokens > 0 {
+            totalUSD += (Double(candidateTextTokens) / 1_000_000.0) * pricing.outputTextCostPerMillionTokensUSD
+            didCalculate = true
+        }
+
+        let candidateImageTokens = candidateDetails
+            .filter { $0.modality == .image }
+            .reduce(0) { $0 + $1.tokenCount }
+        if candidateImageTokens > 0 {
+            totalUSD += (Double(candidateImageTokens) / 1_000_000.0) * pricing.outputImageCostPerMillionTokensUSD
+            didCalculate = true
+        } else if let fallbackImageTokens = fallbackImageTokenCount(for: imageSize) {
+            totalUSD += (Double(fallbackImageTokens) / 1_000_000.0) * pricing.outputImageCostPerMillionTokensUSD
+            didCalculate = true
+        }
+
+        guard didCalculate, totalUSD.isFinite, totalUSD > 0 else { return nil }
+        return totalUSD
+    }
+
+    private func fallbackImageTokenCount(for imageSize: String?) -> Int? {
+        guard let parsedSize = GeminiImageSize.parse(imageSize) else { return nil }
+        switch parsedSize {
+        case .oneK, .twoK:
+            return 1120
+        case .fourK:
+            return 2000
+        }
+    }
+}
+
+struct GeminiImagePricing {
+    static let defaultModel = "gemini-3-pro-image-preview"
+    static let `default` = GeminiImagePricing(
+        inputCostPerMillionTokensUSD: 2.0,
+        outputTextCostPerMillionTokensUSD: 12.0,
+        outputImageCostPerMillionTokensUSD: 120.0
+    )
+
+    let inputCostPerMillionTokensUSD: Double
+    let outputTextCostPerMillionTokensUSD: Double
+    let outputImageCostPerMillionTokensUSD: Double
 }
 
 // MARK: - Error Types
@@ -209,6 +282,12 @@ enum GeminiImageSize: String {
 
 struct GeminiImageResponse: Codable {
     let candidates: [GeminiCandidate]?
+    let usageMetadata: GeminiUsageMetadata?
+
+    enum CodingKeys: String, CodingKey {
+        case candidates
+        case usageMetadata = "usageMetadata"
+    }
 }
 
 struct GeminiCandidate: Codable {
@@ -222,6 +301,40 @@ struct GeminiResponseContent: Codable {
 struct GeminiResponsePart: Codable {
     let text: String?
     let inlineData: GeminiInlineData?
+}
+
+struct GeminiUsageMetadata: Codable {
+    let promptTokenCount: Int?
+    let candidatesTokenCount: Int?
+    let totalTokenCount: Int?
+    let promptTokensDetails: [GeminiModalityTokenCount]?
+    let candidatesTokensDetails: [GeminiModalityTokenCount]?
+
+    enum CodingKeys: String, CodingKey {
+        case promptTokenCount = "promptTokenCount"
+        case candidatesTokenCount = "candidatesTokenCount"
+        case totalTokenCount = "totalTokenCount"
+        case promptTokensDetails = "promptTokensDetails"
+        case candidatesTokensDetails = "candidatesTokensDetails"
+    }
+}
+
+struct GeminiModalityTokenCount: Codable {
+    let modality: GeminiTokenModality
+    let tokenCount: Int
+
+    enum CodingKeys: String, CodingKey {
+        case modality
+        case tokenCount = "tokenCount"
+    }
+}
+
+enum GeminiTokenModality: String, Codable {
+    case text = "TEXT"
+    case image = "IMAGE"
+    case audio = "AUDIO"
+    case video = "VIDEO"
+    case unspecified = "MODALITY_UNSPECIFIED"
 }
 
 struct GeminiErrorResponse: Codable {

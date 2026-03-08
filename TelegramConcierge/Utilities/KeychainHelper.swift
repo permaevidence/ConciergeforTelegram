@@ -102,6 +102,10 @@ extension KeychainHelper {
     static let defaultGeminiCodeArgs = "--yolo --output-format json"
     static let defaultGeminiCodeModel = ""
     static let defaultGeminiCodeTimeout = "1000"
+    static let defaultGeminiImageModel = ""
+    static let defaultGeminiImageInputCostPerMillionTokensUSD = "2"
+    static let defaultGeminiImageOutputTextCostPerMillionTokensUSD = "12"
+    static let defaultGeminiImageOutputImageCostPerMillionTokensUSD = "120"
     static let defaultCodexCodeCommand = "codex"
     static let defaultCodexCodeArgs = "exec --sandbox danger-full-access -c approval_policy=\"never\" --skip-git-repo-check"
     static let defaultCodexCodeModel = ""
@@ -131,6 +135,10 @@ extension KeychainHelper {
     
     // Google Gemini API Key
     static let geminiApiKeyKey = "gemini_api_key"
+    static let geminiImageModelKey = "gemini_image_model"
+    static let geminiImageInputCostPerMillionTokensUSDKey = "gemini_image_input_cost_per_million_tokens_usd"
+    static let geminiImageOutputTextCostPerMillionTokensUSDKey = "gemini_image_output_text_cost_per_million_tokens_usd"
+    static let geminiImageOutputImageCostPerMillionTokensUSDKey = "gemini_image_output_image_cost_per_million_tokens_usd"
     
     // Code CLI Settings (Claude Code, Gemini CLI, Codex CLI)
     static let codeCLIProviderKey = "code_cli_provider"

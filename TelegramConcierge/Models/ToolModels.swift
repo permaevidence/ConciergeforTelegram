@@ -120,13 +120,22 @@ struct ToolResultMessage: Codable {
     /// Optional files to inject as multimodal content (not serialized to API directly)
     var fileAttachments: [FileAttachment]
     
+    /// Optional spend associated with tool-internal API calls (not serialized to API directly)
+    var spendUSD: Double?
+    
     enum CodingKeys: String, CodingKey {
         case role
         case toolCallId = "tool_call_id"
         case content
     }
     
-    init(toolCallId: String, content: String, fileAttachment: FileAttachment? = nil, fileAttachments: [FileAttachment]? = nil) {
+    init(
+        toolCallId: String,
+        content: String,
+        fileAttachment: FileAttachment? = nil,
+        fileAttachments: [FileAttachment]? = nil,
+        spendUSD: Double? = nil
+    ) {
         self.role = "tool"
         self.toolCallId = toolCallId
         self.content = content
@@ -138,6 +147,7 @@ struct ToolResultMessage: Codable {
         } else {
             self.fileAttachments = []
         }
+        self.spendUSD = spendUSD
     }
     
     // Manual Decodable conformance - fileAttachments is not serialized
@@ -147,6 +157,7 @@ struct ToolResultMessage: Codable {
         self.toolCallId = try container.decode(String.self, forKey: .toolCallId)
         self.content = try container.decode(String.self, forKey: .content)
         self.fileAttachments = [] // Not decoded, only used transiently
+        self.spendUSD = nil // Not decoded, only used transiently
     }
 }
 
@@ -156,13 +167,14 @@ struct WebSearchResult: Codable {
     let summary: String
     let sources: [String]
     let searchQueriesUsed: [String]
+    let spendUSD: Double?
     
     func asJSON() -> String {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .prettyPrinted
         guard let data = try? encoder.encode(self),
               let json = String(data: data, encoding: .utf8) else {
-            return "{\"summary\": \"\(summary)\", \"sources\": [], \"searchQueriesUsed\": []}"
+            return "{\"summary\": \"\(summary)\", \"sources\": [], \"searchQueriesUsed\": [], \"spendUSD\": null}"
         }
         return json
     }

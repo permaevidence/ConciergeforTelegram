@@ -14,8 +14,8 @@ actor ToolExecutor {
     
     // MARK: - Configuration
     
-    func configure(openRouterKey: String, serperKey: String, jinaKey: String) {
-        webOrchestrator.configure(openRouterKey: openRouterKey, serperKey: serperKey, jinaKey: jinaKey)
+    func configure(openRouterKey: String, serperKey: String, jinaKey: String) async {
+        await webOrchestrator.configure(openRouterKey: openRouterKey, serperKey: serperKey, jinaKey: jinaKey)
         Task { await archiveService.configure(apiKey: openRouterKey) }
     }
     
@@ -95,6 +95,10 @@ actor ToolExecutor {
             return await executeViewPageImage(call)
         case "run_shortcut":
             return await executeRunShortcut(call)
+        case "web_search":
+            return try await executeWebSearch(call)
+        case "deep_research":
+            return try await executeDeepResearch(call)
         default:
             break
         }
@@ -104,12 +108,6 @@ actor ToolExecutor {
         switch call.function.name {
         case "show_project_deployment_tools":
             content = await executeShowProjectDeploymentTools(call)
-            
-        case "web_search":
-            content = try await executeWebSearch(call)
-
-        case "deep_research":
-            content = try await executeDeepResearch(call)
             
         case "manage_reminders":
             content = try await executeManageReminders(call)
@@ -250,32 +248,50 @@ actor ToolExecutor {
     
     // MARK: - Tool Implementations
     
-    private func executeWebSearch(_ call: ToolCall) async throws -> String {
+    private func executeWebSearch(_ call: ToolCall) async throws -> ToolResultMessage {
         // Parse arguments from JSON string
         guard let argsData = call.function.arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(WebSearchArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse web_search arguments\"}"
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse web_search arguments\"}")
         }
         
         do {
             let result = try await webOrchestrator.executeForTool(query: args.query)
-            return result.asJSON()
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: result.asJSON(),
+                spendUSD: result.spendUSD
+            )
         } catch {
-            return "{\"error\": \"Web search failed: \(error.localizedDescription)\"}"
+            let spendUSD = (error as? ResearchExecutionError)?.spendUSD
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: "{\"error\": \"Web search failed: \(error.localizedDescription)\"}",
+                spendUSD: spendUSD
+            )
         }
     }
 
-    private func executeDeepResearch(_ call: ToolCall) async throws -> String {
+    private func executeDeepResearch(_ call: ToolCall) async throws -> ToolResultMessage {
         guard let argsData = call.function.arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(WebSearchArguments.self, from: argsData) else {
-            return "{\"error\": \"Failed to parse deep_research arguments\"}"
+            return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Failed to parse deep_research arguments\"}")
         }
 
         do {
             let result = try await webOrchestrator.executeDeepResearchForTool(query: args.query)
-            return result.asJSON()
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: result.asJSON(),
+                spendUSD: result.spendUSD
+            )
         } catch {
-            return "{\"error\": \"Deep research failed: \(error.localizedDescription)\"}"
+            let spendUSD = (error as? ResearchExecutionError)?.spendUSD
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: "{\"error\": \"Deep research failed: \(error.localizedDescription)\"}",
+                spendUSD: spendUSD
+            )
         }
     }
     
@@ -3121,7 +3137,7 @@ extension ToolExecutor {
         }
         
         do {
-            let (imageData, mimeType) = try await GeminiImageService.shared.generateImage(
+            let (imageData, mimeType, spendUSD) = try await GeminiImageService.shared.generateImage(
                 prompt: args.prompt,
                 sourceImageData: sourceImageData,
                 sourceMimeType: sourceMimeType,
@@ -3160,7 +3176,12 @@ extension ToolExecutor {
             {"success": true, "filename": "\(fileName)", "mimeType": "\(mimeType)", "sizeBytes": \(imageData.count), "resolution": "\(normalizedImageSize?.rawValue ?? "default")", "message": "\(isEdit ? "Image transformed" : "Image generated") successfully. You can now see and analyze the result."}
             """
             
-            return ToolResultMessage(toolCallId: call.id, content: result, fileAttachment: attachment)
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: result,
+                fileAttachment: attachment,
+                spendUSD: spendUSD
+            )
         } catch {
             return ToolResultMessage(toolCallId: call.id, content: "{\"error\": \"Image generation failed: \(error.localizedDescription)\"}")
         }

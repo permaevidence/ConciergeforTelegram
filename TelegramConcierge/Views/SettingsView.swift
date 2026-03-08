@@ -50,6 +50,10 @@ struct SettingsView: View {
     
     // Image generation settings
     @State private var geminiApiKey: String = ""
+    @State private var geminiImageModel: String = KeychainHelper.defaultGeminiImageModel
+    @State private var geminiImageInputCostPerMillionTokensUSD: String = ""
+    @State private var geminiImageOutputTextCostPerMillionTokensUSD: String = ""
+    @State private var geminiImageOutputImageCostPerMillionTokensUSD: String = ""
 
     // Voice transcription settings
     @State private var voiceTranscriptionProvider: VoiceTranscriptionProvider = .defaultProvider
@@ -276,14 +280,14 @@ struct SettingsView: View {
                         .multilineTextAlignment(.trailing)
                 }
 
-                Text("Stops tool chaining when this turn's cumulative OpenRouter usage cost reaches the limit. BYOK-aware when upstream cost is reported. Min: 0.001. Leave empty to use default (\(formatUSD(defaultToolSpendLimitPerTurnUSD))).")
+                Text("Stops tool chaining when this turn's cumulative tool/API usage cost reaches the limit. OpenRouter usage is measured from response cost fields; Gemini image generation is estimated from Gemini usage metadata. Min: 0.001. Leave empty to use default (\(formatUSD(defaultToolSpendLimitPerTurnUSD))).")
                     .font(.caption)
                     .foregroundColor(.secondary)
 
                 HStack {
                     Text("Daily Spend Limit (USD)")
                     Spacer()
-                    Text("Spent today: $\(formatUSD(openRouterTodaySpendUSD))")
+                    Text("API spend today: $\(formatUSD(openRouterTodaySpendUSD))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     TextField("none", text: $openRouterDailySpendLimit)
@@ -295,7 +299,7 @@ struct SettingsView: View {
                 HStack {
                     Text("Monthly Spend Limit (USD)")
                     Spacer()
-                    Text("Spent month: $\(formatUSD(openRouterMonthSpendUSD))")
+                    Text("API spend month: $\(formatUSD(openRouterMonthSpendUSD))")
                         .font(.caption)
                         .foregroundColor(.secondary)
                     TextField("none", text: $openRouterMonthlySpendLimit)
@@ -304,7 +308,7 @@ struct SettingsView: View {
                         .multilineTextAlignment(.trailing)
                 }
 
-                Text("Daily/monthly limits pause further tool usage once reached. Leave blank for no cap. Min when set: 0.001.")
+                Text("Daily/monthly limits pause further tool usage once reached. Totals include OpenRouter tool calls, web/deep research subcalls, and Gemini image generation. Leave blank for no cap. Min when set: 0.001.")
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -343,6 +347,54 @@ struct SettingsView: View {
                     .foregroundColor(.secondary)
                 SecureField("Gemini API Key", text: $geminiApiKey)
                     .textFieldStyle(.roundedBorder)
+
+                TextField("Image Model (optional)", text: $geminiImageModel)
+                    .textFieldStyle(.roundedBorder)
+                    .disableAutocorrection(true)
+
+                Text("Leave blank to use the default image model: \(GeminiImagePricing.defaultModel)")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                HStack {
+                    Text("Input $ / 1M tokens")
+                    Spacer()
+                    TextField(
+                        KeychainHelper.defaultGeminiImageInputCostPerMillionTokensUSD,
+                        text: $geminiImageInputCostPerMillionTokensUSD
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                    .multilineTextAlignment(.trailing)
+                }
+
+                HStack {
+                    Text("Output Text $ / 1M")
+                    Spacer()
+                    TextField(
+                        KeychainHelper.defaultGeminiImageOutputTextCostPerMillionTokensUSD,
+                        text: $geminiImageOutputTextCostPerMillionTokensUSD
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                    .multilineTextAlignment(.trailing)
+                }
+
+                HStack {
+                    Text("Output Image $ / 1M")
+                    Spacer()
+                    TextField(
+                        KeychainHelper.defaultGeminiImageOutputImageCostPerMillionTokensUSD,
+                        text: $geminiImageOutputImageCostPerMillionTokensUSD
+                    )
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 120)
+                    .multilineTextAlignment(.trailing)
+                }
+
+                Text("These pricing fields are optional. Leave them blank to use the current default rates for \(GeminiImagePricing.defaultModel). If you switch to another model, set its pricing here so spend estimates stay accurate.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
                 
                 Link("Get your API key from Google AI Studio", destination: URL(string: "https://aistudio.google.com/apikey")!)
                     .font(.caption)
@@ -1507,6 +1559,64 @@ struct SettingsView: View {
         return formatted
     }
 
+    private func normalizedOptionalRateValue(_ rawValue: String) -> String? {
+        let normalized = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalized.isEmpty else {
+            return nil
+        }
+        guard let parsed = Double(normalized),
+              parsed.isFinite,
+              parsed >= 0 else {
+            return nil
+        }
+        return formatUSD(parsed)
+    }
+
+    private func configuredGeminiImageModelValue() -> String {
+        let normalizedModel = geminiImageModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalizedModel.isEmpty ? GeminiImagePricing.defaultModel : normalizedModel
+    }
+
+    private func configuredGeminiImagePricingValue() -> GeminiImagePricing {
+        func parsedRate(_ rawValue: String, defaultValue: Double) -> Double {
+            guard let normalized = normalizedOptionalRateValue(rawValue),
+                  let parsed = Double(normalized) else {
+                return defaultValue
+            }
+            return parsed
+        }
+
+        return GeminiImagePricing(
+            inputCostPerMillionTokensUSD: parsedRate(
+                geminiImageInputCostPerMillionTokensUSD,
+                defaultValue: GeminiImagePricing.default.inputCostPerMillionTokensUSD
+            ),
+            outputTextCostPerMillionTokensUSD: parsedRate(
+                geminiImageOutputTextCostPerMillionTokensUSD,
+                defaultValue: GeminiImagePricing.default.outputTextCostPerMillionTokensUSD
+            ),
+            outputImageCostPerMillionTokensUSD: parsedRate(
+                geminiImageOutputImageCostPerMillionTokensUSD,
+                defaultValue: GeminiImagePricing.default.outputImageCostPerMillionTokensUSD
+            )
+        )
+    }
+
+    private func refreshGeminiImageServiceConfiguration() {
+        let normalizedAPIKey = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedAPIKey.isEmpty else { return }
+
+        let model = configuredGeminiImageModelValue()
+        let pricing = configuredGeminiImagePricingValue()
+        Task {
+            await GeminiImageService.shared.configure(
+                apiKey: normalizedAPIKey,
+                model: model,
+                pricing: pricing
+            )
+        }
+    }
+
     private func refreshOpenRouterSpendCounters() {
         let snapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
         openRouterTodaySpendUSD = snapshot.today
@@ -1574,6 +1684,10 @@ struct SettingsView: View {
         
         // Load image generation settings
         geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey) ?? ""
+        geminiImageModel = KeychainHelper.load(key: KeychainHelper.geminiImageModelKey) ?? KeychainHelper.defaultGeminiImageModel
+        geminiImageInputCostPerMillionTokensUSD = KeychainHelper.load(key: KeychainHelper.geminiImageInputCostPerMillionTokensUSDKey) ?? ""
+        geminiImageOutputTextCostPerMillionTokensUSD = KeychainHelper.load(key: KeychainHelper.geminiImageOutputTextCostPerMillionTokensUSDKey) ?? ""
+        geminiImageOutputImageCostPerMillionTokensUSD = KeychainHelper.load(key: KeychainHelper.geminiImageOutputImageCostPerMillionTokensUSDKey) ?? ""
 
         // Load voice transcription settings
         voiceTranscriptionProvider = VoiceTranscriptionProvider.fromStoredValue(
@@ -1788,9 +1902,48 @@ struct SettingsView: View {
             }
             
             // Save image generation settings
-            if !geminiApiKey.isEmpty {
-                try KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: geminiApiKey)
+            let normalizedGeminiAPIKey = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedGeminiAPIKey.isEmpty {
+                try? KeychainHelper.delete(key: KeychainHelper.geminiApiKeyKey)
+            } else {
+                try KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: normalizedGeminiAPIKey)
             }
+            geminiApiKey = normalizedGeminiAPIKey
+
+            let normalizedGeminiImageModel = geminiImageModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            if normalizedGeminiImageModel.isEmpty {
+                geminiImageModel = ""
+                try? KeychainHelper.delete(key: KeychainHelper.geminiImageModelKey)
+            } else {
+                geminiImageModel = normalizedGeminiImageModel
+                try KeychainHelper.save(key: KeychainHelper.geminiImageModelKey, value: normalizedGeminiImageModel)
+            }
+
+            if let inputRate = normalizedOptionalRateValue(geminiImageInputCostPerMillionTokensUSD) {
+                geminiImageInputCostPerMillionTokensUSD = inputRate
+                try KeychainHelper.save(key: KeychainHelper.geminiImageInputCostPerMillionTokensUSDKey, value: inputRate)
+            } else {
+                geminiImageInputCostPerMillionTokensUSD = ""
+                try? KeychainHelper.delete(key: KeychainHelper.geminiImageInputCostPerMillionTokensUSDKey)
+            }
+
+            if let outputTextRate = normalizedOptionalRateValue(geminiImageOutputTextCostPerMillionTokensUSD) {
+                geminiImageOutputTextCostPerMillionTokensUSD = outputTextRate
+                try KeychainHelper.save(key: KeychainHelper.geminiImageOutputTextCostPerMillionTokensUSDKey, value: outputTextRate)
+            } else {
+                geminiImageOutputTextCostPerMillionTokensUSD = ""
+                try? KeychainHelper.delete(key: KeychainHelper.geminiImageOutputTextCostPerMillionTokensUSDKey)
+            }
+
+            if let outputImageRate = normalizedOptionalRateValue(geminiImageOutputImageCostPerMillionTokensUSD) {
+                geminiImageOutputImageCostPerMillionTokensUSD = outputImageRate
+                try KeychainHelper.save(key: KeychainHelper.geminiImageOutputImageCostPerMillionTokensUSDKey, value: outputImageRate)
+            } else {
+                geminiImageOutputImageCostPerMillionTokensUSD = ""
+                try? KeychainHelper.delete(key: KeychainHelper.geminiImageOutputImageCostPerMillionTokensUSDKey)
+            }
+
+            refreshGeminiImageServiceConfiguration()
 
             // Save voice transcription settings
             let normalizedVoiceProvider = VoiceTranscriptionProvider.fromStoredValue(voiceTranscriptionProvider.rawValue)
@@ -2021,9 +2174,48 @@ struct SettingsView: View {
     }
     
     private func saveImageGenSection() {
-        if !geminiApiKey.isEmpty {
-            try? KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: geminiApiKey)
+        let normalizedGeminiAPIKey = geminiApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedGeminiAPIKey.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.geminiApiKeyKey)
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.geminiApiKeyKey, value: normalizedGeminiAPIKey)
         }
+        geminiApiKey = normalizedGeminiAPIKey
+
+        let normalizedGeminiImageModel = geminiImageModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if normalizedGeminiImageModel.isEmpty {
+            try? KeychainHelper.delete(key: KeychainHelper.geminiImageModelKey)
+            geminiImageModel = ""
+        } else {
+            try? KeychainHelper.save(key: KeychainHelper.geminiImageModelKey, value: normalizedGeminiImageModel)
+            geminiImageModel = normalizedGeminiImageModel
+        }
+
+        if let inputRate = normalizedOptionalRateValue(geminiImageInputCostPerMillionTokensUSD) {
+            try? KeychainHelper.save(key: KeychainHelper.geminiImageInputCostPerMillionTokensUSDKey, value: inputRate)
+            geminiImageInputCostPerMillionTokensUSD = inputRate
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.geminiImageInputCostPerMillionTokensUSDKey)
+            geminiImageInputCostPerMillionTokensUSD = ""
+        }
+
+        if let outputTextRate = normalizedOptionalRateValue(geminiImageOutputTextCostPerMillionTokensUSD) {
+            try? KeychainHelper.save(key: KeychainHelper.geminiImageOutputTextCostPerMillionTokensUSDKey, value: outputTextRate)
+            geminiImageOutputTextCostPerMillionTokensUSD = outputTextRate
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.geminiImageOutputTextCostPerMillionTokensUSDKey)
+            geminiImageOutputTextCostPerMillionTokensUSD = ""
+        }
+
+        if let outputImageRate = normalizedOptionalRateValue(geminiImageOutputImageCostPerMillionTokensUSD) {
+            try? KeychainHelper.save(key: KeychainHelper.geminiImageOutputImageCostPerMillionTokensUSDKey, value: outputImageRate)
+            geminiImageOutputImageCostPerMillionTokensUSD = outputImageRate
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.geminiImageOutputImageCostPerMillionTokensUSDKey)
+            geminiImageOutputImageCostPerMillionTokensUSD = ""
+        }
+
+        refreshGeminiImageServiceConfiguration()
     }
 
     private func saveVoiceTranscriptionSection() {

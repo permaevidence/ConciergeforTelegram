@@ -99,6 +99,7 @@ struct ORChatResp: Decodable {
         let message: Message
     }
     let choices: [Choice]
+    let usage: OpenRouterUsage?
 }
 
 // MARK: - Agent Types
@@ -327,7 +328,16 @@ struct DownloadedImage {
 }
 
 // MARK: - Web Orchestrator
-final class WebOrchestrator {
+struct ResearchExecutionError: LocalizedError {
+    let underlyingError: Error
+    let spendUSD: Double
+
+    var errorDescription: String? {
+        underlyingError.localizedDescription
+    }
+}
+
+actor WebOrchestrator {
     enum ProgressStage: String {
         case planning   = "Planning..."
         case searching  = "Searching..."
@@ -351,8 +361,12 @@ final class WebOrchestrator {
     private let maxChunksForExtraction = 5
     private let chunkOverlapChars = 4_000
     
-    // Track queries used for result
-    private var lastQueriesUsed: [String] = []
+    private struct ExecutionState {
+        var queriesUsed: [String] = []
+        var spendUSD: Double = 0
+    }
+
+    private var executionStates: [UUID: ExecutionState] = [:]
     
     // MARK: - Configuration
     
@@ -375,17 +389,31 @@ final class WebOrchestrator {
     }
 
     private func executeForTool(query: String, mode: ResearchMode) async throws -> WebSearchResult {
-        lastQueriesUsed = []
-        let answer = try await answer(userPrompt: query, historyPairs: [], mode: mode)
-        
-        // Extract source URLs from the answer (URLs wrapped in angle brackets)
-        let sources = extractSourceURLs(from: answer)
-        
-        return WebSearchResult(
-            summary: answer,
-            sources: sources,
-            searchQueriesUsed: lastQueriesUsed
-        )
+        let executionID = UUID()
+        executionStates[executionID] = ExecutionState()
+
+        do {
+            let answer = try await answer(
+                userPrompt: query,
+                historyPairs: [],
+                mode: mode,
+                executionID: executionID
+            )
+            let state = executionStates.removeValue(forKey: executionID) ?? ExecutionState()
+
+            // Extract source URLs from the answer (URLs wrapped in angle brackets)
+            let sources = extractSourceURLs(from: answer)
+
+            return WebSearchResult(
+                summary: answer,
+                sources: sources,
+                searchQueriesUsed: state.queriesUsed,
+                spendUSD: state.spendUSD > 0 ? state.spendUSD : nil
+            )
+        } catch {
+            let state = executionStates.removeValue(forKey: executionID) ?? ExecutionState()
+            throw ResearchExecutionError(underlyingError: error, spendUSD: state.spendUSD)
+        }
     }
     
     private func extractSourceURLs(from text: String) -> [String] {
@@ -406,7 +434,8 @@ final class WebOrchestrator {
     func answer(
         userPrompt: String,
         historyPairs: [(user: String, assistant: String)],
-        mode: ResearchMode = .webSearch
+        mode: ResearchMode = .webSearch,
+        executionID: UUID
     ) async throws -> String {
         let conversationContext = buildConversationContext(historyPairs: historyPairs, currentQuestion: userPrompt)
         let maxSteps = maxSteps(for: mode)
@@ -427,7 +456,8 @@ final class WebOrchestrator {
                 scratchpadEntries: scratchpadEntries,
                 currentStep: step,
                 maxSteps: maxSteps,
-                mode: mode
+                mode: mode,
+                executionID: executionID
             )
             
             var actionsTaken: [String] = []
@@ -441,8 +471,12 @@ final class WebOrchestrator {
                         if let queries = call.arguments.queries, !queries.isEmpty {
                             onProgress?(.searching)
                             let queriesToRun = Array(queries.prefix(4))
-                            lastQueriesUsed.append(contentsOf: queriesToRun)
-                            let searchResults = try await executeSearch(queries: queriesToRun, atStep: step)
+                            appendQueriesUsed(queriesToRun, executionID: executionID)
+                            let searchResults = try await executeSearch(
+                                queries: queriesToRun,
+                                atStep: step,
+                                executionID: executionID
+                            )
                             webContext.merge(with: searchResults, maxBytes: maxContextBytes)
                             actionsTaken.append("search(\(queriesToRun.joined(separator: ", ")))")
                         }
@@ -451,7 +485,12 @@ final class WebOrchestrator {
                         if let requests = call.arguments.scrape_requests, !requests.isEmpty {
                             onProgress?(.scraping)
                             let requestsToRun = Array(requests.prefix(3))
-                            let scrapedDocs = try await executeScrape(requests: requestsToRun, atStep: step, mode: mode)
+                            let scrapedDocs = try await executeScrape(
+                                requests: requestsToRun,
+                                atStep: step,
+                                mode: mode,
+                                executionID: executionID
+                            )
                             webContext.scraped.append(contentsOf: scrapedDocs)
                             let urls = requestsToRun.map { $0.url }
                             actionsTaken.append("scrape(\(urls.joined(separator: ", ")))")
@@ -482,8 +521,23 @@ final class WebOrchestrator {
             webContextJSON: contextJSON,
             scratchpad: fullScratchpad,
             historyPairs: historyPairs,
-            mode: mode
+            mode: mode,
+            executionID: executionID
         )
+    }
+
+    private func appendQueriesUsed(_ queries: [String], executionID: UUID) {
+        guard !queries.isEmpty else { return }
+        var state = executionStates[executionID] ?? ExecutionState()
+        state.queriesUsed.append(contentsOf: queries)
+        executionStates[executionID] = state
+    }
+
+    private func addSpend(_ amountUSD: Double?, executionID: UUID) {
+        guard let amountUSD, amountUSD.isFinite, amountUSD > 0 else { return }
+        var state = executionStates[executionID] ?? ExecutionState()
+        state.spendUSD += amountUSD
+        executionStates[executionID] = state
     }
     
     // MARK: - Helpers
@@ -594,7 +648,8 @@ final class WebOrchestrator {
         scratchpadEntries: [ScratchpadEntry],
         currentStep: Int,
         maxSteps: Int,
-        mode: ResearchMode
+        mode: ResearchMode,
+        executionID: UUID
     ) async throws -> AgentResponse {
         let systemPrompt = buildAgentSystemPrompt(currentStep: currentStep, maxSteps: maxSteps, mode: mode)
         
@@ -620,7 +675,8 @@ final class WebOrchestrator {
             messages: messages,
             maxTokens: 16000,
             reasoning: agentReasoning(for: mode),
-            provider: providerPreferences(for: mode)
+            provider: providerPreferences(for: mode),
+            executionID: executionID
         )
         
         guard let data = extractFirstJSONObjectData(from: raw),
@@ -632,7 +688,7 @@ final class WebOrchestrator {
     }
     
     // MARK: - Tool Execution
-    private func executeSearch(queries: [String], atStep: Int) async throws -> WebContext {
+    private func executeSearch(queries: [String], atStep: Int, executionID: UUID) async throws -> WebContext {
         var seen = Set<String>()
         var results: [WebResult] = []
         var queryRecords: [QueryRecord] = []
@@ -666,13 +722,24 @@ final class WebOrchestrator {
         return WebContext(queries_used: queryRecords, results: results, answerBox: firstAB.map(WebAnswerBox.init), knowledgeGraph: firstKG.map(WebKG.init), peopleAlsoAsk: paa.map(WebPAA.init), topStories: top.map(WebTop.init), scraped: []).clamped(to: maxContextBytes)
     }
     
-    private func executeScrape(requests: [ScrapeRequest], atStep: Int, mode: ResearchMode) async throws -> [ScrapedDoc] {
+    private func executeScrape(
+        requests: [ScrapeRequest],
+        atStep: Int,
+        mode: ResearchMode,
+        executionID: UUID
+    ) async throws -> [ScrapedDoc] {
         await withTaskGroup(of: ScrapedDoc?.self) { group in
             for req in requests {
                 group.addTask {
                     do {
                         try Task.checkCancellation()
-                        return try await self.scrapeAndExtract(url: req.url, focus: req.focus, atStep: atStep, mode: mode)
+                        return try await self.scrapeAndExtract(
+                            url: req.url,
+                            focus: req.focus,
+                            atStep: atStep,
+                            mode: mode,
+                            executionID: executionID
+                        )
                     } catch { return nil }
                 }
             }
@@ -690,7 +757,8 @@ final class WebOrchestrator {
         messages: [ORChatReq.Msg],
         maxTokens: Int,
         reasoning: ORChatReq.Reasoning? = nil,
-        provider: ORChatReq.Provider? = nil
+        provider: ORChatReq.Provider? = nil,
+        executionID: UUID
     ) async throws -> String {
         let providerToUse = provider ?? .init(
             order: ProviderSettings.order,
@@ -721,6 +789,13 @@ final class WebOrchestrator {
         )
         let data = try await httpJSONPost(url: Endpoints.openrouter, body: body, headers: ["Authorization": "Bearer \(openRouterApiKey)"], timeout: 120)
         let resp = try JSONDecoder().decode(ORChatResp.self, from: data)
+        let directCost = resp.usage?.cost?.value
+        let upstreamInferenceCost = resp.usage?.costDetails?.upstreamInferenceCost?.value
+        let callSpendUSD = [directCost, upstreamInferenceCost]
+            .compactMap { $0 }
+            .filter { $0.isFinite && $0 >= 0 }
+            .max()
+        addSpend(callSpendUSD, executionID: executionID)
         let content = resp.choices.first?.message.content ?? ""
         print("[WebOrchestrator] OpenRouter response stage=\(stage) mode=\(modeLabel(mode)) chars=\(content.count)")
         return content
@@ -874,7 +949,13 @@ final class WebOrchestrator {
         return Array(images.prefix(20)) // Limit to 20 images
     }
     
-    private func scrapeAndExtract(url: String, focus: String, atStep: Int, mode: ResearchMode) async throws -> ScrapedDoc {
+    private func scrapeAndExtract(
+        url: String,
+        focus: String,
+        atStep: Int,
+        mode: ResearchMode,
+        executionID: UUID
+    ) async throws -> ScrapedDoc {
         let (maybeTitle, rawContent) = try await fetchWithJinaReader(originalURL: url, includeImageCaptions: true)
         let host = URL(string: url)?.host?.lowercased() ?? ""
 
@@ -889,7 +970,8 @@ final class WebOrchestrator {
             focus: focus,
             candidateLinks: candidateLinks,
             candidateImages: candidateImages,
-            mode: mode
+            mode: mode,
+            executionID: executionID
         )
         let relevantLinks = relevantAssets?.links ?? []
         let relevantImages = relevantAssets?.images ?? []
@@ -907,7 +989,12 @@ final class WebOrchestrator {
         }
 
         if rawContent.count <= chunkSizeChars {
-            let ex = try await extractExcerpts(page: rawContent, focus: focus, mode: mode)
+            let ex = try await extractExcerpts(
+                page: rawContent,
+                focus: focus,
+                mode: mode,
+                executionID: executionID
+            )
             return ScrapedDoc(
                 url: url,
                 source: host,
@@ -924,7 +1011,12 @@ final class WebOrchestrator {
 
         for chunk in chunks {
             do {
-                let ex = try await extractExcerpts(page: chunk, focus: focus, mode: mode)
+                let ex = try await extractExcerpts(
+                    page: chunk,
+                    focus: focus,
+                    mode: mode,
+                    executionID: executionID
+                )
                 if !ex.isEmpty { allExcerpts.append(contentsOf: ex) }
             } catch is CancellationError { throw CancellationError() }
             catch { /* continue */ }
@@ -941,7 +1033,12 @@ final class WebOrchestrator {
         )
     }
     
-    private func extractExcerpts(page: String, focus: String, mode: ResearchMode) async throws -> [String] {
+    private func extractExcerpts(
+        page: String,
+        focus: String,
+        mode: ResearchMode,
+        executionID: UUID
+    ) async throws -> [String] {
         let sys = """
         Cite verbatim and in full the most relevant parts of the provided TEXT for the given FOCUS.
         OUTPUT STRICT JSON ONLY: { "excerpts": ["...", "..."] }
@@ -957,7 +1054,8 @@ final class WebOrchestrator {
             messages: msgs,
             maxTokens: 16000,
             reasoning: excerptReasoning(for: mode),
-            provider: providerPreferences(for: mode)
+            provider: providerPreferences(for: mode),
+            executionID: executionID
         )
         guard let d = extractFirstJSONObjectData(from: raw),
               let out = try? JSONDecoder().decode(ExcerptOut.self, from: d) else { return [] }
@@ -969,7 +1067,8 @@ final class WebOrchestrator {
         focus: String,
         candidateLinks: [ExtractedLink],
         candidateImages: [ExtractedImage],
-        mode: ResearchMode
+        mode: ResearchMode,
+        executionID: UUID
     ) async throws -> (links: [ExtractedLink], images: [ExtractedImage]) {
         guard !candidateLinks.isEmpty || !candidateImages.isEmpty else { return ([], []) }
 
@@ -1026,7 +1125,8 @@ final class WebOrchestrator {
             messages: msgs,
             maxTokens: 8000,
             reasoning: excerptReasoning(for: mode),
-            provider: providerPreferences(for: mode)
+            provider: providerPreferences(for: mode),
+            executionID: executionID
         )
 
         guard let d = extractFirstJSONObjectData(from: raw),
@@ -1095,7 +1195,8 @@ final class WebOrchestrator {
         webContextJSON: String,
         scratchpad: String,
         historyPairs: [(user: String, assistant: String)],
-        mode: ResearchMode
+        mode: ResearchMode,
+        executionID: UUID
     ) async throws -> String {
         let sys: String
         if mode == .deepResearch {
@@ -1145,7 +1246,8 @@ final class WebOrchestrator {
             messages: msgs,
             maxTokens: 16000,
             reasoning: finalAnswerReasoning(for: mode),
-            provider: providerPreferences(for: mode)
+            provider: providerPreferences(for: mode),
+            executionID: executionID
         )
         return autolinkPhoneNumbers(raw.trimmingCharacters(in: .whitespacesAndNewlines))
     }

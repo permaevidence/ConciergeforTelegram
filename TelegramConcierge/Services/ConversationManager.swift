@@ -81,6 +81,40 @@ class ConversationManager: ObservableObject {
         (KeychainHelper.load(key: KeychainHelper.openAITranscriptionApiKeyKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
+
+    private func configuredGeminiImageModel() -> String {
+        let configuredModel = (KeychainHelper.load(key: KeychainHelper.geminiImageModelKey) ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return configuredModel.isEmpty ? GeminiImagePricing.defaultModel : configuredModel
+    }
+
+    private func configuredGeminiImagePricing() -> GeminiImagePricing {
+        func configuredRate(for key: String, defaultValue: Double) -> Double {
+            guard let rawValue = KeychainHelper.load(key: key)?
+                .trimmingCharacters(in: .whitespacesAndNewlines),
+                  let parsed = Double(rawValue),
+                  parsed.isFinite,
+                  parsed >= 0 else {
+                return defaultValue
+            }
+            return parsed
+        }
+
+        return GeminiImagePricing(
+            inputCostPerMillionTokensUSD: configuredRate(
+                for: KeychainHelper.geminiImageInputCostPerMillionTokensUSDKey,
+                defaultValue: GeminiImagePricing.default.inputCostPerMillionTokensUSD
+            ),
+            outputTextCostPerMillionTokensUSD: configuredRate(
+                for: KeychainHelper.geminiImageOutputTextCostPerMillionTokensUSDKey,
+                defaultValue: GeminiImagePricing.default.outputTextCostPerMillionTokensUSD
+            ),
+            outputImageCostPerMillionTokensUSD: configuredRate(
+                for: KeychainHelper.geminiImageOutputImageCostPerMillionTokensUSDKey,
+                defaultValue: GeminiImagePricing.default.outputImageCostPerMillionTokensUSD
+            )
+        )
+    }
     
     // MARK: - Configuration
     
@@ -156,7 +190,11 @@ class ConversationManager: ObservableObject {
         
         // Configure Gemini image service if API key is available
         if let geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey), !geminiApiKey.isEmpty {
-            await GeminiImageService.shared.configure(apiKey: geminiApiKey)
+            await GeminiImageService.shared.configure(
+                apiKey: geminiApiKey,
+                model: configuredGeminiImageModel(),
+                pricing: configuredGeminiImagePricing()
+            )
         }
         
         error = nil
@@ -893,7 +931,7 @@ class ConversationManager: ObservableObject {
     private func sendSpendSnapshot() async {
         let snapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
         let message = """
-        💸 OpenRouter spend
+        💸 API spend
         Today: $\(formatUSD(snapshot.today))
         This month: $\(formatUSD(snapshot.month))
         """
@@ -1142,6 +1180,15 @@ class ConversationManager: ObservableObject {
                     print("[ConversationManager] Round \(round): appending \(remainingToolResults.count) unmatched tool result(s) after ordered results")
                     orderedToolResults.append(contentsOf: remainingToolResults)
                 }
+
+                let toolInternalSpendUSD = toolSpendUSD(from: orderedToolResults)
+                if toolInternalSpendUSD > 0 {
+                    cumulativeToolSpendUSD += toolInternalSpendUSD
+                    todaySpentUSD += toolInternalSpendUSD
+                    monthSpentUSD += toolInternalSpendUSD
+                    KeychainHelper.recordOpenRouterSpend(toolInternalSpendUSD)
+                    print("[ConversationManager] Round \(round) research tool spend: +$\(formatUSD(toolInternalSpendUSD)) (total $\(formatUSD(cumulativeToolSpendUSD)))")
+                }
                 
                 print("[ConversationManager] Round \(round) tool execution complete")
                 
@@ -1166,6 +1213,27 @@ class ConversationManager: ObservableObject {
                     results: orderedToolResults
                 )
                 toolInteractions.append(interaction)
+
+                if cumulativeToolSpendUSD >= toolSpendLimitPerTurnUSD {
+                    didHitToolSpendLimit = true
+                    statusMessage = "Spend limit reached, preparing response..."
+                    print("[ConversationManager] Tool spend limit reached after tool execution ($\(formatUSD(cumulativeToolSpendUSD)) >= $\(formatUSD(toolSpendLimitPerTurnUSD))); forcing final response")
+                    break toolLoop
+                }
+
+                if let exceededMessage = spendLimitExceededMessage(
+                    todaySpentUSD: todaySpentUSD,
+                    monthSpentUSD: monthSpentUSD,
+                    dailyLimitUSD: toolSpendLimitDailyUSD,
+                    monthlyLimitUSD: toolSpendLimitMonthlyUSD
+                ) {
+                    print("[ConversationManager] Daily/monthly spend limit reached after tool execution: \(exceededMessage)")
+                    return ToolAwareResponse(
+                        finalText: exceededMessage,
+                        compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                        accessedProjects: extractAccessedProjects(from: toolInteractions)
+                    )
+                }
                 
                 statusMessage = "Processing results..."
             }
@@ -1293,6 +1361,13 @@ class ConversationManager: ObservableObject {
         case .toolCalls(_, _, _, let spendUSD):
             return spendUSD
         }
+    }
+
+    private func toolSpendUSD(from results: [ToolResultMessage]) -> Double {
+        results
+            .compactMap(\.spendUSD)
+            .filter { $0.isFinite && $0 > 0 }
+            .reduce(0, +)
     }
     
     private func formatUSD(_ value: Double) -> String {
