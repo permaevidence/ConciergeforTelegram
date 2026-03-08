@@ -38,6 +38,31 @@ class ConversationManager: ObservableObject {
         let compactToolLog: String?
         let accessedProjects: [String]?
     }
+
+    private struct SpendLimitStatus {
+        let todaySpentUSD: Double
+        let monthSpentUSD: Double
+        let dailyBaseLimitUSD: Double?
+        let monthlyBaseLimitUSD: Double?
+        let dailyExtraUSD: Double
+        let monthlyExtraUSD: Double
+
+        var effectiveDailyLimitUSD: Double? {
+            dailyBaseLimitUSD.map { $0 + dailyExtraUSD }
+        }
+
+        var effectiveMonthlyLimitUSD: Double? {
+            monthlyBaseLimitUSD.map { $0 + monthlyExtraUSD }
+        }
+
+        var dailyExceeded: Bool {
+            effectiveDailyLimitUSD.map { todaySpentUSD >= $0 } ?? false
+        }
+
+        var monthlyExceeded: Bool {
+            effectiveMonthlyLimitUSD.map { monthSpentUSD >= $0 } ?? false
+        }
+    }
     
     private let appFolder: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -812,6 +837,15 @@ class ConversationManager: ObservableObject {
         case "/spend":
             await sendSpendSnapshot()
             return true
+        case "/more1":
+            await increaseSpendLimitIfNeeded(by: 1)
+            return true
+        case "/more5":
+            await increaseSpendLimitIfNeeded(by: 5)
+            return true
+        case "/more10":
+            await increaseSpendLimitIfNeeded(by: 10)
+            return true
         case "/claude":
             await switchCodeCLIProvider(to: "claude")
             return true
@@ -930,11 +964,19 @@ class ConversationManager: ObservableObject {
 
     private func sendSpendSnapshot() async {
         let snapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
-        let message = """
-        💸 API spend
-        Today: $\(formatUSD(snapshot.today))
-        This month: $\(formatUSD(snapshot.month))
-        """
+        let extra = KeychainHelper.openRouterSpendLimitIncreaseSnapshot(referenceDate: Date())
+        var lines = [
+            "💸 API spend",
+            "Today: $\(formatUSD(snapshot.today))",
+            "This month: $\(formatUSD(snapshot.month))"
+        ]
+        if extra.daily > 0 {
+            lines.append("Today's extra limit: +$\(formatUSD(extra.daily))")
+        }
+        if extra.monthly > 0 {
+            lines.append("This month's extra limit: +$\(formatUSD(extra.monthly))")
+        }
+        let message = lines.joined(separator: "\n")
 
         if let chatId = pairedChatId {
             try? await telegramService.sendMessage(chatId: chatId, text: message)
@@ -963,6 +1005,50 @@ class ConversationManager: ObservableObject {
         }
         
         statusMessage = wasRunning ? "Cancelled" : "Listening... (Last check: \(formattedTime()))"
+    }
+
+    private func increaseSpendLimitIfNeeded(by amountUSD: Double) async {
+        let status = currentSpendLimitStatus(referenceDate: Date())
+        let applyToDaily = status.dailyExceeded && status.dailyBaseLimitUSD != nil
+        let applyToMonthly = status.monthlyExceeded && status.monthlyBaseLimitUSD != nil
+
+        let message: String
+        if applyToDaily || applyToMonthly {
+            KeychainHelper.addOpenRouterSpendLimitIncrease(
+                amountUSD,
+                applyToDaily: applyToDaily,
+                applyToMonthly: applyToMonthly
+            )
+
+            let updatedStatus = currentSpendLimitStatus(referenceDate: Date())
+            if applyToDaily, applyToMonthly {
+                message = """
+                ✅ Added $\(formatUSD(amountUSD)) to both reached spend limits.
+                New daily limit: $\(formatUSD(updatedStatus.effectiveDailyLimitUSD ?? 0)) (spent: $\(formatUSD(updatedStatus.todaySpentUSD)))
+                New monthly limit: $\(formatUSD(updatedStatus.effectiveMonthlyLimitUSD ?? 0)) (spent: $\(formatUSD(updatedStatus.monthSpentUSD)))
+                """
+            } else if applyToDaily {
+                message = """
+                ✅ Added $\(formatUSD(amountUSD)) to today's spend limit.
+                New daily limit: $\(formatUSD(updatedStatus.effectiveDailyLimitUSD ?? 0)) (spent: $\(formatUSD(updatedStatus.todaySpentUSD)))
+                """
+            } else {
+                message = """
+                ✅ Added $\(formatUSD(amountUSD)) to this month's spend limit.
+                New monthly limit: $\(formatUSD(updatedStatus.effectiveMonthlyLimitUSD ?? 0)) (spent: $\(formatUSD(updatedStatus.monthSpentUSD)))
+                """
+            }
+        } else {
+            message = "No daily or monthly spend limit is currently reached. `/more1`, `/more5`, and `/more10` only work after a daily or monthly cap has been hit."
+        }
+
+        if let chatId = pairedChatId {
+            try? await telegramService.sendMessage(chatId: chatId, text: message)
+        }
+
+        if activeRunId == nil {
+            statusMessage = "Listening... (Last check: \(formattedTime()))"
+        }
     }
     
     // MARK: - Tool-Aware Response Generation
@@ -1038,14 +1124,14 @@ class ConversationManager: ObservableObject {
         
         // Tool interaction loop with per-turn, daily, and monthly spend caps (USD).
         let toolSpendLimitPerTurnUSD = configuredToolSpendLimitPerTurnUSD()
-        let toolSpendLimitDailyUSD = configuredDailyToolSpendLimitUSD()
-        let toolSpendLimitMonthlyUSD = configuredMonthlyToolSpendLimitUSD()
+        let spendLimitStatus = currentSpendLimitStatus(referenceDate: Date())
+        let toolSpendLimitDailyUSD = spendLimitStatus.effectiveDailyLimitUSD
+        let toolSpendLimitMonthlyUSD = spendLimitStatus.effectiveMonthlyLimitUSD
         var cumulativeToolSpendUSD: Double = 0
         var toolInteractions: [ToolInteraction] = []
         var didHitToolSpendLimit = false
-        let spendSnapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: Date())
-        var todaySpentUSD = spendSnapshot.today
-        var monthSpentUSD = spendSnapshot.month
+        var todaySpentUSD = spendLimitStatus.todaySpentUSD
+        var monthSpentUSD = spendLimitStatus.monthSpentUSD
 
         if let exceededMessage = spendLimitExceededMessage(
             todaySpentUSD: todaySpentUSD,
@@ -1332,6 +1418,19 @@ class ConversationManager: ObservableObject {
         return parsed
     }
 
+    private func currentSpendLimitStatus(referenceDate: Date = Date()) -> SpendLimitStatus {
+        let spendSnapshot = KeychainHelper.openRouterSpendSnapshot(referenceDate: referenceDate)
+        let extraSnapshot = KeychainHelper.openRouterSpendLimitIncreaseSnapshot(referenceDate: referenceDate)
+        return SpendLimitStatus(
+            todaySpentUSD: spendSnapshot.today,
+            monthSpentUSD: spendSnapshot.month,
+            dailyBaseLimitUSD: configuredDailyToolSpendLimitUSD(),
+            monthlyBaseLimitUSD: configuredMonthlyToolSpendLimitUSD(),
+            dailyExtraUSD: extraSnapshot.daily,
+            monthlyExtraUSD: extraSnapshot.monthly
+        )
+    }
+
     private func spendLimitExceededMessage(
         todaySpentUSD: Double,
         monthSpentUSD: Double,
@@ -1343,13 +1442,13 @@ class ConversationManager: ObservableObject {
         guard dailyExceeded || monthlyExceeded else { return nil }
 
         if dailyExceeded, monthlyExceeded, let dailyLimitUSD, let monthlyLimitUSD {
-            return "I paused tool usage because both spend limits were reached (today: $\(formatUSD(todaySpentUSD)) / $\(formatUSD(dailyLimitUSD)); this month: $\(formatUSD(monthSpentUSD)) / $\(formatUSD(monthlyLimitUSD))). You can raise limits in Settings > OpenRouter."
+            return "I paused tool usage because both spend limits were reached (today: $\(formatUSD(todaySpentUSD)) / $\(formatUSD(dailyLimitUSD)); this month: $\(formatUSD(monthSpentUSD)) / $\(formatUSD(monthlyLimitUSD))). Reply `/more1`, `/more5`, or `/more10` to temporarily raise the reached limit and keep going, or raise the limits in Settings > OpenRouter."
         }
         if dailyExceeded, let dailyLimitUSD {
-            return "I paused tool usage because the daily spend limit was reached (today: $\(formatUSD(todaySpentUSD)) / $\(formatUSD(dailyLimitUSD))). You can raise it in Settings > OpenRouter."
+            return "I paused tool usage because the daily spend limit was reached (today: $\(formatUSD(todaySpentUSD)) / $\(formatUSD(dailyLimitUSD))). Reply `/more1`, `/more5`, or `/more10` to temporarily raise the reached limit and keep going, or raise it in Settings > OpenRouter."
         }
         if monthlyExceeded, let monthlyLimitUSD {
-            return "I paused tool usage because the monthly spend limit was reached (this month: $\(formatUSD(monthSpentUSD)) / $\(formatUSD(monthlyLimitUSD))). You can raise it in Settings > OpenRouter."
+            return "I paused tool usage because the monthly spend limit was reached (this month: $\(formatUSD(monthSpentUSD)) / $\(formatUSD(monthlyLimitUSD))). Reply `/more1`, `/more5`, or `/more10` to temporarily raise the reached limit and keep going, or raise it in Settings > OpenRouter."
         }
         return nil
     }

@@ -151,6 +151,9 @@ You can switch provider remotely by sending one of these commands in Telegram:
 - `/transcribe_local` → use local Whisper transcription
 - `/transcribe_openai` → use OpenAI transcription (`gpt-4o-transcribe`)
 - `/spend` → show OpenRouter spend totals (today and this month)
+- `/more1` → add $1 to the reached daily/monthly spend cap for the current day/month
+- `/more5` → add $5 to the reached daily/monthly spend cap for the current day/month
+- `/more10` → add $10 to the reached daily/monthly spend cap for the current day/month
 
 The change is saved immediately and applies to the next delegated Code CLI run.
 

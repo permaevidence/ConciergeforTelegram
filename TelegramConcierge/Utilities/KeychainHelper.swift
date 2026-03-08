@@ -202,9 +202,16 @@ extension KeychainHelper {
 extension KeychainHelper {
     private static let openRouterSpendLedgerDefaultsKey = "openrouter_spend_ledger_v1"
     private static let openRouterSpendLedgerRetentionDays = 500
+    private static let openRouterSpendLimitBoostDefaultsKey = "openrouter_spend_limit_boost_v1"
+    private static let openRouterSpendLimitBoostRetentionMonths = 24
 
     private struct OpenRouterSpendLedger: Codable {
         var byDay: [String: Double]
+    }
+
+    private struct OpenRouterSpendLimitBoostLedger: Codable {
+        var dailyByDay: [String: Double]
+        var monthlyByMonth: [String: Double]
     }
 
     static func recordOpenRouterSpend(_ amountUSD: Double, at date: Date = Date()) {
@@ -232,6 +239,43 @@ extension KeychainHelper {
         return (today: max(0, today), month: max(0, month))
     }
 
+    static func addOpenRouterSpendLimitIncrease(
+        _ amountUSD: Double,
+        applyToDaily: Bool,
+        applyToMonthly: Bool,
+        at date: Date = Date()
+    ) {
+        guard amountUSD.isFinite,
+              amountUSD > 0,
+              applyToDaily || applyToMonthly else { return }
+
+        var ledger = loadOpenRouterSpendLimitBoostLedger()
+        pruneOldSpendLimitBoostEntries(&ledger, referenceDate: date)
+
+        if applyToDaily {
+            let key = dayKey(for: date)
+            ledger.dailyByDay[key, default: 0] += amountUSD
+        }
+
+        if applyToMonthly {
+            let key = monthKey(for: date)
+            ledger.monthlyByMonth[key, default: 0] += amountUSD
+        }
+
+        saveOpenRouterSpendLimitBoostLedger(ledger)
+    }
+
+    static func openRouterSpendLimitIncreaseSnapshot(referenceDate: Date = Date()) -> (daily: Double, monthly: Double) {
+        var ledger = loadOpenRouterSpendLimitBoostLedger()
+        pruneOldSpendLimitBoostEntries(&ledger, referenceDate: referenceDate)
+        saveOpenRouterSpendLimitBoostLedger(ledger)
+
+        let daily = ledger.dailyByDay[dayKey(for: referenceDate)] ?? 0
+        let monthly = ledger.monthlyByMonth[monthKey(for: referenceDate)] ?? 0
+
+        return (daily: max(0, daily), monthly: max(0, monthly))
+    }
+
     private static func loadOpenRouterSpendLedger() -> OpenRouterSpendLedger {
         guard let data = UserDefaults.standard.data(forKey: openRouterSpendLedgerDefaultsKey),
               let ledger = try? JSONDecoder().decode(OpenRouterSpendLedger.self, from: data) else {
@@ -245,6 +289,19 @@ extension KeychainHelper {
         UserDefaults.standard.set(data, forKey: openRouterSpendLedgerDefaultsKey)
     }
 
+    private static func loadOpenRouterSpendLimitBoostLedger() -> OpenRouterSpendLimitBoostLedger {
+        guard let data = UserDefaults.standard.data(forKey: openRouterSpendLimitBoostDefaultsKey),
+              let ledger = try? JSONDecoder().decode(OpenRouterSpendLimitBoostLedger.self, from: data) else {
+            return OpenRouterSpendLimitBoostLedger(dailyByDay: [:], monthlyByMonth: [:])
+        }
+        return ledger
+    }
+
+    private static func saveOpenRouterSpendLimitBoostLedger(_ ledger: OpenRouterSpendLimitBoostLedger) {
+        guard let data = try? JSONEncoder().encode(ledger) else { return }
+        UserDefaults.standard.set(data, forKey: openRouterSpendLimitBoostDefaultsKey)
+    }
+
     private static func pruneOldSpendEntries(_ ledger: inout OpenRouterSpendLedger, referenceDate: Date) {
         guard !ledger.byDay.isEmpty else { return }
 
@@ -254,6 +311,26 @@ extension KeychainHelper {
 
         ledger.byDay = ledger.byDay.filter { day, value in
             day >= cutoffKey && value.isFinite && value > 0
+        }
+    }
+
+    private static func pruneOldSpendLimitBoostEntries(_ ledger: inout OpenRouterSpendLimitBoostLedger, referenceDate: Date) {
+        let calendar = Calendar.current
+
+        if !ledger.dailyByDay.isEmpty {
+            let dailyCutoffDate = calendar.date(byAdding: .day, value: -openRouterSpendLedgerRetentionDays, to: referenceDate) ?? referenceDate
+            let dailyCutoffKey = dayKey(for: dailyCutoffDate)
+            ledger.dailyByDay = ledger.dailyByDay.filter { day, value in
+                day >= dailyCutoffKey && value.isFinite && value > 0
+            }
+        }
+
+        if !ledger.monthlyByMonth.isEmpty {
+            let monthlyCutoffDate = calendar.date(byAdding: .month, value: -openRouterSpendLimitBoostRetentionMonths, to: referenceDate) ?? referenceDate
+            let monthlyCutoffKey = monthKey(for: monthlyCutoffDate)
+            ledger.monthlyByMonth = ledger.monthlyByMonth.filter { month, value in
+                month >= monthlyCutoffKey && value.isFinite && value > 0
+            }
         }
     }
 
@@ -272,5 +349,13 @@ extension KeychainHelper {
         let year = components.year ?? 1970
         let month = components.month ?? 1
         return String(format: "%04d-%02d-", year, month)
+    }
+
+    private static func monthKey(for date: Date) -> String {
+        let calendar = Calendar.current
+        let components = calendar.dateComponents([.year, .month], from: date)
+        let year = components.year ?? 1970
+        let month = components.month ?? 1
+        return String(format: "%04d-%02d", year, month)
     }
 }
