@@ -31,6 +31,7 @@ class ConversationManager: ObservableObject {
     private let defaultToolSpendLimitPerTurnUSD = 0.20
     private let minimumToolSpendLimitPerTurnUSD = 0.001
     private let maxToolRoundsSafetyLimit = 120
+    private let shouldResumePollingDefaultsKey = "should_resume_polling_on_launch"
     
     private struct ToolAwareResponse {
         let finalText: String
@@ -63,6 +64,11 @@ class ConversationManager: ObservableObject {
     
     init() {
         loadConversation()
+        if shouldResumePollingOnLaunch && hasRequiredPollingConfiguration() {
+            Task { [weak self] in
+                await self?.startPolling()
+            }
+        }
     }
 
     private func currentVoiceTranscriptionProvider() -> VoiceTranscriptionProvider {
@@ -170,6 +176,7 @@ class ConversationManager: ObservableObject {
         guard error == nil else { return }
         
         isPolling = true
+        shouldResumePollingOnLaunch = true
         statusMessage = "Polling for messages..."
         
         // Warm up Whisper only when local transcription is active.
@@ -213,9 +220,34 @@ class ConversationManager: ObservableObject {
         ToolExecutor.clearPendingToolOutputs()
         
         isPolling = false
+        shouldResumePollingOnLaunch = false
         pollingTask?.cancel()
         pollingTask = nil
         statusMessage = "Stopped"
+    }
+
+    private var shouldResumePollingOnLaunch: Bool {
+        get {
+            if UserDefaults.standard.object(forKey: shouldResumePollingDefaultsKey) == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: shouldResumePollingDefaultsKey)
+        }
+        set {
+            UserDefaults.standard.set(newValue, forKey: shouldResumePollingDefaultsKey)
+        }
+    }
+
+    private func hasRequiredPollingConfiguration() -> Bool {
+        guard let token = KeychainHelper.load(key: KeychainHelper.telegramBotTokenKey),
+              let chatIdString = KeychainHelper.load(key: KeychainHelper.telegramChatIdKey),
+              let apiKey = KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) else {
+            return false
+        }
+
+        return !token.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !chatIdString.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+            !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
     
     // MARK: - Message Processing

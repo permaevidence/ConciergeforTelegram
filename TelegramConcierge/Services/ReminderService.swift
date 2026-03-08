@@ -105,7 +105,9 @@ actor ReminderService {
         
         do {
             let data = try Data(contentsOf: remindersFileURL)
-            reminders = try JSONDecoder().decode([Reminder].self, from: data)
+            let decoder = JSONDecoder()
+            decoder.dateDecodingStrategy = .iso8601
+            reminders = try decoder.decode([Reminder].self, from: data)
             print("[ReminderService] Loaded \(reminders.count) reminders")
         } catch {
             print("[ReminderService] Failed to load reminders: \(error)")

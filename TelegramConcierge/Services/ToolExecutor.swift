@@ -311,6 +311,12 @@ actor ToolExecutor {
                 return #"{"error":"Reminder datetime must be in the future"}"#
             }
 
+            if let recurrenceRaw = args.recurrence?.trimmingCharacters(in: .whitespacesAndNewlines),
+               !recurrenceRaw.isEmpty,
+               parseRecurrenceType(recurrenceRaw) == nil {
+                return #"{"error":"Invalid recurrence. Use daily, weekly, monthly, every_X_minutes, or every_X_hours."}"#
+            }
+
             let recurrence = parseRecurrenceType(args.recurrence)
 
             let reminder = await ReminderService.shared.addReminder(triggerDate: date, prompt: prompt, recurrence: recurrence)
@@ -382,7 +388,7 @@ actor ToolExecutor {
                 if let recurrenceRaw = args.recurrence?.trimmingCharacters(in: .whitespacesAndNewlines),
                    !recurrenceRaw.isEmpty,
                    parseRecurrenceType(recurrenceRaw) == nil {
-                    return #"{"error":"Invalid recurrence filter for delete_recurring. Use daily, weekly, monthly, or every_X_minutes."}"#
+                    return #"{"error":"Invalid recurrence filter for delete_recurring. Use daily, weekly, monthly, every_X_minutes, or every_X_hours."}"#
                 }
 
                 let recurrenceFilter = parseRecurrenceType(args.recurrence)
@@ -596,6 +602,14 @@ actor ToolExecutor {
                     .replacingOccurrences(of: "_minutes", with: "")
                 if let minutes = Int(numberPart), minutes > 0 {
                     return .custom(minutes: minutes)
+                }
+            }
+            if rawValue.hasPrefix("every_") && rawValue.hasSuffix("_hours") {
+                let numberPart = rawValue
+                    .replacingOccurrences(of: "every_", with: "")
+                    .replacingOccurrences(of: "_hours", with: "")
+                if let hours = Int(numberPart), hours > 0 {
+                    return .custom(minutes: hours * 60)
                 }
             }
             return nil
@@ -4381,6 +4395,16 @@ private struct ClaudeProjectMetadata: Codable {
     var lastEditedAt: Date?
     var sessionUuid: String?
     var codeCLISessionIds: [String: String]?
+    var vercelProject: StoredVercelProjectIdentity?
+}
+
+private struct StoredVercelProjectIdentity: Codable {
+    var projectId: String?
+    var projectName: String?
+    var orgId: String?
+    var teamScope: String?
+    var linkedAt: Date?
+    var lastVerifiedAt: Date?
 }
 
 private enum CodeCLIProvider: String {
@@ -4887,7 +4911,8 @@ extension ToolExecutor {
                     initialNotes: args.initialNotes,
                     projectDescription: nil,
                     projectDescriptionSource: nil,
-                    lastEditedAt: nil
+                    lastEditedAt: nil,
+                    vercelProject: nil
                 )
             
                 metadata.projectDescription = await generateProjectDescriptionOnCreate(
@@ -6048,16 +6073,41 @@ extension ToolExecutor {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let defaultProjectName = (KeychainHelper.load(key: KeychainHelper.vercelProjectNameKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        let explicitTeamScope = args.teamScope?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let explicitProjectName = args.projectName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let teamScope = (explicitTeamScope?.isEmpty == false)
-            ? explicitTeamScope
-            : (defaultScope.isEmpty ? nil : defaultScope)
-        let projectName = (explicitProjectName?.isEmpty == false)
-            ? explicitProjectName
-            : (defaultProjectName.isEmpty ? nil : defaultProjectName)
-        
+
+        let explicitTeamScope = normalizedNonEmpty(args.teamScope)
+        let explicitProjectName = normalizedNonEmpty(args.projectName)
+        let configuredTeamScope = normalizedNonEmpty(defaultScope)
+        let configuredProjectName = normalizedNonEmpty(defaultProjectName)
+        let metadata = loadProjectMetadata(projectURL: projectURL)
+        let savedVercelIdentity = metadata?.vercelProject
+        let initialProjectLink = loadVercelProjectLink(at: deployDirectoryURL)
+        if let mismatchMessage = vercelIdentityMismatchMessage(savedIdentity: savedVercelIdentity, localLink: initialProjectLink) {
+            let result = VercelDeployResult(
+                success: false,
+                projectId: args.projectId,
+                relativePath: deployRelativePath,
+                mode: args.production == true ? "production" : "preview",
+                deploymentUrl: nil,
+                projectName: explicitProjectName ?? savedVercelIdentity?.projectName ?? configuredProjectName,
+                teamScope: explicitTeamScope ?? savedVercelIdentity?.teamScope ?? configuredTeamScope,
+                linked: initialProjectLink != nil,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                stdout: nil,
+                stderr: nil,
+                message: mismatchMessage
+            )
+            return encodeJSON(result)
+        }
+
+        let savedProjectId = normalizedNonEmpty(savedVercelIdentity?.projectId)
+        let savedProjectName = normalizedNonEmpty(savedVercelIdentity?.projectName)
+        let savedTeamScope = normalizedNonEmpty(savedVercelIdentity?.teamScope)
+        let teamScope = explicitTeamScope ?? savedTeamScope ?? configuredTeamScope
+        let projectIdentifier = savedProjectId ?? savedProjectName ?? explicitProjectName ?? configuredProjectName
+        let projectNameForResult = savedProjectName ?? explicitProjectName ?? configuredProjectName
+
         let configuredTimeout = Int(KeychainHelper.load(key: KeychainHelper.vercelTimeoutKey) ?? "") ?? Int(KeychainHelper.defaultVercelTimeout) ?? 1200
         let timeoutSeconds = min(max(args.timeoutSeconds ?? configuredTimeout, 60), 3600)
         let maxOutputChars = min(max(args.maxOutputChars ?? 12_000, 500), 100_000)
@@ -6070,11 +6120,31 @@ extension ToolExecutor {
         var stdoutParts: [String] = []
         var stderrParts: [String] = []
         let environment = claudeBaseEnvironment()
-        
-        var linked = hasVercelProjectLink(at: deployDirectoryURL)
-        let shouldRelink = projectName != nil && ((explicitProjectName?.isEmpty == false) || forceRelink || !linked)
-        if let projectName, shouldRelink {
-            var linkArgs = ["link", "--yes", "--token", token, "--project", projectName]
+
+        var linked = initialProjectLink != nil
+        if !linked && projectIdentifier == nil {
+            let result = VercelDeployResult(
+                success: false,
+                projectId: args.projectId,
+                relativePath: deployRelativePath,
+                mode: mode,
+                deploymentUrl: nil,
+                projectName: projectNameForResult,
+                teamScope: teamScope,
+                linked: false,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                stdout: nil,
+                stderr: nil,
+                message: "This workspace is not linked to Vercel and no saved Vercel project identity is available. Pass project_name once or relink the existing project instead of letting Vercel create a new one."
+            )
+            return encodeJSON(result)
+        }
+
+        let shouldRelink = projectIdentifier != nil && (forceRelink || !linked)
+        if let projectIdentifier, shouldRelink {
+            var linkArgs = ["link", "--yes", "--token", token, "--project", projectIdentifier]
             if let teamScope {
                 linkArgs.append(contentsOf: ["--scope", teamScope])
             }
@@ -6106,7 +6176,7 @@ extension ToolExecutor {
                         relativePath: deployRelativePath,
                         mode: mode,
                         deploymentUrl: nil,
-                        projectName: projectName,
+                        projectName: projectNameForResult,
                         teamScope: teamScope,
                         linked: false,
                         command: linkInvocation.displayCommand,
@@ -6120,8 +6190,35 @@ extension ToolExecutor {
                     )
                     return encodeJSON(result)
                 }
-                
+
                 linked = hasVercelProjectLink(at: deployDirectoryURL)
+                guard linked else {
+                    let result = VercelDeployResult(
+                        success: false,
+                        projectId: args.projectId,
+                        relativePath: deployRelativePath,
+                        mode: mode,
+                        deploymentUrl: nil,
+                        projectName: projectNameForResult,
+                        teamScope: teamScope,
+                        linked: false,
+                        command: linkInvocation.displayCommand,
+                        exitCode: linkOutput.exitCode,
+                        timedOut: linkOutput.timedOut,
+                        stdout: stdoutParts.joined(separator: "\n\n"),
+                        stderr: stderrParts.joined(separator: "\n\n"),
+                        message: "Vercel link reported success, but no local .vercel/project.json was created."
+                    )
+                    return encodeJSON(result)
+                }
+                let linkedProjectName = savedProjectId == nil ? (savedProjectName ?? explicitProjectName ?? configuredProjectName) : savedProjectName
+                _ = saveProjectVercelIdentity(
+                    projectURL: projectURL,
+                    projectId: args.projectId,
+                    link: loadVercelProjectLink(at: deployDirectoryURL),
+                    projectName: linkedProjectName,
+                    teamScope: teamScope
+                )
             } catch {
                 let result = VercelDeployResult(
                     success: false,
@@ -6129,7 +6226,7 @@ extension ToolExecutor {
                     relativePath: deployRelativePath,
                     mode: mode,
                     deploymentUrl: nil,
-                    projectName: projectName,
+                    projectName: projectNameForResult,
                     teamScope: teamScope,
                     linked: false,
                     command: nil,
@@ -6141,6 +6238,16 @@ extension ToolExecutor {
                 )
                 return encodeJSON(result)
             }
+        }
+
+        if linked {
+            _ = saveProjectVercelIdentity(
+                projectURL: projectURL,
+                projectId: args.projectId,
+                link: loadVercelProjectLink(at: deployDirectoryURL),
+                projectName: savedProjectName,
+                teamScope: teamScope
+            )
         }
         
         ensureVercelIgnore(at: deployDirectoryURL)
@@ -6197,7 +6304,7 @@ extension ToolExecutor {
                 relativePath: deployRelativePath,
                 mode: mode,
                 deploymentUrl: deploymentURL,
-                projectName: projectName,
+                projectName: projectNameForResult,
                 teamScope: teamScope,
                 linked: linked,
                 command: deployInvocation.displayCommand,
@@ -6207,6 +6314,16 @@ extension ToolExecutor {
                 stderr: truncateForToolOutput(stderrParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
                 message: message
             )
+            if linked {
+                let verifiedProjectName = savedProjectName ?? (savedProjectId == nil ? (explicitProjectName ?? configuredProjectName) : nil)
+                _ = saveProjectVercelIdentity(
+                    projectURL: projectURL,
+                    projectId: args.projectId,
+                    link: loadVercelProjectLink(at: deployDirectoryURL),
+                    projectName: verifiedProjectName,
+                    teamScope: teamScope
+                )
+            }
             return encodeJSON(result)
         } catch {
             let result = VercelDeployResult(
@@ -6215,7 +6332,7 @@ extension ToolExecutor {
                 relativePath: deployRelativePath,
                 mode: mode,
                 deploymentUrl: nil,
-                projectName: projectName,
+                projectName: projectNameForResult,
                 teamScope: teamScope,
                 linked: linked,
                 command: nil,
@@ -6619,20 +6736,32 @@ extension ToolExecutor {
         
         let defaultProjectName = (KeychainHelper.load(key: KeychainHelper.vercelProjectNameKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        
+
         let projectLink = loadVercelProjectLink(at: deployDirectoryURL)
-        let explicitProjectName = args.projectName?.trimmingCharacters(in: .whitespacesAndNewlines)
-        let projectIdentifier =
-            projectLink?.projectId ??
-            ((explicitProjectName?.isEmpty == false) ? explicitProjectName! : (defaultProjectName.isEmpty ? nil : defaultProjectName))
-        
-        guard let projectIdentifier, !projectIdentifier.isEmpty else {
-            return #"{"error":"Could not determine Vercel project identifier. Link the folder with deploy_project_to_vercel first or pass project_name."}"#
+        let explicitProjectName = normalizedNonEmpty(args.projectName)
+        let configuredProjectName = normalizedNonEmpty(defaultProjectName)
+        let metadata = loadProjectMetadata(projectURL: projectURL)
+        let savedVercelIdentity = metadata?.vercelProject
+        if let mismatchMessage = vercelIdentityMismatchMessage(savedIdentity: savedVercelIdentity, localLink: projectLink) {
+            let escaped = mismatchMessage.replacingOccurrences(of: "\\", with: "\\\\")
+                .replacingOccurrences(of: "\"", with: "\\\"")
+            return #"{"error":"\#(escaped)"}"#
         }
-        
+
+        let projectIdentifier =
+            normalizedNonEmpty(savedVercelIdentity?.projectId) ??
+            normalizedNonEmpty(savedVercelIdentity?.projectName) ??
+            projectLink?.projectId ??
+            explicitProjectName ??
+            configuredProjectName
+
+        guard let projectIdentifier, !projectIdentifier.isEmpty else {
+            return #"{"error":"Could not determine Vercel project identifier. Link the folder with deploy_project_to_vercel first or pass project_name once so the project mapping can be saved."}"#
+        }
+
         let teamId = (args.teamId?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false)
             ? args.teamId!.trimmingCharacters(in: .whitespacesAndNewlines)
-            : projectLink?.orgId
+            : normalizedNonEmpty(savedVercelIdentity?.orgId) ?? projectLink?.orgId
 
         let (databaseEnvironment, environmentError) = parseProjectDatabaseEnvironment(args.environment)
         if let environmentError {
@@ -6715,6 +6844,15 @@ extension ToolExecutor {
             failedKeys: failedKeys,
             message: message
         )
+        if projectLink != nil || success {
+            _ = saveProjectVercelIdentity(
+                projectURL: projectURL,
+                projectId: args.projectId,
+                link: projectLink,
+                projectName: normalizedNonEmpty(savedVercelIdentity?.projectName) ?? explicitProjectName,
+                teamScope: nil
+            )
+        }
         return encodeJSON(result)
     }
     
@@ -7082,7 +7220,77 @@ extension ToolExecutor {
         guard let data = try? Data(contentsOf: linkFileURL) else { return nil }
         return try? JSONDecoder().decode(VercelProjectLink.self, from: data)
     }
-    
+
+    private func normalizedNonEmpty(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return trimmed.isEmpty ? nil : trimmed
+    }
+
+    private func vercelIdentityMismatchMessage(
+        savedIdentity: StoredVercelProjectIdentity?,
+        localLink: VercelProjectLink?
+    ) -> String? {
+        guard let savedIdentity, let localLink else { return nil }
+
+        let savedProjectId = normalizedNonEmpty(savedIdentity.projectId)
+        let linkedProjectId = normalizedNonEmpty(localLink.projectId)
+        if let savedProjectId, let linkedProjectId, savedProjectId != linkedProjectId {
+            return "Saved Vercel mapping points to project \(savedProjectId), but local .vercel/project.json points to \(linkedProjectId). Refusing to continue until the workspace is relinked."
+        }
+
+        let savedOrgId = normalizedNonEmpty(savedIdentity.orgId)
+        let linkedOrgId = normalizedNonEmpty(localLink.orgId)
+        if let savedOrgId, let linkedOrgId, savedOrgId != linkedOrgId {
+            return "Saved Vercel mapping points to org \(savedOrgId), but local .vercel/project.json points to \(linkedOrgId). Refusing to continue until the workspace is relinked."
+        }
+
+        return nil
+    }
+
+    @discardableResult
+    private func saveProjectVercelIdentity(
+        projectURL: URL,
+        projectId: String,
+        link: VercelProjectLink?,
+        projectName: String?,
+        teamScope: String?
+    ) -> StoredVercelProjectIdentity {
+        var metadata = loadProjectMetadata(projectURL: projectURL) ??
+            makeFallbackProjectMetadata(projectURL: projectURL, projectId: projectId)
+        var identity = metadata.vercelProject ?? StoredVercelProjectIdentity()
+
+        let previousProjectId = normalizedNonEmpty(identity.projectId)
+        let previousOrgId = normalizedNonEmpty(identity.orgId)
+        let linkProjectId = normalizedNonEmpty(link?.projectId)
+        let linkOrgId = normalizedNonEmpty(link?.orgId)
+        let normalizedProjectName = normalizedNonEmpty(projectName)
+        let normalizedTeamScope = normalizedNonEmpty(teamScope)
+
+        if let linkProjectId {
+            identity.projectId = linkProjectId
+        }
+        if let linkOrgId {
+            identity.orgId = linkOrgId
+        }
+        if let normalizedProjectName {
+            identity.projectName = normalizedProjectName
+        }
+        if let normalizedTeamScope {
+            identity.teamScope = normalizedTeamScope
+        }
+
+        let currentProjectId = normalizedNonEmpty(identity.projectId)
+        let currentOrgId = normalizedNonEmpty(identity.orgId)
+        if identity.linkedAt == nil || previousProjectId != currentProjectId || previousOrgId != currentOrgId {
+            identity.linkedAt = Date()
+        }
+        identity.lastVerifiedAt = Date()
+
+        metadata.vercelProject = identity
+        saveProjectMetadata(metadata, projectURL: projectURL)
+        return identity
+    }
+
     private func normalizeVercelTargets(
         _ rawTargets: [String]?,
         defaultTargets: [String] = ["development", "preview", "production"]
@@ -7733,7 +7941,8 @@ extension ToolExecutor {
             initialNotes: nil,
             projectDescription: nil,
             projectDescriptionSource: nil,
-            lastEditedAt: nil
+            lastEditedAt: nil,
+            vercelProject: nil
         )
     }
     

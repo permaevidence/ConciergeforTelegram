@@ -255,7 +255,7 @@ enum AvailableTools {
                     ),
                     "recurrence": ParameterProperty(
                         type: "string",
-                        description: "Optional for action='set'. 'daily', 'weekly', 'monthly', or 'every_X_minutes'. Also optional for action='delete' when delete_recurring=true to filter which recurring reminders to delete."
+                        description: "Optional for action='set'. 'daily', 'weekly', 'monthly', 'every_X_minutes', or 'every_X_hours'. Also optional for action='delete' when delete_recurring=true to filter which recurring reminders to delete."
                     ),
                     "reminder_id": ParameterProperty(
                         type: "string",
@@ -271,7 +271,7 @@ enum AvailableTools {
                     ),
                     "delete_recurring": ParameterProperty(
                         type: "boolean",
-                        description: "For action='delete'. If true, deletes all pending recurring reminders. Optional recurrence filter can narrow to daily/weekly/monthly/every_X_minutes."
+                        description: "For action='delete'. If true, deletes all pending recurring reminders. Optional recurrence filter can narrow to daily/weekly/monthly/every_X_minutes/every_X_hours."
                     )
                 ],
                 required: ["action"]
@@ -1161,7 +1161,7 @@ enum AvailableTools {
                     ),
                     "project_name": ParameterProperty(
                         type: "string",
-                        description: "Optional Vercel project id/name override when no local .vercel link exists."
+                        description: "Optional Vercel project id/name override when no saved or local Vercel link exists. Passing this once lets the app persist the mapping for later runs."
                     ),
                     "team_id": ParameterProperty(
                         type: "string",
@@ -1471,7 +1471,7 @@ enum AvailableTools {
                     ),
                     "project_name": ParameterProperty(
                         type: "string",
-                        description: "Optional Vercel project name to link before deploy. Defaults to the configured value in Settings if present."
+                        description: "Optional Vercel project id/name to link before deploy when the workspace has no saved Vercel mapping yet. Passing this once lets later deploys reuse the same project."
                     ),
                     "team_scope": ParameterProperty(
                         type: "string",
