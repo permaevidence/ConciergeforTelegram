@@ -7,6 +7,7 @@ class ConversationManager: ObservableObject {
     @Published var isPolling: Bool = false
     @Published var statusMessage: String = "Not started"
     @Published var error: String?
+    @Published var isPrivacyModeEnabled: Bool = false
     
     private let telegramService = TelegramBotService()
     private let openRouterService = OpenRouterService()
@@ -32,6 +33,7 @@ class ConversationManager: ObservableObject {
     private let minimumToolSpendLimitPerTurnUSD = 0.001
     private let maxToolRoundsSafetyLimit = 120
     private let shouldResumePollingDefaultsKey = "should_resume_polling_on_launch"
+    private let privacyModeDefaultsKey = "telegram_privacy_mode_enabled"
     
     private struct ToolAwareResponse {
         let finalText: String
@@ -94,6 +96,7 @@ class ConversationManager: ObservableObject {
     }
     
     init() {
+        isPrivacyModeEnabled = UserDefaults.standard.bool(forKey: privacyModeDefaultsKey)
         loadConversation()
         if shouldResumePollingOnLaunch && hasRequiredPollingConfiguration() {
             Task { [weak self] in
@@ -861,6 +864,12 @@ class ConversationManager: ObservableObject {
         case "/codex":
             await switchCodeCLIProvider(to: "codex")
             return true
+        case "/hide":
+            await setPrivacyMode(enabled: true)
+            return true
+        case "/show":
+            await setPrivacyMode(enabled: false)
+            return true
         case "/transcribe_local":
             await switchVoiceTranscriptionProvider(to: .local)
             return true
@@ -990,6 +999,38 @@ class ConversationManager: ObservableObject {
 
         if activeRunId == nil {
             statusMessage = "Listening... (Last check: \(formattedTime()))"
+        }
+    }
+
+    private func setPrivacyMode(enabled: Bool) async {
+        guard isPrivacyModeEnabled != enabled else {
+            if let chatId = pairedChatId {
+                let message = enabled
+                    ? "Privacy mode is already enabled. The on-screen conversation and context viewer stay hidden until you send /show."
+                    : "Privacy mode is already disabled. The conversation and context viewer are visible again."
+                try? await telegramService.sendMessage(chatId: chatId, text: message)
+            }
+
+            if activeRunId == nil {
+                statusMessage = "Listening... (Last check: \(formattedTime()))"
+            }
+            return
+        }
+
+        isPrivacyModeEnabled = enabled
+        UserDefaults.standard.set(enabled, forKey: privacyModeDefaultsKey)
+
+        if let chatId = pairedChatId {
+            let message = enabled
+                ? "Privacy mode enabled. The macOS app now hides the conversation and disables the context viewer until you send /show."
+                : "Privacy mode disabled. The macOS app shows the conversation and re-enables the context viewer."
+            try? await telegramService.sendMessage(chatId: chatId, text: message)
+        }
+
+        if activeRunId == nil {
+            statusMessage = enabled
+                ? "Privacy mode enabled"
+                : "Listening... (Last check: \(formattedTime()))"
         }
     }
     

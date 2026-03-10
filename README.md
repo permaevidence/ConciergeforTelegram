@@ -17,6 +17,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 - **Configurable reasoning effort** — adjust thinking depth per model
 - **Full tool-use (function calling)** — the LLM autonomously decides when and how to use over 30 tools
 - **Multimodal** — understands images, PDFs, audio, and documents you send via Telegram
+- **Remote privacy mode** — send `/hide` from Telegram to hide conversations and other sensitive UI on the Mac until `/show` is sent
 
 ### 🧠 Persistent Memory (FractalMind)
 - **Tiered chunking** — conversation history is automatically archived into chunks, summarized by the LLM, and consolidated over time
@@ -302,6 +303,7 @@ TelegramConcierge/
 
 - **Keychain storage** — all API keys, tokens, and credentials are stored in the macOS Keychain. Nothing touches the file system.
 - **Chat ID filter** — the bot only responds to your Telegram user ID, rejecting all other messages.
+- **Remote screen privacy** — send `/hide` in Telegram to hide the on-screen conversation, Persona section, context viewer, and export actions on the Mac if someone can access your desktop computer. Send `/show` to restore them.
 - **App Sandbox** — the app runs inside the macOS sandbox with only the required entitlements (network, audio input, Apple Events for Shortcuts).
 - **Local processing** — voice transcription runs entirely on-device via WhisperKit. No audio leaves your Mac.
 - **No telemetry** — the app does not collect or transmit any usage data.

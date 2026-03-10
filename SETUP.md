@@ -151,12 +151,16 @@ You can switch provider remotely by sending one of these commands in Telegram:
 - `/codex` → use Codex CLI
 - `/transcribe_local` → use local Whisper transcription
 - `/transcribe_openai` → use OpenAI transcription (`gpt-4o-transcribe`)
+- `/hide` → hide sensitive UI on the Mac
+- `/show` → show the hidden UI again
 - `/spend` → show OpenRouter spend totals (today and this month)
 - `/more1` → add $1 to the reached daily/monthly spend cap for the current day/month
 - `/more5` → add $5 to the reached daily/monthly spend cap for the current day/month
 - `/more10` → add $10 to the reached daily/monthly spend cap for the current day/month
 
 The change is saved immediately and applies to the next delegated Code CLI run.
+
+`/hide` is a desktop privacy control. It is meant for situations where someone can physically access or look at your Mac and you do not want them to see your current or past conversations with the agent. While privacy mode is active, the app hides the conversation in the main window, disables the context viewer, hides the Persona section in Settings, and disables sensitive export actions like **Download Mind** and **Download Calendar**. Send `/show` to restore normal visibility.
 
 > [!TIP]
 > To view project working directories, click the **folder icon** in the main chat header (next to the Settings gear). This opens the projects folder directly in Finder, where you can delete project folders manually when needed.

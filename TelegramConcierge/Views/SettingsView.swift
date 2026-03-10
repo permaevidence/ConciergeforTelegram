@@ -168,10 +168,12 @@ struct SettingsView: View {
     var body: some View {
         Form {
             // MARK: - Persona Section
-            Section {
-                personaSettingsContent
-            } header: {
-                Label("Persona", systemImage: "person.text.rectangle")
+            if !conversationManager.isPrivacyModeEnabled {
+                Section {
+                    personaSettingsContent
+                } header: {
+                    Label("Persona", systemImage: "person.text.rectangle")
+                }
             }
             
             Section {
@@ -648,8 +650,13 @@ struct SettingsView: View {
                     }
                 }
                 .buttonStyle(.plain)
+                .disabled(conversationManager.isPrivacyModeEnabled)
                 
-                Text("See all context currently being sent to Gemini: conversation, chunks, user context, calendar, and email.")
+                Text(
+                    conversationManager.isPrivacyModeEnabled
+                        ? "Context viewer is disabled while privacy mode is active. Send `/show` in Telegram to re-enable it."
+                        : "See all context currently being sent to Gemini: conversation, chunks, user context, calendar, and email."
+                )
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -708,7 +715,11 @@ struct SettingsView: View {
                         }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isExportingMind || isImportingMind)
+                    .disabled(
+                        isExportingMind ||
+                        isImportingMind ||
+                        conversationManager.isPrivacyModeEnabled
+                    )
                     
                     Button {
                         print("[SettingsView] Restore Mind button tapped, opening NSOpenPanel")
@@ -776,7 +787,11 @@ struct SettingsView: View {
                     }
                 }
                 
-                Text("Download Mind exports your conversation history, memory chunks, files, contacts, reminders, calendar, and persona settings. API keys are NOT included for security.")
+                Text(
+                    conversationManager.isPrivacyModeEnabled
+                        ? "Mind export is disabled while privacy mode is active. Send `/show` in Telegram to re-enable it."
+                        : "Download Mind exports your conversation history, memory chunks, files, contacts, reminders, calendar, and persona settings. API keys are NOT included for security."
+                )
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -808,7 +823,12 @@ struct SettingsView: View {
                         }
                     }
                     .buttonStyle(.bordered)
-                    .disabled(isExportingCalendar || isImportingCalendar || calendarEventCount == 0)
+                    .disabled(
+                        isExportingCalendar ||
+                        isImportingCalendar ||
+                        calendarEventCount == 0 ||
+                        conversationManager.isPrivacyModeEnabled
+                    )
                     
                     Button(action: { showingCalendarFilePicker = true }) {
                         HStack {
@@ -845,7 +865,11 @@ struct SettingsView: View {
                     }
                 }
                 
-                Text("Export or import your calendar events separately. The calendar is also included in Mind exports.")
+                Text(
+                    conversationManager.isPrivacyModeEnabled
+                        ? "Calendar export is disabled while privacy mode is active. Send `/show` in Telegram to re-enable it."
+                        : "Export or import your calendar events separately. The calendar is also included in Mind exports."
+                )
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
@@ -896,6 +920,11 @@ struct SettingsView: View {
                 Task {
                     await WhisperKitService.shared.checkModelStatus()
                 }
+            }
+        }
+        .onChange(of: conversationManager.isPrivacyModeEnabled) { _, isEnabled in
+            if isEnabled {
+                showingContextViewer = false
             }
         }
         .sheet(isPresented: $showingContextViewer) {

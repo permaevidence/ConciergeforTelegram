@@ -15,35 +15,39 @@ struct ContentView: View {
             // Header
             headerView
             
-            // Messages
-            ScrollViewReader { proxy in
-                ScrollView {
-                    LazyVStack(spacing: 12) {
-                        ForEach(Array(conversationManager.messages.enumerated()), id: \.element.id) { index, message in
-                            VStack(spacing: 8) {
-                                // Date separator (when day changes)
-                                if shouldShowDateHeader(at: index) {
-                                    dateSeparator(for: message.timestamp)
+            if conversationManager.isPrivacyModeEnabled {
+                privacyModeView
+            } else {
+                // Messages
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(spacing: 12) {
+                            ForEach(Array(conversationManager.messages.enumerated()), id: \.element.id) { index, message in
+                                VStack(spacing: 8) {
+                                    // Date separator (when day changes)
+                                    if shouldShowDateHeader(at: index) {
+                                        dateSeparator(for: message.timestamp)
+                                    }
+                                    
+                                    MessageBubbleView(
+                                        message: message,
+                                        imageURLs: conversationManager.imageURLs(for: message),
+                                        referencedImageURLs: conversationManager.referencedImageURLs(for: message),
+                                        fileDescriptions: fileDescriptions
+                                    )
                                 }
-                                
-                                MessageBubbleView(
-                                    message: message,
-                                    imageURLs: conversationManager.imageURLs(for: message),
-                                    referencedImageURLs: conversationManager.referencedImageURLs(for: message),
-                                    fileDescriptions: fileDescriptions
-                                )
+                                .id(message.id)
                             }
-                            .id(message.id)
                         }
+                        .padding()
                     }
-                    .padding()
-                }
-                .onAppear {
-                    scrollProxy = proxy
-                }
-                .onChange(of: conversationManager.messages.count) { _, _ in
-                    scrollToBottom()
-                    loadFileDescriptions()
+                    .onAppear {
+                        scrollProxy = proxy
+                    }
+                    .onChange(of: conversationManager.messages.count) { _, _ in
+                        scrollToBottom()
+                        loadFileDescriptions()
+                    }
                 }
             }
             
@@ -75,6 +79,26 @@ struct ContentView: View {
     }
     
     // MARK: - Date Separator
+
+    private var privacyModeView: some View {
+        VStack(spacing: 14) {
+            Image(systemName: "eye.slash.fill")
+                .font(.system(size: 34, weight: .semibold))
+                .foregroundStyle(.secondary)
+
+            Text("Conversation Hidden")
+                .font(.title3.weight(.semibold))
+
+            Text("Privacy mode was enabled from Telegram. Send `/show` to make the conversation visible again.")
+                .font(.body)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 360)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(24)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
     
     private func shouldShowDateHeader(at index: Int) -> Bool {
         let messages = conversationManager.messages
@@ -246,6 +270,7 @@ struct ContentView: View {
             .buttonStyle(.plain)
             .foregroundColor(.secondary)
             .help("Clear conversation")
+            .disabled(conversationManager.isPrivacyModeEnabled)
         }
         .padding(.horizontal)
         .padding(.vertical, 8)
