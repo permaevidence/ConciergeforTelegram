@@ -6352,7 +6352,27 @@ extension ToolExecutor {
             )
         }
         
-        ensureVercelIgnore(at: deployDirectoryURL)
+        do {
+            try ensureVercelIgnore(at: deployDirectoryURL)
+        } catch {
+            let result = VercelDeployResult(
+                success: false,
+                projectId: args.projectId,
+                relativePath: deployRelativePath,
+                mode: mode,
+                deploymentUrl: nil,
+                projectName: projectNameForResult,
+                teamScope: teamScope,
+                linked: linked,
+                command: nil,
+                exitCode: nil,
+                timedOut: nil,
+                stdout: truncateForToolOutput(stdoutParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
+                stderr: truncateForToolOutput(redactSensitiveValues(in: error.localizedDescription, values: sensitiveValues), maxChars: maxOutputChars),
+                message: "Failed to prepare .vercelignore. Refusing to deploy without verified metadata exclusions."
+            )
+            return encodeJSON(result)
+        }
         
         var deployArgs = ["deploy", "--yes", "--token", token]
         if let teamScope {
@@ -9405,8 +9425,8 @@ extension ToolExecutor {
     }
     
     /// Ensures `.vercelignore` excludes internal metadata files and common secret-bearing env files.
-    /// Creates the file if it doesn't exist, or appends missing entries if it does.
-    private func ensureVercelIgnore(at directoryURL: URL) {
+    /// Creates the file if it doesn't exist, appends missing entries, then re-reads it to verify they are present.
+    private func ensureVercelIgnore(at directoryURL: URL) throws {
         let requiredEntries = [
             // Internal app metadata/logs
             ".project.json",
@@ -9428,17 +9448,37 @@ extension ToolExecutor {
         ]
         
         let ignoreURL = directoryURL.appendingPathComponent(".vercelignore")
-        var existingContent = (try? String(contentsOf: ignoreURL, encoding: .utf8)) ?? ""
+        var isDirectory: ObjCBool = false
+        let ignoreExists = FileManager.default.fileExists(atPath: ignoreURL.path, isDirectory: &isDirectory)
+        if ignoreExists && isDirectory.boolValue {
+            throw NSError(domain: "ToolExecutor", code: 1101, userInfo: [
+                NSLocalizedDescriptionKey: ".vercelignore exists as a directory at \(ignoreURL.path)."
+            ])
+        }
+        
+        var existingContent = ""
+        if ignoreExists {
+            existingContent = try String(contentsOf: ignoreURL, encoding: .utf8)
+        }
         let existingLines = Set(existingContent.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) })
         
         let missingEntries = requiredEntries.filter { !existingLines.contains($0) }
-        guard !missingEntries.isEmpty else { return }
-        
-        if !existingContent.isEmpty && !existingContent.hasSuffix("\n") {
-            existingContent += "\n"
+        if !missingEntries.isEmpty {
+            if !existingContent.isEmpty && !existingContent.hasSuffix("\n") {
+                existingContent += "\n"
+            }
+            existingContent += missingEntries.joined(separator: "\n") + "\n"
+            try existingContent.write(to: ignoreURL, atomically: true, encoding: .utf8)
         }
-        existingContent += missingEntries.joined(separator: "\n") + "\n"
-        try? existingContent.write(to: ignoreURL, atomically: true, encoding: .utf8)
+        
+        let verifiedContent = try String(contentsOf: ignoreURL, encoding: .utf8)
+        let verifiedLines = Set(verifiedContent.components(separatedBy: .newlines).map { $0.trimmingCharacters(in: .whitespaces) })
+        let stillMissingEntries = requiredEntries.filter { !verifiedLines.contains($0) }
+        guard stillMissingEntries.isEmpty else {
+            throw NSError(domain: "ToolExecutor", code: 1102, userInfo: [
+                NSLocalizedDescriptionKey: ".vercelignore verification failed. Missing entries: \(stillMissingEntries.joined(separator: ", "))"
+            ])
+        }
     }
     
     private func extractVercelDeploymentURL(from output: String) -> String? {
