@@ -75,6 +75,7 @@ The AI brain runs through [OpenRouter](https://openrouter.ai), a unified API gat
 2. Add credit (even $5–10 is enough to start; Gemini models are very inexpensive).
 3. Go to **Keys** → **Create Key** → copy the key.
 4. Paste it into the **API Key** field.
+5. Openrouter often is rate limited, a BYOK addition in settings will fix this issue
 
 | Field | Default | Notes |
 |---|---|---|
@@ -105,7 +106,7 @@ If you want the assistant to generate and edit images:
 2. Create an API key (or use an existing one).
 3. Paste it into the **Gemini API Key** field.
 
-The app uses `gemini-3-pro-image-preview` for generation. The assistant can see its own generated images and iteratively improve them.
+The app uses `gemini-3-pro-image-preview` for generation. If you want to change the model you can insert a different Google model and its price for correct spend counting.
 
 ---
 
@@ -159,6 +160,49 @@ The change is saved immediately and applies to the next delegated Code CLI run.
 
 > [!TIP]
 > To view project working directories, click the **folder icon** in the main chat header (next to the Settings gear). This opens the projects folder directly in Finder, where you can delete project folders manually when needed.
+
+### 6e — Vercel API Token *(optional, for deploy tools)*
+
+If you want the assistant to deploy projects to Vercel, configure a Vercel token in the app.
+
+1. Sign in to [Vercel](https://vercel.com/).
+2. Open **Account Settings → Tokens**.
+3. Click **Create Token**.
+4. Give the token a name you will recognize later (for example, *Telegram Concierge*), then create it.
+5. Copy the token immediately.
+6. In Telegram Concierge, open **Settings → Vercel Deployment**.
+7. Paste it into **Vercel API Token** and click **Save**.
+
+Optional fields in the same section:
+
+- **Default Team Scope**: your Vercel team or account slug. This is useful if you deploy into a team account.
+- **Default Project Name**: lets the app link a workspace to an existing Vercel project when the deploy tool does not pass `project_name`.
+- **CLI Command**: leave this as `vercel` unless your installation lives elsewhere.
+
+> [!NOTE]
+> The token is stored in the macOS Keychain. You still need the Vercel CLI installed if you want the deploy tools to run locally from the app.
+
+### 6f — Instant CLI Auth Token *(optional, for Instant database tools)*
+
+If you want the assistant to provision or push Instant databases, configure an Instant CLI auth token.
+
+1. Open Terminal.
+2. Run:
+
+```bash
+npx instant-cli@latest login -p
+```
+
+3. Your browser will open so you can sign in to your Instant account.
+4. After authentication, the CLI prints an auth token to the terminal instead of storing it on disk.
+5. Copy that printed token.
+6. In Telegram Concierge, open **Settings → Instant Database**.
+7. Paste it into **Instant CLI Auth Token** and click **Save**.
+
+Leave **Instant CLI Command** as `npx instant-cli@latest` unless you intentionally installed and use a different command.
+
+> [!TIP]
+> If you only want to use Instant manually in Terminal, `npx instant-cli@latest login` is enough. For Telegram Concierge, use `login -p` so you can copy the token into the app.
 
 ---
 
@@ -236,17 +280,43 @@ If you prefer not to use the Gmail API, click *"Use IMAP instead"* in the Email 
 
 ---
 
-## 8 — Voice Transcription (Whisper)
+## 8 — Voice Transcription (Local Whisper or OpenAI)
 
 This lets the assistant transcribe voice messages you send via Telegram.
 
-1. In the **Voice Transcription** section, click **Download**. This downloads the `whisper-large-v3-turbo` model (~632 MB).
-2. Once downloaded, click **Compile**. This converts the model into CoreML format optimized for your Mac.
+In **Settings → Voice Transcription**, choose the method you want to use:
+
+### Option A — Local Whisper (default)
+
+Use this if you want transcription to stay on-device.
+
+1. Leave **Method** set to **Local (Whisper)**.
+2. Click **Download**. This downloads the `whisper-large-v3-turbo` model (~632 MB).
+3. Once downloaded, click **Compile**. This converts the model into CoreML format optimized for your Mac.
+4. Click **Save** for the Voice Transcription section.
 
 > [!IMPORTANT]
 > Compilation takes **3–5 minutes** on Apple Silicon. Let it finish — the status will change to **"Model ready"** when done.
 
 The model only needs to be downloaded and compiled once. If you update the app, it may need to recompile automatically on first launch.
+
+### Option B — OpenAI remote transcription
+
+Use this if you prefer cloud transcription and do not want to download the local Whisper model.
+
+1. Change **Method** to **OpenAI (gpt-4o-transcribe)**.
+2. Paste your **OpenAI API Key** into the field shown below the picker.
+3. Click **Save** for the Voice Transcription section.
+
+That is all you need for remote transcription. No local model download or compilation is required when OpenAI is selected.
+
+> [!NOTE]
+> OpenAI transcription sends the audio to OpenAI and uses the `gpt-4o-transcribe` model. Your API key is stored in the macOS Keychain.
+
+> [!TIP]
+> You can also switch methods remotely from Telegram:
+> - `/transcribe_local` → switch back to local Whisper
+> - `/transcribe_openai` → switch to OpenAI transcription
 
 ---
 
@@ -287,5 +357,6 @@ Export contacts from Apple Contacts, Google Contacts, or any other source as a `
 | Gmail auth fails | Ensure you added yourself as a test user in the OAuth consent screen. Make sure port `8080` is free. |
 | *"This app isn't verified"* warning | Expected for personal OAuth apps. Click **Advanced → Go to [app name]**. |
 | Whisper compilation hangs | Wait at least 5 minutes. On Intel Macs it may take longer. Restart the app if it truly stalls. |
+| OpenAI transcription fails | Verify the Voice Transcription method is set to **OpenAI**, then confirm your OpenAI API key is entered in **Settings → Voice Transcription** and saved. |
 | OpenRouter errors | Verify you have credit on openrouter.ai and the API key is correct. |
 | Email operations are slow | Switch from IMAP to Gmail API for significantly faster performance. |
