@@ -63,6 +63,12 @@ class ConversationManager: ObservableObject {
             effectiveMonthlyLimitUSD.map { monthSpentUSD >= $0 } ?? false
         }
     }
+
+    private struct ProjectToolTurnState {
+        var createdProjectIDs: Set<String> = []
+        var projectsWithSuccessfulHistory: Set<String> = []
+        var projectsWithSuccessfulDeploymentHistory: Set<String> = []
+    }
     
     private let appFolder: URL = {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -1227,10 +1233,14 @@ class ConversationManager: ObservableObject {
                     )
                 }
                 
-                let executableCalls = calls.filter { allowedToolNames.contains($0.function.name) }
-                let blockedCalls = calls.filter { !allowedToolNames.contains($0.function.name) }
-                if !blockedCalls.isEmpty {
-                    print("[ConversationManager] Round \(round): blocked \(blockedCalls.count) unavailable tool call(s): \(blockedCalls.map { $0.function.name })")
+                let (executableCalls, blockedResults) = partitionToolCallsForExecution(
+                    calls,
+                    allowedToolNames: allowedToolNames,
+                    deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
+                    priorInteractions: toolInteractions
+                )
+                if !blockedResults.isEmpty {
+                    print("[ConversationManager] Round \(round): blocked \(blockedResults.count) tool call(s) due to turn policy or tool availability")
                 }
                 
                 // Send progress message to Telegram
@@ -1247,10 +1257,7 @@ class ConversationManager: ObservableObject {
                     let executedResults = try await toolExecutor.executeParallel(executableCalls)
                     toolResults.append(contentsOf: executedResults)
                 }
-                if !blockedCalls.isEmpty {
-                    let blockedResults = blockedCalls.map {
-                        blockedToolResult(for: $0, deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn)
-                    }
+                if !blockedResults.isEmpty {
                     toolResults.append(contentsOf: blockedResults)
                 }
                 try Task.checkCancellation()
@@ -1482,7 +1489,7 @@ class ConversationManager: ObservableObject {
     
     private func extractAccessedProjects(from interactions: [ToolInteraction]) -> [String] {
         var projectIds = Set<String>()
-        let projectTools = Set(["create_project", "browse_project", "read_project_file", "add_project_files", "run_claude_code", "send_project_result"])
+        let projectTools = Set(["create_project", "browse_project", "read_project_file", "add_project_files", "view_project_history", "view_project_deployment_history", "run_claude_code", "send_project_result"])
         
         for interaction in interactions {
             for call in interaction.assistantMessage.toolCalls {
@@ -1524,6 +1531,203 @@ class ConversationManager: ObservableObject {
             .replacingOccurrences(of: "\"", with: "\\\"")
         return ToolResultMessage(toolCallId: call.id, content: #"{"error":"\#(escapedError)"}"#)
     }
+
+    private func blockedToolResult(for call: ToolCall, errorMessage: String) -> ToolResultMessage {
+        let escapedError = errorMessage
+            .replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        return ToolResultMessage(toolCallId: call.id, content: #"{"error":"\#(escapedError)"}"#)
+    }
+
+    private func partitionToolCallsForExecution(
+        _ calls: [ToolCall],
+        allowedToolNames: Set<String>,
+        deploymentToolsUnlockedForTurn: Bool,
+        priorInteractions: [ToolInteraction]
+    ) -> (executableCalls: [ToolCall], blockedResults: [ToolResultMessage]) {
+        let turnState = buildProjectToolTurnState(from: priorInteractions)
+        let deploymentToolsRequiringHistory = Set([
+            "deploy_project_to_vercel",
+            "provision_project_database",
+            "push_project_database_schema",
+            "sync_project_database_env_to_vercel",
+            "generate_project_mcp_config"
+        ])
+        var executableCalls: [ToolCall] = []
+        var blockedResults: [ToolResultMessage] = []
+        var historyRequestedThisRound = Set<String>()
+        var deploymentHistoryRequestedThisRound = Set<String>()
+
+        for call in calls {
+            guard allowedToolNames.contains(call.function.name) else {
+                blockedResults.append(
+                    blockedToolResult(for: call, deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn)
+                )
+                continue
+            }
+
+            switch call.function.name {
+            case "view_project_history":
+                guard let projectID = projectIDFromArguments(of: call) else {
+                    executableCalls.append(call)
+                    continue
+                }
+
+                if turnState.projectsWithSuccessfulHistory.contains(projectID) {
+                    blockedResults.append(
+                        blockedToolResult(
+                            for: call,
+                            errorMessage: "view_project_history was already loaded successfully for project '\(projectID)' earlier in this turn. Reuse that context instead of calling it again."
+                        )
+                    )
+                } else if historyRequestedThisRound.contains(projectID) {
+                    blockedResults.append(
+                        blockedToolResult(
+                            for: call,
+                            errorMessage: "view_project_history was already requested for project '\(projectID)' in this round. Call it at most once per turn per project unless a prior history load failed."
+                        )
+                    )
+                } else {
+                    historyRequestedThisRound.insert(projectID)
+                    executableCalls.append(call)
+                }
+
+            case "view_project_deployment_history":
+                guard let projectID = projectIDFromArguments(of: call) else {
+                    executableCalls.append(call)
+                    continue
+                }
+
+                if turnState.projectsWithSuccessfulDeploymentHistory.contains(projectID) {
+                    blockedResults.append(
+                        blockedToolResult(
+                            for: call,
+                            errorMessage: "view_project_deployment_history was already loaded successfully for project '\(projectID)' earlier in this turn. Reuse that context instead of calling it again."
+                        )
+                    )
+                } else if deploymentHistoryRequestedThisRound.contains(projectID) {
+                    blockedResults.append(
+                        blockedToolResult(
+                            for: call,
+                            errorMessage: "view_project_deployment_history was already requested for project '\(projectID)' in this round. Call it at most once per turn per project unless a prior history load failed."
+                        )
+                    )
+                } else {
+                    deploymentHistoryRequestedThisRound.insert(projectID)
+                    executableCalls.append(call)
+                }
+
+            case "run_claude_code":
+                guard let projectID = projectIDFromArguments(of: call) else {
+                    executableCalls.append(call)
+                    continue
+                }
+
+                if turnState.createdProjectIDs.contains(projectID) || turnState.projectsWithSuccessfulHistory.contains(projectID) {
+                    executableCalls.append(call)
+                } else {
+                    blockedResults.append(
+                        blockedToolResult(
+                            for: call,
+                            errorMessage: "Before reusing existing project '\(projectID)', call view_project_history for that same project_id in an earlier tool round of this turn. After that result is returned, call run_claude_code."
+                        )
+                    )
+                }
+
+            case let toolName where deploymentToolsRequiringHistory.contains(toolName):
+                guard let projectID = projectIDFromArguments(of: call) else {
+                    executableCalls.append(call)
+                    continue
+                }
+
+                if turnState.createdProjectIDs.contains(projectID) || turnState.projectsWithSuccessfulDeploymentHistory.contains(projectID) {
+                    executableCalls.append(call)
+                } else {
+                    blockedResults.append(
+                        blockedToolResult(
+                            for: call,
+                            errorMessage: "Before using \(toolName) on existing project '\(projectID)', call view_project_deployment_history for that same project_id in an earlier tool round of this turn. After that result is returned, retry the deployment/database tool."
+                        )
+                    )
+                }
+
+            default:
+                executableCalls.append(call)
+            }
+        }
+
+        return (executableCalls, blockedResults)
+    }
+
+    private func buildProjectToolTurnState(from interactions: [ToolInteraction]) -> ProjectToolTurnState {
+        var state = ProjectToolTurnState()
+
+        for interaction in interactions {
+            var resultByCallID: [String: ToolResultMessage] = [:]
+            for result in interaction.results {
+                resultByCallID[result.toolCallId] = result
+            }
+
+            for call in interaction.assistantMessage.toolCalls {
+                guard let result = resultByCallID[call.id],
+                      let resultDictionary = parseJSONDictionary(from: result.content) else {
+                    continue
+                }
+
+                switch call.function.name {
+                case "create_project":
+                    guard (resultDictionary["success"] as? Bool) == true,
+                          let projectID = resultDictionary["project_id"] as? String,
+                          !projectID.isEmpty else {
+                        continue
+                    }
+                    state.createdProjectIDs.insert(projectID)
+
+                case "view_project_history":
+                    guard (resultDictionary["success"] as? Bool) == true else {
+                        continue
+                    }
+
+                    if let projectID = resultDictionary["projectId"] as? String, !projectID.isEmpty {
+                        state.projectsWithSuccessfulHistory.insert(projectID)
+                    } else if let projectID = resultDictionary["project_id"] as? String, !projectID.isEmpty {
+                        state.projectsWithSuccessfulHistory.insert(projectID)
+                    } else if let projectID = projectIDFromArguments(of: call) {
+                        state.projectsWithSuccessfulHistory.insert(projectID)
+                    }
+
+                case "view_project_deployment_history":
+                    guard (resultDictionary["success"] as? Bool) == true else {
+                        continue
+                    }
+
+                    if let projectID = resultDictionary["projectId"] as? String, !projectID.isEmpty {
+                        state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
+                    } else if let projectID = resultDictionary["project_id"] as? String, !projectID.isEmpty {
+                        state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
+                    } else if let projectID = projectIDFromArguments(of: call) {
+                        state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
+                    }
+
+                default:
+                    continue
+                }
+            }
+        }
+
+        return state
+    }
+
+    private func projectIDFromArguments(of call: ToolCall) -> String? {
+        guard let data = call.function.arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let projectID = object["project_id"] as? String else {
+            return nil
+        }
+
+        let normalized = projectID.trimmingCharacters(in: .whitespacesAndNewlines)
+        return normalized.isEmpty ? nil : normalized
+    }
     
     /// Get appropriate progress message for tool calls
     private func getProgressMessage(for calls: [ToolCall]) -> String {
@@ -1553,6 +1757,8 @@ class ConversationManager: ObservableObject {
             return "🔍 Searching the web..."
         } else if toolNames.contains("show_project_deployment_tools") {
             return "🧰 Enabling deployment and database tools for this turn..."
+        } else if toolNames.contains("view_project_deployment_history") {
+            return "🧰 Reviewing deployment history..."
         } else if toolNames.contains("provision_project_database") {
             return "🗄️ Provisioning project database..."
         } else if toolNames.contains("push_project_database_schema") {
@@ -1673,12 +1879,53 @@ class ConversationManager: ObservableObject {
     }
     
     private func parseJSONDictionary(from content: String) -> [String: Any]? {
-        guard let data = content.data(using: .utf8),
+        guard let jsonContent = extractJSONObjectString(from: content),
+              let data = jsonContent.data(using: .utf8),
               let object = try? JSONSerialization.jsonObject(with: data),
               let dict = object as? [String: Any] else {
             return nil
         }
         return dict
+    }
+
+    private func extractJSONObjectString(from content: String) -> String? {
+        let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let startIndex = trimmed.firstIndex(of: "{") else { return nil }
+
+        var depth = 0
+        var inString = false
+        var isEscaping = false
+
+        for index in trimmed[startIndex...].indices {
+            let character = trimmed[index]
+
+            if inString {
+                if isEscaping {
+                    isEscaping = false
+                } else if character == "\\" {
+                    isEscaping = true
+                } else if character == "\"" {
+                    inString = false
+                }
+                continue
+            }
+
+            switch character {
+            case "\"":
+                inString = true
+            case "{":
+                depth += 1
+            case "}":
+                depth -= 1
+                if depth == 0 {
+                    return String(trimmed[startIndex...index])
+                }
+            default:
+                continue
+            }
+        }
+
+        return nil
     }
     
     private func compact(_ text: String, maxLength: Int) -> String {

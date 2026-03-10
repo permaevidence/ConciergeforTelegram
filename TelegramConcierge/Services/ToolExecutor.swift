@@ -172,6 +172,9 @@ actor ToolExecutor {
             
         case "view_project_history":
             content = await executeViewProjectHistory(call)
+
+        case "view_project_deployment_history":
+            content = await executeViewProjectDeploymentHistory(call)
             
         case "run_claude_code":
             content = await executeRunClaudeCode(call)
@@ -4144,6 +4147,14 @@ struct ViewProjectHistoryArguments: Codable {
     }
 }
 
+struct ViewProjectDeploymentHistoryArguments: Codable {
+    let projectId: String
+
+    enum CodingKeys: String, CodingKey {
+        case projectId = "project_id"
+    }
+}
+
 struct AddProjectFilesArguments: Codable {
     let projectId: String
     let documentFilenames: [String]
@@ -4687,6 +4698,21 @@ private struct ClaudeProjectHistoryResult: Codable {
     enum CodingKeys: String, CodingKey {
         case success, history, message
         case projectId = "project_id"
+    }
+}
+
+private struct ProjectDeploymentHistoryResult: Codable {
+    let success: Bool
+    let projectId: String
+    let vercelHistory: String
+    let instantdbHistory: String
+    let message: String
+
+    enum CodingKeys: String, CodingKey {
+        case success, message
+        case projectId = "project_id"
+        case vercelHistory = "vercel_history"
+        case instantdbHistory = "instantdb_history"
     }
 }
 
@@ -5385,21 +5411,58 @@ extension ToolExecutor {
         }
         
         let maxTokens = min(max(args.maxTokens ?? 10_000, 500), 20_000)
-        guard let historyContext = buildProjectHistoryContext(
+        let historyContext = buildProjectHistoryContext(
             projectURL: projectURL,
             projectId: args.projectId,
             maxTokens: maxTokens
-        ) else {
-            return #"{"error":"No run history found for this project yet."}"#
-        }
+        ) ?? "No project tool run history found for this project yet."
         
         let result = ClaudeProjectHistoryResult(
             success: true,
             projectId: args.projectId,
             history: historyContext,
-            message: "Loaded recent project run history."
+            message: historyContext.hasPrefix("=== RECENT PROJECT HISTORY")
+                ? "Loaded recent project run history."
+                : "No prior project tool run history was found for this project."
         )
         
+        return encodeJSON(result)
+    }
+
+    private func executeViewProjectDeploymentHistory(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ViewProjectDeploymentHistoryArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse view_project_deployment_history arguments"}"#
+        }
+
+        guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
+            return #"{"error":"Project not found. Use list_projects first."}"#
+        }
+
+        let vercelHistory = buildProjectCommandHistoryContext(
+            projectURL: projectURL,
+            projectId: args.projectId,
+            directoryName: ".vercel_runs",
+            heading: "RECENT VERCEL CLI HISTORY",
+            maxTokens: 3_000
+        ) ?? "No Vercel CLI history found for this project yet."
+
+        let instantdbHistory = buildProjectCommandHistoryContext(
+            projectURL: projectURL,
+            projectId: args.projectId,
+            directoryName: ".db_runs",
+            heading: "RECENT INSTANTDB CLI HISTORY",
+            maxTokens: 2_000
+        ) ?? "No InstantDB CLI history found for this project yet."
+
+        let result = ProjectDeploymentHistoryResult(
+            success: true,
+            projectId: args.projectId,
+            vercelHistory: vercelHistory,
+            instantdbHistory: instantdbHistory,
+            message: "Loaded recent deployment/database history for this project."
+        )
+
         return encodeJSON(result)
     }
     
@@ -6191,6 +6254,15 @@ extension ToolExecutor {
                 }
                 
                 guard linkOutput.exitCode == 0, !linkOutput.timedOut else {
+                    _ = persistProjectVercelCommandLog(
+                        projectURL: projectURL,
+                        toolName: "deploy_project_to_vercel",
+                        command: linkInvocation.displayCommand,
+                        exitCode: linkOutput.exitCode,
+                        timedOut: linkOutput.timedOut,
+                        stdout: stdoutParts.joined(separator: "\n\n"),
+                        stderr: stderrParts.joined(separator: "\n\n")
+                    )
                     let result = VercelDeployResult(
                         success: false,
                         projectId: args.projectId,
@@ -6214,6 +6286,15 @@ extension ToolExecutor {
 
                 linked = hasVercelProjectLink(at: deployDirectoryURL)
                 guard linked else {
+                    _ = persistProjectVercelCommandLog(
+                        projectURL: projectURL,
+                        toolName: "deploy_project_to_vercel",
+                        command: linkInvocation.displayCommand,
+                        exitCode: linkOutput.exitCode,
+                        timedOut: linkOutput.timedOut,
+                        stdout: stdoutParts.joined(separator: "\n\n"),
+                        stderr: stderrParts.joined(separator: "\n\n")
+                    )
                     let result = VercelDeployResult(
                         success: false,
                         projectId: args.projectId,
@@ -6334,6 +6415,15 @@ extension ToolExecutor {
                 stdout: truncateForToolOutput(stdoutParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
                 stderr: truncateForToolOutput(stderrParts.joined(separator: "\n\n"), maxChars: maxOutputChars),
                 message: message
+            )
+            _ = persistProjectVercelCommandLog(
+                projectURL: projectURL,
+                toolName: "deploy_project_to_vercel",
+                command: deployInvocation.displayCommand,
+                exitCode: deployOutput.exitCode,
+                timedOut: deployOutput.timedOut,
+                stdout: stdoutParts.joined(separator: "\n\n"),
+                stderr: stderrParts.joined(separator: "\n\n")
             )
             if linked {
                 let verifiedProjectName = savedProjectName ?? (savedProjectId == nil ? (explicitProjectName ?? configuredProjectName) : nil)
@@ -7397,7 +7487,7 @@ extension ToolExecutor {
         }
     }
     
-    private struct ProjectDatabaseCommandLog: Codable {
+    private struct ProjectCommandLog: Codable {
         let timestamp: Date
         let toolName: String
         let command: String?
@@ -7413,6 +7503,43 @@ extension ToolExecutor {
             case timedOut = "timed_out"
         }
     }
+
+    private func persistProjectCommandLog(
+        projectURL: URL,
+        directoryName: String,
+        toolName: String,
+        command: String?,
+        exitCode: Int32?,
+        timedOut: Bool?,
+        stdout: String,
+        stderr: String
+    ) -> String? {
+        let logDirectory = projectURL.appendingPathComponent(directoryName, isDirectory: true)
+        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
+
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss"
+        let filename = "\(toolName)-\(formatter.string(from: Date())).json"
+        let logURL = logDirectory.appendingPathComponent(filename)
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = .prettyPrinted
+        encoder.dateEncodingStrategy = .iso8601
+
+        let record = ProjectCommandLog(
+            timestamp: Date(),
+            toolName: toolName,
+            command: command,
+            exitCode: exitCode,
+            timedOut: timedOut,
+            stdout: truncateForToolOutput(stdout, maxChars: 60_000),
+            stderr: truncateForToolOutput(stderr, maxChars: 60_000)
+        )
+
+        guard let data = try? encoder.encode(record) else { return nil }
+        guard (try? data.write(to: logURL, options: .atomic)) != nil else { return nil }
+        return relativePath(from: projectURL, to: logURL)
+    }
     
     private func persistProjectDatabaseCommandLog(
         projectURL: URL,
@@ -7423,31 +7550,135 @@ extension ToolExecutor {
         stdout: String,
         stderr: String
     ) -> String? {
-        let logDirectory = projectURL.appendingPathComponent(".db_runs", isDirectory: true)
-        try? FileManager.default.createDirectory(at: logDirectory, withIntermediateDirectories: true)
-        
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyyMMdd-HHmmss"
-        let filename = "\(toolName)-\(formatter.string(from: Date())).json"
-        let logURL = logDirectory.appendingPathComponent(filename)
-        
-        let encoder = JSONEncoder()
-        encoder.outputFormatting = .prettyPrinted
-        encoder.dateEncodingStrategy = .iso8601
-        
-        let record = ProjectDatabaseCommandLog(
-            timestamp: Date(),
+        persistProjectCommandLog(
+            projectURL: projectURL,
+            directoryName: ".db_runs",
             toolName: toolName,
             command: command,
             exitCode: exitCode,
             timedOut: timedOut,
-            stdout: truncateForToolOutput(stdout, maxChars: 60_000),
-            stderr: truncateForToolOutput(stderr, maxChars: 60_000)
+            stdout: stdout,
+            stderr: stderr
         )
-        
-        guard let data = try? encoder.encode(record) else { return nil }
-        guard (try? data.write(to: logURL, options: .atomic)) != nil else { return nil }
-        return relativePath(from: projectURL, to: logURL)
+    }
+
+    private func persistProjectVercelCommandLog(
+        projectURL: URL,
+        toolName: String,
+        command: String?,
+        exitCode: Int32?,
+        timedOut: Bool?,
+        stdout: String,
+        stderr: String
+    ) -> String? {
+        persistProjectCommandLog(
+            projectURL: projectURL,
+            directoryName: ".vercel_runs",
+            toolName: toolName,
+            command: command,
+            exitCode: exitCode,
+            timedOut: timedOut,
+            stdout: stdout,
+            stderr: stderr
+        )
+    }
+
+    private func loadProjectCommandLogs(
+        projectURL: URL,
+        directoryName: String
+    ) -> [ProjectCommandLog] {
+        let logDirectory = projectURL.appendingPathComponent(directoryName, isDirectory: true)
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: logDirectory.path, isDirectory: &isDirectory), isDirectory.boolValue else {
+            return []
+        }
+
+        let decoder = JSONDecoder()
+        decoder.dateDecodingStrategy = .iso8601
+
+        guard let logURLs = try? FileManager.default.contentsOfDirectory(
+            at: logDirectory,
+            includingPropertiesForKeys: [.isRegularFileKey],
+            options: [.skipsHiddenFiles]
+        ) else {
+            return []
+        }
+
+        var logs: [ProjectCommandLog] = []
+        for logURL in logURLs where logURL.pathExtension.lowercased() == "json" {
+            guard let data = try? Data(contentsOf: logURL),
+                  let log = try? decoder.decode(ProjectCommandLog.self, from: data) else {
+                continue
+            }
+            logs.append(log)
+        }
+
+        return logs.sorted { $0.timestamp < $1.timestamp }
+    }
+
+    private func buildProjectCommandHistoryContext(
+        projectURL: URL,
+        projectId: String,
+        directoryName: String,
+        heading: String,
+        maxTokens: Int
+    ) -> String? {
+        let maxCharacters = max(maxTokens, 250) * 4
+        let logs = loadProjectCommandLogs(projectURL: projectURL, directoryName: directoryName)
+        guard !logs.isEmpty else { return nil }
+
+        var selectedSections: [String] = []
+        var usedCharacters = 0
+
+        for log in logs.reversed() {
+            let section = formatProjectCommandHistorySection(log: log)
+            guard !section.isEmpty else { continue }
+
+            let remainingCharacters = maxCharacters - usedCharacters
+            guard remainingCharacters > 0 else { break }
+
+            if section.count <= remainingCharacters {
+                selectedSections.append(section)
+                usedCharacters += section.count
+            } else {
+                selectedSections.append(String(section.prefix(remainingCharacters)))
+                usedCharacters += remainingCharacters
+                break
+            }
+        }
+
+        guard !selectedSections.isEmpty else { return nil }
+
+        return """
+        === \(heading) (\(projectId), newest first) ===
+        \(selectedSections.joined(separator: "\n\n"))
+        === END \(heading) ===
+        """
+    }
+
+    private func formatProjectCommandHistorySection(log: ProjectCommandLog) -> String {
+        let timestamp = isoFormatter.string(from: log.timestamp)
+        let commandLine = log.command?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? log.command!.trimmingCharacters(in: .whitespacesAndNewlines)
+            : "(command unavailable)"
+        let exitCode = log.exitCode.map(String.init) ?? "n/a"
+        let timedOut = log.timedOut == true ? "true" : "false"
+        let stdout = log.stdout.trimmingCharacters(in: .whitespacesAndNewlines)
+        let stderr = log.stderr.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        var lines: [String] = [
+            "[\(timestamp)] tool=\(log.toolName) exit_code=\(exitCode) timed_out=\(timedOut)",
+            "command: \(commandLine)"
+        ]
+
+        if !stdout.isEmpty {
+            lines.append("stdout:\n\(stdout)")
+        }
+        if !stderr.isEmpty {
+            lines.append("stderr:\n\(stderr)")
+        }
+
+        return lines.joined(separator: "\n")
     }
     
     private func diagnosticExcerpt(stdout: String, stderr: String, maxChars: Int) -> String {

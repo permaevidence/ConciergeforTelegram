@@ -1033,10 +1033,26 @@ enum AvailableTools {
     static let showProjectDeploymentTools = ToolDefinition(
         function: FunctionDefinition(
             name: "show_project_deployment_tools",
-            description: "Reveal advanced deployment/database tools for the current turn only. Call this BEFORE trying to deploy to Vercel or provision/sync project databases with InstantDB. Once called, the gated tools remain visible for the rest of this turn.",
+            description: "Reveal advanced deployment/database tools for the current turn only. Call this BEFORE trying to deploy to Vercel or provision/sync project databases with InstantDB. Once called, the gated tools remain visible for the rest of this turn. After unlocking, if reusing an existing project for deployment/database work, call view_project_deployment_history once for that project before the first deployment/database tool call in the turn.",
             parameters: FunctionParameters(
                 properties: [:],
                 required: []
+            )
+        )
+    )
+
+    static let viewProjectDeploymentHistory = ToolDefinition(
+        function: FunctionDefinition(
+            name: "view_project_deployment_history",
+            description: "View recent deployment/database history for a specific project. Use this once per turn before the first deployment/database tool call whenever you are reusing an existing project_id so the coordinator can review prior Vercel CLI and InstantDB CLI activity. Do not call it repeatedly in the same turn for the same project unless the history load failed.",
+            parameters: FunctionParameters(
+                properties: [
+                    "project_id": ParameterProperty(
+                        type: "string",
+                        description: "Project ID from list_projects."
+                    )
+                ],
+                required: ["project_id"]
             )
         )
     )
@@ -1044,7 +1060,7 @@ enum AvailableTools {
     static let provisionProjectDatabase = ToolDefinition(
         function: FunctionDefinition(
             name: "provision_project_database",
-            description: "Provision a project database (currently optimized for Instant) and persist project database metadata. Uses Instant CLI in non-interactive mode with an API token from settings or instant_token argument. Reuses an already-linked app by default unless force_reprovision=true.",
+            description: "Provision a project database (currently optimized for Instant) and persist project database metadata. Uses Instant CLI in non-interactive mode with an API token from settings or instant_token argument. Reuses an already-linked app by default unless force_reprovision=true. If reusing an existing project for deployment/database work, call view_project_deployment_history once earlier in the turn before this tool.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1092,7 +1108,7 @@ enum AvailableTools {
     static let pushProjectDatabaseSchema = ToolDefinition(
         function: FunctionDefinition(
             name: "push_project_database_schema",
-            description: "Apply/push project database schema to the provisioned database (currently optimized for Instant). Requires project database metadata from provision_project_database.",
+            description: "Apply/push project database schema to the provisioned database (currently optimized for Instant). Requires project database metadata from provision_project_database. If reusing an existing project for deployment/database work, call view_project_deployment_history once earlier in the turn before this tool.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1140,7 +1156,7 @@ enum AvailableTools {
     static let syncProjectDatabaseEnvToVercel = ToolDefinition(
         function: FunctionDefinition(
             name: "sync_project_database_env_to_vercel",
-            description: "Upsert project database environment variables to Vercel using the Vercel REST API. Can use saved database metadata/env values and optional overrides.",
+            description: "Upsert project database environment variables to Vercel using the Vercel REST API. Can use saved database metadata/env values and optional overrides. If reusing an existing project for deployment/database work, call view_project_deployment_history once earlier in the turn before this tool.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1196,7 +1212,7 @@ enum AvailableTools {
     static let generateProjectMCPConfig = ToolDefinition(
         function: FunctionDefinition(
             name: "generate_project_mcp_config",
-            description: "Generate or update project MCP configuration (.mcp.json) for database tooling. Useful as optional Phase 2 after direct provisioning/env sync works.",
+            description: "Generate or update project MCP configuration (.mcp.json) for database tooling. Useful as optional Phase 2 after direct provisioning/env sync works. If reusing an existing project for deployment/database work, call view_project_deployment_history once earlier in the turn before this tool.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1358,7 +1374,7 @@ enum AvailableTools {
     static let viewProjectHistory = ToolDefinition(
         function: FunctionDefinition(
             name: "view_project_history",
-            description: "View the recent history of your project tool runs for a specific project. This tool provides a limited overview of recent raw logs, but standard history context is maintained across turns via native session persistence automatically.",
+            description: "View the recent history of your project tool runs for a specific project. Use this once per turn before the first run_claude_code call whenever you are reusing an existing project_id so the coordinator can review past attempts and avoid repeating prior prompting mistakes. Do not call it repeatedly in the same turn for the same project unless the history load failed. This is for the coordinator's planning context; the Code CLI still resumes its own native project session separately.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1378,7 +1394,7 @@ enum AvailableTools {
     static let runClaudeCode = ToolDefinition(
         function: FunctionDefinition(
             name: "run_claude_code",
-            description: "Delegate a task to the configured Code CLI Sub-Agent (Claude Code, Gemini CLI, or Codex CLI) in a specific workspace. Use this for complex file manipulations, iterative local tasks, data processing, or script execution. The Code CLI acts autonomously within the project. CRITICAL: The Code CLI's memory is strictly project-bound; it only remembers past interactions within this specific project ID. Always check created_files/modified_files/file_changes_detected before claiming work is done.",
+            description: "Delegate a task to the configured Code CLI Sub-Agent (Claude Code, Gemini CLI, or Codex CLI) in a specific workspace. Use this for complex file manipulations, iterative local tasks, data processing, or script execution. The Code CLI acts autonomously within the project. CRITICAL: The Code CLI's memory is strictly project-bound; it only remembers past interactions within this specific project ID. If reusing an existing project, call view_project_history for that same project_id once per turn before the first run_claude_code call so the coordinator reviews prior attempts before composing the new prompt. Do not repeat the history tool again in the same turn for the same project unless the history load failed. Always check created_files/modified_files/file_changes_detected before claiming work is done.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1466,7 +1482,7 @@ enum AvailableTools {
     static let deployProjectToVercel = ToolDefinition(
         function: FunctionDefinition(
             name: "deploy_project_to_vercel",
-            description: "Deploy a project workspace (or subfolder) to Vercel. Use when the user asks to publish, deploy, or put a website/app online. By default create a preview deployment; set production=true only when user explicitly asks for production/live deployment.",
+            description: "Deploy a project workspace (or subfolder) to Vercel. Use when the user asks to publish, deploy, or put a website/app online. By default create a preview deployment; set production=true only when user explicitly asks for production/live deployment. If reusing an existing project for deployment/database work, call view_project_deployment_history once earlier in the turn before this tool.",
             parameters: FunctionParameters(
                 properties: [
                     "project_id": ParameterProperty(
@@ -1525,7 +1541,7 @@ enum AvailableTools {
     }
     
     static var gatedProjectDeploymentTools: [ToolDefinition] {
-        [deployProjectToVercel, provisionProjectDatabase, pushProjectDatabaseSchema, syncProjectDatabaseEnvToVercel, generateProjectMCPConfig]
+        [viewProjectDeploymentHistory, deployProjectToVercel, provisionProjectDatabase, pushProjectDatabaseSchema, syncProjectDatabaseEnvToVercel, generateProjectMCPConfig]
     }
     
     /// All available tools - dynamically selects email tools and optionally web search
