@@ -270,8 +270,12 @@ actor ConversationArchiveService {
         pendingIndex.pendingChunks.append(pending)
         savePendingIndex()
         
-        // Generate summary with full context (caller handles retry)
-        let summary = try await generateSummary(for: messages, startDate: startDate, endDate: endDate, context: context)
+        // Generate summary and extract user context facts in parallel
+        async let summaryTask = generateSummary(for: messages, startDate: startDate, endDate: endDate, context: context)
+        async let userContextTask: Void = extractAndAppendUserContext(messages: messages, startDate: startDate, endDate: endDate)
+
+        let summary = try await summaryTask
+        _ = await userContextTask
         
         let chunk = ConversationChunk(
             id: chunkId,
@@ -620,6 +624,11 @@ actor ConversationArchiveService {
         saveIndex()
 
         print("[ArchiveService] Consolidated \(chunks.count) chunks into \(consolidatedId.uuidString.prefix(8))... (\(totalTokens) tokens)")
+
+        // Restructure user context at consolidation time (~every 4 chunks).
+        // After several append-only additions, the context may have duplicates or could
+        // benefit from reorganization. This does a full intelligent merge.
+        await restructureUserContext()
     }
 
     private func refreshHistoricalMetaSummariesIfNeeded(recentConsolidatedCount: Int) async {
@@ -963,6 +972,194 @@ actor ConversationArchiveService {
         let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 1400)
         let clippedResponse = String(response.prefix(summaryMaxCharacters))
         return try validateSummaryText(clippedResponse)
+    }
+
+    // MARK: - User Context Auto-Update
+    //
+    // Two-phase approach:
+    //  1. APPEND-ONLY extraction (every chunk) — can only ADD new facts, never modify/delete.
+    //     Safe, simple, impossible to corrupt existing context.
+    //  2. RESTRUCTURE pass (at consolidation, every ~4 chunks) — full intelligent merge that
+    //     deduplicates, corrects, reorganizes, and trims. Gets the COMPLETE existing context
+    //     so nothing is lost — it just produces a cleaner version.
+
+    /// Phase 1: Extract new durable facts from a conversation chunk and APPEND them.
+    /// Cannot modify or delete existing context — only adds new lines.
+    /// Runs in parallel with summary generation during archiveMessages().
+    private func extractAndAppendUserContext(messages: [Message], startDate: Date, endDate: Date) async {
+        let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+        let conversationText = await formatMessagesForSummary(messages)
+
+        let dateFormatter = DateFormatter()
+        dateFormatter.dateStyle = .medium
+        dateFormatter.timeStyle = .short
+
+        let existingBlock: String
+        if existingContext.isEmpty {
+            existingBlock = "(No existing user context yet)"
+        } else {
+            existingBlock = """
+            EXISTING USER CONTEXT (for dedup only — do NOT repeat what's already here):
+            ---
+            \(existingContext)
+            ---
+            """
+        }
+
+        let systemPrompt = """
+        You are analyzing a conversation segment to extract NEW durable user-profile facts.
+
+        \(existingBlock)
+
+        OUTPUT FORMAT:
+        - If there are NO new durable facts, respond with exactly: NO_CHANGES
+        - If there ARE new facts, output ONLY the new lines to append (plain text, one fact per line). No JSON, no formatting, no headers. Just the raw facts.
+
+        WHAT TO EXTRACT (only if not already in existing context):
+        - Relationship network: family members, friends, frequent colleagues, nicknames, pets
+        - Important places: homes, offices, frequently visited locations
+        - Stable preferences: communication style, dietary, lifestyle, work habits
+        - Recurring activities: hobbies, routines, regular commitments
+
+        WHAT TO SKIP:
+        - Anything already captured in the existing context above
+        - One-off situational details, temporary opinions, task-specific context
+        - Transient states (mood, current activity, what they're working on right now)
+        """
+
+        let userPrompt = """
+        CONVERSATION SEGMENT
+        Period: \(dateFormatter.string(from: startDate)) to \(dateFormatter.string(from: endDate))
+
+        \(conversationText.prefix(100000))
+        """
+
+        // Infinite retry with exponential backoff (same pattern as historicalMetaSummary).
+        var completed = false
+        var retryCount = 0
+
+        while !completed {
+            do {
+                try Task.checkCancellation()
+                let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 500)
+                let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                if trimmed == "NO_CHANGES" || trimmed.isEmpty {
+                    completed = true
+                    continue
+                }
+
+                // Re-read context fresh right before writing (avoid stale-read overwrites)
+                let freshContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+                let updated = freshContext.isEmpty ? trimmed : freshContext + "\n" + trimmed
+
+                // Enforce size limit (~5000 tokens)
+                let capped = updated.count > 20000 ? String(updated.prefix(20000)) : updated
+
+                try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: capped)
+                print("[ArchiveService] User context: appended new facts from chunk")
+                completed = true
+
+            } catch is CancellationError {
+                return
+            } catch {
+                retryCount += 1
+                let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                print("[ArchiveService] User context append failed (attempt \(retryCount)): \(error). Retrying in \(Int(delay))s...")
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
+    }
+
+    /// Phase 2: Restructure the user context — deduplicate, correct, reorganize, and trim.
+    /// This is a full intelligent merge: the model receives the COMPLETE existing context and
+    /// produces a clean, organized version. Nothing is lost — only redundancy is removed and
+    /// structure is improved. Triggered at consolidation time (~every 4 chunks).
+    private func restructureUserContext() async {
+        let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+        guard !existingContext.isEmpty else { return }
+
+        let maxChars = 20000
+        let currentTokens = existingContext.count / 4
+
+        let assistantName = KeychainHelper.load(key: KeychainHelper.assistantNameKey) ?? ""
+        let userName = KeychainHelper.load(key: KeychainHelper.userNameKey) ?? ""
+
+        let systemPrompt = """
+        You are reorganizing an AI assistant's persistent memory about the user.
+
+        ⚠️ TOKEN LIMIT: ~5000 tokens (~20,000 characters). Currently using ~\(currentTokens) tokens.
+
+        EXISTING CONTEXT (your ONLY source — do not invent anything):
+        ---
+        \(existingContext)
+        ---
+
+        YOUR TASK: Produce a clean, well-organized version of the SAME information.
+
+        RULES:
+        - PRESERVE every fact, relationship, preference, and detail from the existing context
+        - Deduplicate: merge repeated or near-duplicate facts into single entries
+        - Correct obvious inconsistencies (e.g., contradictory facts — keep the one that appears later/more recent)
+        - Organize by categories (Personal, Relationships, Work, Preferences, Places, etc.) if not already organized
+        - Written in second person ("You are...", "Your sister...")
+        - Remove any contingent one-off details that don't belong in a durable profile
+        - Stay within the token limit — be concise but NEVER drop important information
+        - If the context is already clean and well-organized, reproduce it as-is
+
+        Assistant Name: \(assistantName.isEmpty ? "not specified" : assistantName)
+        User Name: \(userName.isEmpty ? "not specified" : userName)
+
+        Output ONLY the final structured context. No explanations, no preamble.
+        """
+
+        // Infinite retry — restructuring is important for keeping context clean
+        var completed = false
+        var retryCount = 0
+
+        while !completed {
+            do {
+                try Task.checkCancellation()
+                let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: "Restructure the user context above.", maxTokens: nil)
+                let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
+
+                guard !trimmed.isEmpty else {
+                    // Empty response — retry
+                    retryCount += 1
+                    let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                    print("[ArchiveService] User context restructure: empty response (attempt \(retryCount)). Retrying in \(Int(delay))s...")
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                }
+
+                // Safety check: restructured context should not be dramatically shorter
+                // (would indicate the model dropped information). Allow up to 40% shrinkage
+                // from dedup/cleanup, but not more.
+                let minAcceptableLength = existingContext.count * 3 / 5 // 60% of original
+                if trimmed.count < minAcceptableLength && existingContext.count > 500 {
+                    retryCount += 1
+                    let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                    print("[ArchiveService] User context restructure: result too short (\(trimmed.count) vs \(existingContext.count) original, min \(minAcceptableLength)). Retrying in \(Int(delay))s...")
+                    try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+                    continue
+                }
+
+                // Enforce size limit
+                let capped = trimmed.count > maxChars ? String(trimmed.prefix(maxChars)) : trimmed
+
+                try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: capped)
+                print("[ArchiveService] User context restructured (\(existingContext.count) → \(capped.count) chars)")
+                completed = true
+
+            } catch is CancellationError {
+                return
+            } catch {
+                retryCount += 1
+                let delay = min(2.0 * pow(2.0, Double(min(retryCount - 1, 5))), 60.0)
+                print("[ArchiveService] User context restructure failed (attempt \(retryCount)): \(error). Retrying in \(Int(delay))s...")
+                try? await Task.sleep(nanoseconds: UInt64(delay * 1_000_000_000))
+            }
+        }
     }
 
     private func buildHistoricalMetaSummaryContext(for batch: [ConversationChunk]) -> SummarizationContext {

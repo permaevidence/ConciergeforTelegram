@@ -197,9 +197,6 @@ actor ToolExecutor {
         case "generate_project_mcp_config":
             content = await executeGenerateProjectMCPConfig(call)
             
-        case "edit_user_context":
-            content = await executeEditUserContext(call)
-            
         case "generate_document":
             content = await executeGenerateDocument(call)
             
@@ -759,142 +756,6 @@ actor ToolExecutor {
         }
     }
     
-    // MARK: - User Context Management
-    
-    private let maxContextCharacters = 20000 // ~5000 tokens
-    
-    private func executeEditUserContext(_ call: ToolCall) async -> String {
-        guard let argsData = call.function.arguments.data(using: .utf8),
-              let args = try? JSONDecoder().decode(EditUserContextArguments.self, from: argsData) else {
-            return #"{"error": "Failed to parse edit_user_context arguments"}"#
-        }
-        
-        let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
-        let action = args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        let allMatches = args.allMatches ?? true
-        let caseSensitive = args.caseSensitive ?? false
-        var updatedContext = existingContext
-        var changedCount = 0
-        var actionMessage = ""
-
-        switch action {
-        case "append":
-            let content = (args.content ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !content.isEmpty else {
-                return #"{"error": "For action 'append', 'content' cannot be empty"}"#
-            }
-            updatedContext = existingContext.isEmpty ? content : existingContext + "\n" + content
-            changedCount = 1
-            actionMessage = "Appended content to user context"
-
-        case "delete":
-            let target = args.target ?? ""
-            guard !target.isEmpty else {
-                return #"{"error": "For action 'delete', 'target' cannot be empty"}"#
-            }
-            let replaceResult = replaceText(
-                in: existingContext,
-                target: target,
-                replacement: "",
-                replaceAll: allMatches,
-                caseSensitive: caseSensitive
-            )
-            guard let result = replaceResult.result else {
-                return #"{"error": "Failed to apply delete operation"}"#
-            }
-            updatedContext = result
-            changedCount = replaceResult.matchCount
-            actionMessage = changedCount == 0 ? "No matches found for delete target" : "Deleted \(changedCount) match(es) from user context"
-
-        case "replace":
-            let target = args.target ?? ""
-            guard !target.isEmpty else {
-                return #"{"error": "For action 'replace', 'target' cannot be empty"}"#
-            }
-            guard let replacement = args.replacement else {
-                return #"{"error": "For action 'replace', 'replacement' is required"}"#
-            }
-            let replaceResult = replaceText(
-                in: existingContext,
-                target: target,
-                replacement: replacement,
-                replaceAll: allMatches,
-                caseSensitive: caseSensitive
-            )
-            guard let result = replaceResult.result else {
-                return #"{"error": "Failed to apply replace operation"}"#
-            }
-            updatedContext = result
-            changedCount = replaceResult.matchCount
-            actionMessage = changedCount == 0 ? "No matches found for replace target" : "Replaced \(changedCount) match(es) in user context"
-
-        case "rewrite":
-            guard let content = args.content else {
-                return #"{"error": "For action 'rewrite', 'content' is required"}"#
-            }
-            updatedContext = content
-            changedCount = 1
-            actionMessage = "User context rewritten successfully"
-
-        default:
-            return #"{"error": "Invalid action. Supported actions: append, delete, replace, rewrite"}"#
-        }
-
-        var wasTruncated = false
-        if updatedContext.count > maxContextCharacters {
-            updatedContext = String(updatedContext.prefix(maxContextCharacters))
-            wasTruncated = true
-        }
-
-        do {
-            try KeychainHelper.save(key: KeychainHelper.structuredUserContextKey, value: updatedContext)
-
-            let tokenEstimate = updatedContext.count / 4
-            let remainingTokens = (maxContextCharacters - updatedContext.count) / 4
-            var message = actionMessage
-            if wasTruncated {
-                message += ". Note: truncated to fit 5000 token limit."
-            }
-
-            return """
-            {"success": true, "action": "\(action)", "message": "\(message)", "changed_count": \(changedCount), "current_tokens": \(tokenEstimate), "remaining_tokens": \(remainingTokens), "max_tokens": 5000}
-            """
-        } catch {
-            return #"{"error": "Failed to save: \#(error.localizedDescription)"}"#
-        }
-    }
-
-    private func replaceText(
-        in text: String,
-        target: String,
-        replacement: String,
-        replaceAll: Bool,
-        caseSensitive: Bool
-    ) -> (result: String?, matchCount: Int) {
-        guard !target.isEmpty else { return (text, 0) }
-
-        let pattern = NSRegularExpression.escapedPattern(for: target)
-        let options: NSRegularExpression.Options = caseSensitive ? [] : [.caseInsensitive]
-        guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
-            return (nil, 0)
-        }
-
-        let fullRange = NSRange(text.startIndex..., in: text)
-        let matches = regex.matches(in: text, options: [], range: fullRange)
-        guard !matches.isEmpty else { return (text, 0) }
-
-        let template = NSRegularExpression.escapedTemplate(for: replacement)
-        if replaceAll {
-            let mutable = NSMutableString(string: text)
-            regex.replaceMatches(in: mutable, options: [], range: NSRange(location: 0, length: mutable.length), withTemplate: template)
-            return (mutable as String, matches.count)
-        }
-
-        let firstRange = matches[0].range
-        let result = regex.stringByReplacingMatches(in: text, options: [], range: firstRange, withTemplate: template)
-        return (result, 1)
-    }
-    
 }
 
 // MARK: - Tool Argument Types
@@ -1008,24 +869,6 @@ struct SetReminderResult: Codable {
     let reminderId: String
     let scheduledFor: String
     let message: String
-}
-
-struct EditUserContextArguments: Codable {
-    let action: String
-    let content: String?
-    let target: String?
-    let replacement: String?
-    let allMatches: Bool?
-    let caseSensitive: Bool?
-    
-    enum CodingKeys: String, CodingKey {
-        case action
-        case content
-        case target
-        case replacement
-        case allMatches = "all_matches"
-        case caseSensitive = "case_sensitive"
-    }
 }
 
 

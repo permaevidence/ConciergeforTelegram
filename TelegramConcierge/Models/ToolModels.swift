@@ -767,44 +767,6 @@ enum AvailableTools {
         )
     )
     
-    // MARK: - User Context Management
-    
-    static let editUserContext = ToolDefinition(
-        function: FunctionDefinition(
-            name: "edit_user_context",
-            description: "Single tool for durable user-profile memory edits. Store stable relationship-network context (family, friends, frequent colleagues, nicknames, pets, homes), enduring preferences, and communication style. Do not store one-off/contingent situation details; those belong in conversation memory, which is managed automatically. Supports append, delete, replace, and full rewrite of user context. Use this for surgical updates (small corrections) and broad updates (reorganization). Context is capped at ~5000 tokens (~20k chars).",
-            parameters: FunctionParameters(
-                properties: [
-                    "action": ParameterProperty(
-                        type: "string",
-                        description: "Edit action: 'append', 'delete', 'replace', or 'rewrite'."
-                    ),
-                    "content": ParameterProperty(
-                        type: "string",
-                        description: "For 'append': text to add as a new line. For 'rewrite': complete new context text."
-                    ),
-                    "target": ParameterProperty(
-                        type: "string",
-                        description: "For 'delete' and 'replace': exact text to find in current context."
-                    ),
-                    "replacement": ParameterProperty(
-                        type: "string",
-                        description: "For 'replace': replacement text for matches of target."
-                    ),
-                    "all_matches": ParameterProperty(
-                        type: "boolean",
-                        description: "Optional for 'delete'/'replace'. If true (default), edit all matches; if false, edit only first match."
-                    ),
-                    "case_sensitive": ParameterProperty(
-                        type: "boolean",
-                        description: "Optional for 'delete'/'replace'. If true, matching is case-sensitive; default false."
-                    )
-                ],
-                required: ["action"]
-            )
-        )
-    )
-    
     // MARK: - Document Generation Tool
     
     static let generateDocument = ToolDefinition(
@@ -1537,7 +1499,7 @@ enum AvailableTools {
     
     /// Non-email tools that do not depend on web search credentials
     static var coreToolsWithoutWebSearch: [ToolDefinition] {
-        [manageReminders, manageCalendar, viewConversationChunk, listDocuments, readDocument, manageContacts, generateImage, downloadFromUrl, editUserContext, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
+        [manageReminders, manageCalendar, viewConversationChunk, listDocuments, readDocument, manageContacts, generateImage, downloadFromUrl, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
     }
     
     static var gatedProjectDeploymentTools: [ToolDefinition] {
