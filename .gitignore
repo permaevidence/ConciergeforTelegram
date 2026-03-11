@@ -19,6 +19,9 @@ DerivedData/
 !.env*.sample
 !.env*.template
 
+# Claude Code local data
+.claude/
+
 # Optional local files
 *.swp
 *.tmp

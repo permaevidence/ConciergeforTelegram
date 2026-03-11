@@ -61,7 +61,21 @@ actor TelegramBotService {
         normalized = normalized.replacingRegexMatches(of: #"\n{3,}"#, with: "\n\n")
         return normalized.trimmingCharacters(in: .whitespacesAndNewlines)
     }
-    
+
+    /// Truncate a string so its UTF-16 representation fits within `limit` code units.
+    private func truncateToUTF16Limit(_ text: String, limit: Int) -> String {
+        guard text.utf16.count > limit else { return text }
+        var used = 0
+        var endIndex = text.startIndex
+        for idx in text.indices {
+            let charUTF16Len = text[idx].utf16.count
+            if used + charUTF16Len > limit { break }
+            used += charUTF16Len
+            endIndex = text.index(after: idx)
+        }
+        return String(text[text.startIndex..<endIndex])
+    }
+
     /// Test the bot token by calling getMe endpoint
     func getMe(token: String) async throws -> TelegramBotInfo {
         let url = URL(string: "\(baseURL)\(token)/getMe")!
@@ -131,7 +145,9 @@ actor TelegramBotService {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
 
         let cleanedText = normalizeTelegramText(text)
-        let finalText = cleanedText.isEmpty ? text : cleanedText
+        let normalizedText = cleanedText.isEmpty ? text : cleanedText
+        // Telegram enforces a 4096 UTF-16 code-unit limit per message.
+        let finalText = truncateToUTF16Limit(normalizedText, limit: 4096)
 
         let body = TelegramSendMessageRequest(
             chatId: chatId,

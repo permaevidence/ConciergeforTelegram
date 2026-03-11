@@ -2364,9 +2364,20 @@ class ConversationManager: ObservableObject {
     }
 
     private func capAssistantMessageForHistoryAndTelegram(_ text: String) -> String {
-        guard text.count > maxAssistantMessageChars else { return text }
-        let capped = String(text.prefix(maxAssistantMessageChars))
-        print("[ConversationManager] Assistant message capped to first \(maxAssistantMessageChars) chars (original: \(text.count))")
+        let utf16Count = text.utf16.count
+        guard utf16Count > maxAssistantMessageChars else { return text }
+        // Truncate by UTF-16 code units (Telegram uses UTF-16 counting for its 4096 limit).
+        // Walk the string keeping only characters whose cumulative UTF-16 length fits.
+        var used = 0
+        var endIndex = text.startIndex
+        for idx in text.indices {
+            let charUTF16Len = text[idx].utf16.count
+            if used + charUTF16Len > maxAssistantMessageChars { break }
+            used += charUTF16Len
+            endIndex = text.index(after: idx)
+        }
+        let capped = String(text[text.startIndex..<endIndex])
+        print("[ConversationManager] Assistant message capped to first \(maxAssistantMessageChars) UTF-16 units (original: \(utf16Count))")
         return capped
     }
     
