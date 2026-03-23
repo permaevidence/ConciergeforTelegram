@@ -1530,7 +1530,7 @@ class ConversationManager: ObservableObject {
     
     private func extractAccessedProjects(from interactions: [ToolInteraction]) -> [String] {
         var projectIds = Set<String>()
-        let projectTools = Set(["create_project", "browse_project", "read_project_file", "add_project_files", "view_project_history", "view_project_deployment_history", "run_claude_code", "send_project_result"])
+        let projectTools = Set(["manage_projects", "browse_project", "read_project_file", "add_project_files", "view_project_history", "view_project_deployment_history", "run_claude_code", "send_project_result"])
         
         for interaction in interactions {
             for call in interaction.assistantMessage.toolCalls {
@@ -1541,7 +1541,13 @@ class ConversationManager: ObservableObject {
                     if let projectId = json["project_id"] as? String {
                         projectIds.insert(projectId)
                     } else if let projectName = json["project_name"] as? String {
-                        // For create_project, the ID is derived from the name
+                        let isCreateProjectCall = call.function.name == "create_project"
+                        let isManageProjectsCreate = call.function.name == "manage_projects"
+                            && ((json["action"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "create")
+
+                        guard isCreateProjectCall || isManageProjectsCreate else { continue }
+
+                        // For project creation, the ID is derived from the name
                         let generatedId = projectName
                             .lowercased()
                             .replacingOccurrences(of: "[^a-z0-9]+", with: "-", options: .regularExpression)
@@ -1724,6 +1730,15 @@ class ConversationManager: ObservableObject {
                     }
                     state.createdProjectIDs.insert(projectID)
 
+                case "manage_projects":
+                    guard manageProjectsAction(from: call) == "create",
+                          (resultDictionary["success"] as? Bool) == true,
+                          let projectID = resultDictionary["project_id"] as? String,
+                          !projectID.isEmpty else {
+                        continue
+                    }
+                    state.createdProjectIDs.insert(projectID)
+
                 case "view_project_history":
                     guard (resultDictionary["success"] as? Bool) == true else {
                         continue
@@ -1769,6 +1784,18 @@ class ConversationManager: ObservableObject {
         let normalized = projectID.trimmingCharacters(in: .whitespacesAndNewlines)
         return normalized.isEmpty ? nil : normalized
     }
+
+    private func manageProjectsAction(from call: ToolCall) -> String? {
+        guard call.function.name == "manage_projects",
+              let data = call.function.arguments.data(using: .utf8),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let action = object["action"] as? String else {
+            return nil
+        }
+
+        let normalized = action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return normalized.isEmpty ? nil : normalized
+    }
     
     /// Get appropriate progress message for tool calls
     private func getProgressMessage(for calls: [ToolCall]) -> String {
@@ -1782,7 +1809,13 @@ class ConversationManager: ObservableObject {
         let hasContactOp = toolNames.contains("manage_contacts")
         
         // Check for email operations
-        let hasEmailOp = toolNames.contains("read_emails") || toolNames.contains("search_emails") || toolNames.contains("send_email") || toolNames.contains("reply_email") || toolNames.contains("forward_email")
+        let hasEmailOp = toolNames.contains("read_emails")
+            || toolNames.contains("search_emails")
+            || toolNames.contains("send_email")
+            || toolNames.contains("reply_email")
+            || toolNames.contains("forward_email")
+            || toolNames.contains("gmailreader")
+            || toolNames.contains("gmailcomposer")
         
         if hasDeepResearchOp && hasReminderOp {
             return "🧠🔍 Deep researching and managing reminders..."
@@ -1820,7 +1853,7 @@ class ConversationManager: ObservableObject {
             default:
                 return "🤖 Running Claude Code..."
             }
-        } else if toolNames.contains("create_project") || toolNames.contains("list_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") {
+        } else if toolNames.contains("manage_projects") || toolNames.contains("browse_project") || toolNames.contains("read_project_file") || toolNames.contains("add_project_files") {
             return "📁 Managing project workspace..."
         } else if toolNames.contains("send_project_result") {
             return "📤 Sending project result..."
@@ -1842,6 +1875,12 @@ class ConversationManager: ObservableObject {
             return "↩️ Replying to email..."
         } else if toolNames.contains("forward_email") {
             return "📨 Forwarding email..."
+        } else if toolNames.contains("gmailreader") {
+            return "📧 Reading Gmail..."
+        } else if toolNames.contains("gmailcomposer") {
+            return "📤 Composing Gmail..."
+        } else if toolNames.contains("shortcuts") {
+            return "⌘ Running shortcuts..."
         } else if hasEmailOp {
             return "📧 Managing email..."
         } else if toolNames.contains("read_document") {

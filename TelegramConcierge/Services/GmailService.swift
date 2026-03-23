@@ -362,7 +362,7 @@ actor GmailService {
     }
     
     /// Get a single message by ID with full metadata
-    private func getMessage(id: String) async throws -> GmailMessage {
+    func getMessage(id: String) async throws -> GmailMessage {
         let token = try await ensureValidToken()
         
         var urlComponents = URLComponents(string: "\(baseURL)/messages/\(id)")!

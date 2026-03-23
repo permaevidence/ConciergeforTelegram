@@ -827,165 +827,126 @@ enum AvailableTools {
         )
     )
     
-    // MARK: - Gmail API Tools (5 consolidated tools)
+    // MARK: - Gmail API Tools (2 consolidated tools)
     
-    static let gmailQuery = ToolDefinition(
+    static let gmailReader = ToolDefinition(
         function: FunctionDefinition(
-            name: "gmail_query",
-            description: "Search or list emails using Gmail's powerful query syntax. Use for: checking inbox, finding specific emails, searching by sender/date/subject. Examples: '' (empty = recent inbox), 'from:john@example.com', 'after:2026/01/01 before:2026/02/01', 'subject:invoice', 'has:attachment', 'is:unread'. Returns message ID, thread ID, from, subject, date, snippet, and attachment info.",
+            name: "gmailreader",
+            description: "Unified Gmail reading tool. Required field: action. Use action='search' to search/list emails with Gmail query syntax, action='read_message' to read one full message by message_id, action='read_thread' to read an entire thread by thread_id, and action='download_attachment' to download a specific attachment so it becomes visible for analysis. Examples: {action:'search', query:'from:john@example.com has:attachment'}, {action:'read_message', message_id:'...'}, {action:'read_thread', thread_id:'...'}, {action:'download_attachment', message_id:'...', attachment_id:'...', filename:'report.pdf'}.",
             parameters: FunctionParameters(
                 properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Required Gmail reader action: 'search', 'read_message', 'read_thread', or 'download_attachment'."
+                    ),
                     "query": ParameterProperty(
                         type: "string",
-                        description: "Gmail search query. Leave empty for recent inbox messages. Examples: 'from:sender@example.com', 'subject:meeting', 'after:2026/01/15', 'is:unread has:attachment'."
+                        description: "For action='search'. Gmail search query. Leave empty for recent inbox messages. Examples: 'from:sender@example.com', 'subject:meeting', 'after:2026/01/15', 'is:unread has:attachment'."
                     ),
                     "limit": ParameterProperty(
                         type: "integer",
-                        description: "Maximum number of emails to return (1-50). Default is 10."
-                    )
-                ],
-                required: []
-            )
-        )
-    )
-    
-    static let gmailSend = ToolDefinition(
-        function: FunctionDefinition(
-            name: "gmail_send",
-            description: "Send a new email OR reply to an existing thread. If thread_id is provided, the email is sent as a reply in that thread (proper threading). Supports multiple file attachments from your documents folder.",
-            parameters: FunctionParameters(
-                properties: [
-                    "to": ParameterProperty(
-                        type: "string",
-                        description: "Recipient email address."
-                    ),
-                    "subject": ParameterProperty(
-                        type: "string",
-                        description: "Email subject line. For replies, use 'Re: original subject'."
-                    ),
-                    "body": ParameterProperty(
-                        type: "string",
-                        description: "Plain text email body."
-                    ),
-                    "thread_id": ParameterProperty(
-                        type: "string",
-                        description: "Optional. The thread ID from gmail_query to send as a reply in that thread. If provided, email will be threaded with previous messages."
-                    ),
-                    "in_reply_to": ParameterProperty(
-                        type: "string",
-                        description: "Optional. The Message-ID header of the email being replied to. Use with thread_id for proper threading."
-                    ),
-                    "cc": ParameterProperty(
-                        type: "string",
-                        description: "Optional CC recipients. Comma-separated string (e.g., 'a@example.com, b@example.com') or JSON array string."
-                    ),
-                    "bcc": ParameterProperty(
-                        type: "string",
-                        description: "Optional BCC recipients. Comma-separated string (e.g., 'a@example.com, b@example.com') or JSON array string."
-                    ),
-                    "attachment_filenames": ParameterProperty(
-                        type: "string",
-                        description: "Optional. JSON array of filenames from list_documents to attach to the email. Example: [\"document.pdf\", \"image.jpg\"]. Use list_documents to find available files."
-                    )
-                ],
-                required: ["to", "subject", "body"]
-            )
-        )
-    )
-    
-    static let gmailThread = ToolDefinition(
-        function: FunctionDefinition(
-            name: "gmail_thread",
-            description: "Get ALL emails in a conversation thread. Use when user wants to see the full email chain, understand conversation context, or read the complete discussion. Returns all messages in chronological order with full content.",
-            parameters: FunctionParameters(
-                properties: [
-                    "thread_id": ParameterProperty(
-                        type: "string",
-                        description: "The thread ID from gmail_query output (threadId field)."
-                    )
-                ],
-                required: ["thread_id"]
-            )
-        )
-    )
-    
-    static let gmailForward = ToolDefinition(
-        function: FunctionDefinition(
-            name: "gmail_forward",
-            description: "Forward an email to another recipient, including all attachments. The forwarded message includes original sender, date, and content.",
-            parameters: FunctionParameters(
-                properties: [
-                    "to": ParameterProperty(
-                        type: "string",
-                        description: "Recipient email address to forward to."
+                        description: "For action='search'. Maximum number of emails to return (1-50). Default is 10."
                     ),
                     "message_id": ParameterProperty(
                         type: "string",
-                        description: "The message ID from gmail_query to forward."
+                        description: "For action='read_message' or action='download_attachment'. The Gmail message ID."
                     ),
-                    "comment": ParameterProperty(
+                    "thread_id": ParameterProperty(
                         type: "string",
-                        description: "Optional comment to add above the forwarded message."
-                    )
-                ],
-                required: ["to", "message_id"]
-            )
-        )
-    )
-    
-    static let gmailAttachment = ToolDefinition(
-        function: FunctionDefinition(
-            name: "gmail_attachment",
-            description: "Download an attachment from an email. First use gmail_query or gmail_thread to see available attachments with their attachment_id values, then use this to download specific files. IMPORTANT: Always provide the filename parameter from the query/thread results.",
-            parameters: FunctionParameters(
-                properties: [
-                    "message_id": ParameterProperty(
-                        type: "string",
-                        description: "The message ID containing the attachment."
+                        description: "For action='read_thread'. The thread ID from a previous search/read result."
                     ),
                     "attachment_id": ParameterProperty(
                         type: "string",
-                        description: "The attachment_id from the gmail_query or gmail_thread output (the long string shown in parentheses after the filename)."
+                        description: "For action='download_attachment'. The attachment_id shown in search/read results."
                     ),
                     "filename": ParameterProperty(
                         type: "string",
-                        description: "The filename of the attachment from gmail_query or gmail_thread output (e.g., 'report.pdf'). Required for proper file saving."
+                        description: "For action='download_attachment'. The exact attachment filename from search/read results. Required for proper file saving."
                     )
                 ],
-                required: ["message_id", "attachment_id", "filename"]
+                required: ["action"]
+            )
+        )
+    )
+    
+    static let gmailComposer = ToolDefinition(
+        function: FunctionDefinition(
+            name: "gmailcomposer",
+            description: "Unified Gmail writing tool. Required field: action. Use action='new' to send a new email, action='reply' to reply in an existing thread, and action='forward' to forward an existing message with its attachments. For new/reply you can also pass cc, bcc, and attachment_filenames from list_documents. Examples: {action:'new', to:'a@example.com', subject:'Hello', body:'...'}, {action:'reply', to:'a@example.com', subject:'Re: Hello', body:'...', thread_id:'...', in_reply_to:'...'}, {action:'forward', to:'b@example.com', message_id:'...', comment:'FYI'}.",
+            parameters: FunctionParameters(
+                properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Required Gmail composer action: 'new', 'reply', or 'forward'."
+                    ),
+                    "to": ParameterProperty(
+                        type: "string",
+                        description: "Recipient email address. Required for all composer actions."
+                    ),
+                    "subject": ParameterProperty(
+                        type: "string",
+                        description: "For action='new' or action='reply'. Email subject line. For replies, usually use 'Re: original subject'."
+                    ),
+                    "body": ParameterProperty(
+                        type: "string",
+                        description: "For action='new' or action='reply'. Plain text email body."
+                    ),
+                    "thread_id": ParameterProperty(
+                        type: "string",
+                        description: "For action='reply'. The thread ID from gmailreader search/read results. Required for proper reply threading."
+                    ),
+                    "in_reply_to": ParameterProperty(
+                        type: "string",
+                        description: "For action='reply'. Optional Message-ID header of the message being replied to. Use with thread_id for best threading."
+                    ),
+                    "cc": ParameterProperty(
+                        type: "string",
+                        description: "For action='new' or action='reply'. Optional CC recipients. Comma-separated string (e.g., 'a@example.com, b@example.com') or JSON array string."
+                    ),
+                    "bcc": ParameterProperty(
+                        type: "string",
+                        description: "For action='new' or action='reply'. Optional BCC recipients. Comma-separated string (e.g., 'a@example.com, b@example.com') or JSON array string."
+                    ),
+                    "attachment_filenames": ParameterProperty(
+                        type: "string",
+                        description: "For action='new' or action='reply'. Optional JSON array of filenames from list_documents to attach. Example: [\"document.pdf\", \"image.jpg\"]."
+                    ),
+                    "message_id": ParameterProperty(
+                        type: "string",
+                        description: "For action='forward'. The Gmail message ID to forward."
+                    ),
+                    "comment": ParameterProperty(
+                        type: "string",
+                        description: "For action='forward'. Optional comment to add above the forwarded message."
+                    )
+                ],
+                required: ["action", "to"]
             )
         )
     )
     
     // MARK: - macOS Shortcuts Tools
     
-    static let listShortcuts = ToolDefinition(
+    static let shortcuts = ToolDefinition(
         function: FunctionDefinition(
-            name: "list_shortcuts",
-            description: "List all available macOS Shortcuts that can be run. Use this first to discover what shortcuts the user has installed. Returns shortcut names that can be used with run_shortcut.",
-            parameters: FunctionParameters(
-                properties: [:],
-                required: []
-            )
-        )
-    )
-    
-    static let runShortcut = ToolDefinition(
-        function: FunctionDefinition(
-            name: "run_shortcut",
-            description: "Run a macOS Shortcut by name. Shortcuts can automate complex system actions, control apps, send messages, interact with smart home devices, and much more. The shortcut runs and returns success/failure status plus any output it produces. If the shortcut returns an image or media file, it will be visible to you for analysis. Use list_shortcuts first to see available shortcuts.",
+            name: "shortcuts",
+            description: "Unified macOS Shortcuts tool. Use action='list' to discover available shortcuts. Use action='run' to execute a shortcut by exact name with optional input text. If a shortcut returns an image or other media, it will be made visible for analysis. Examples: {action:'list'} or {action:'run', name:'My Shortcut', input:'some text'}.",
             parameters: FunctionParameters(
                 properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Required shortcuts action: 'list' or 'run'."
+                    ),
                     "name": ParameterProperty(
                         type: "string",
-                        description: "Exact name of the Shortcut to run (as shown in the Shortcuts app or from list_shortcuts)."
+                        description: "For action='run'. Exact name of the Shortcut to run, as shown in the Shortcuts app or from shortcuts action='list'."
                     ),
                     "input": ParameterProperty(
                         type: "string",
-                        description: "Optional input text to pass to the shortcut. Some shortcuts accept input (text, URLs, etc.) to process."
+                        description: "For action='run'. Optional input text to pass to the shortcut. Some shortcuts accept input (text, URLs, etc.) to process."
                     )
                 ],
-                required: ["name"]
+                required: ["action"]
             )
         )
     )
@@ -1011,7 +972,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     )
                 ],
                 required: ["project_id"]
@@ -1027,7 +988,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "provider": ParameterProperty(
                         type: "string",
@@ -1075,7 +1036,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "provider": ParameterProperty(
                         type: "string",
@@ -1123,7 +1084,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "environment": ParameterProperty(
                         type: "string",
@@ -1179,7 +1140,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "provider": ParameterProperty(
                         type: "string",
@@ -1205,46 +1166,38 @@ enum AvailableTools {
 
     // MARK: - Project Workspace Tools
 
-    static let createProject = ToolDefinition(
+    static let manageProjects = ToolDefinition(
         function: FunctionDefinition(
-            name: "create_project",
-            description: "Create a new local isolated workspace (project folder) for the configured Code CLI Sub-Agent. Use this when starting any new delegated task (data analysis, script writing, software development) to give the CLI a clean context and memory space.",
+            name: "manage_projects",
+            description: "Unified project workspace admin tool. Use action='create' to create a new local isolated workspace for the configured Code CLI Sub-Agent. Use action='list' to list or search available project workspaces, including both 'User Projects' and your own internal 'Agent Automations'. Examples: {action:'create', project_name:'Landing Page Redesign', initial_notes:'...'} or {action:'list', query:'invoice parser', limit:20}.",
             parameters: FunctionParameters(
                 properties: [
+                    "action": ParameterProperty(
+                        type: "string",
+                        description: "Required project admin action: 'create' or 'list'."
+                    ),
                     "project_name": ParameterProperty(
                         type: "string",
-                        description: "Human-friendly project name (e.g., 'Landing Page Redesign', 'Invoice Parser')."
+                        description: "For action='create'. Human-friendly project name (e.g., 'Landing Page Redesign', 'Invoice Parser')."
                     ),
                     "initial_notes": ParameterProperty(
                         type: "string",
-                        description: "Optional starter notes or requirements to save in the project README. If you are creating an internal tool/automation for your own use, explicitly state 'This is an internal agent automation' here."
-                    )
-                ],
-                required: ["project_name"]
-            )
-        )
-    )
-
-    static let listProjects = ToolDefinition(
-        function: FunctionDefinition(
-            name: "list_projects",
-            description: "List or search available project workspaces, including both 'User Projects' and your own internal 'Agent Automations'. Use this to find any scripts or tools you've previously built to automate tasks. Results include the AI-generated project description. Sorted by last_modified_at (newest first). Use the optional `query` parameter to substring search for specific project names, IDs, or keywords in their descriptions.",
-            parameters: FunctionParameters(
-                properties: [
+                        description: "For action='create'. Optional starter notes or requirements to save in the project README. If you are creating an internal tool/automation for your own use, explicitly state 'This is an internal agent automation' here."
+                    ),
                     "query": ParameterProperty(
                         type: "string",
-                        description: "Optional keyword to search for specific project names, IDs, or description contents (case-insensitive)."
+                        description: "For action='list'. Optional keyword to search for specific project names, IDs, or description contents (case-insensitive)."
                     ),
                     "limit": ParameterProperty(
                         type: "integer",
-                        description: "Optional number of projects to return per page. Default 20, max 100."
+                        description: "For action='list'. Optional number of projects to return per page. Default 20, max 100."
                     ),
                     "cursor": ParameterProperty(
                         type: "string",
-                        description: "Optional pagination cursor from a previous list_projects response (next_cursor). Omit on first call to get the latest projects."
+                        description: "For action='list'. Optional pagination cursor from a previous manage_projects list response (next_cursor). Omit on first call to get the latest projects."
                     )
                 ],
-                required: []
+                required: ["action"]
             )
         )
     )
@@ -1257,7 +1210,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1285,7 +1238,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1309,7 +1262,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "document_filenames": ParameterProperty(
                         type: "string",
@@ -1341,7 +1294,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "max_tokens": ParameterProperty(
                         type: "integer",
@@ -1361,7 +1314,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "prompt": ParameterProperty(
                         type: "string",
@@ -1393,7 +1346,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "destination": ParameterProperty(
                         type: "string",
@@ -1449,7 +1402,7 @@ enum AvailableTools {
                 properties: [
                     "project_id": ParameterProperty(
                         type: "string",
-                        description: "Project ID from list_projects."
+                        description: "Project ID from manage_projects action='list'."
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1492,14 +1445,14 @@ enum AvailableTools {
         [readEmails, searchEmails, sendEmail, replyEmail, forwardEmail, getEmailThread, sendEmailWithAttachment, downloadEmailAttachment]
     }
     
-    /// Gmail API tools (5 consolidated tools - used when email_mode is "gmail")
+    /// Gmail API tools (2 consolidated tools - used when email_mode is "gmail")
     static var gmailEmailTools: [ToolDefinition] {
-        [gmailQuery, gmailSend, gmailThread, gmailForward, gmailAttachment]
+        [gmailReader, gmailComposer]
     }
     
     /// Non-email tools that do not depend on web search credentials
     static var coreToolsWithoutWebSearch: [ToolDefinition] {
-        [manageReminders, manageCalendar, viewConversationChunk, listDocuments, readDocument, manageContacts, generateImage, downloadFromUrl, sendDocumentToChat, generateDocument, listShortcuts, runShortcut, showProjectDeploymentTools, createProject, listProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
+        [manageReminders, manageCalendar, viewConversationChunk, listDocuments, readDocument, manageContacts, generateImage, downloadFromUrl, sendDocumentToChat, generateDocument, shortcuts, showProjectDeploymentTools, manageProjects, browseProject, readProjectFile, addProjectFiles, viewProjectHistory, runClaudeCode, sendProjectResult]
     }
     
     static var gatedProjectDeploymentTools: [ToolDefinition] {

@@ -1508,7 +1508,7 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                Text("• Fewer tools for better AI performance (5 vs 8)")
+                Text("• Fewer tools for better AI performance (2 vs 8)")
                     .font(.caption)
                     .foregroundColor(.secondary)
             }

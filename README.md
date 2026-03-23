@@ -131,18 +131,18 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 ## 🛠️ Available Tools
 
 <details>
-<summary><strong>📧 Email (8 IMAP tools / 5 Gmail tools)</strong></summary>
+<summary><strong>📧 Email (8 IMAP tools / 2 Gmail tools)</strong></summary>
 
 | Tool | Description |
 |------|-------------|
-| `read_emails` / `gmail_query` | Fetch recent inbox or search by query, sender, date, folder |
+| `read_emails` / `gmailreader` | Read Gmail: search/list emails, read full messages or threads, and download attachments |
 | `search_emails` | Advanced search across all folders |
-| `send_email` / `gmail_send` | Compose and send new emails |
+| `send_email` / `gmailcomposer` | Compose Gmail: send new emails, reply in-thread, or forward with attachments |
 | `reply_email` | Reply to a specific email in-thread |
-| `forward_email` / `gmail_forward` | Forward emails with attachments |
-| `get_email_thread` / `gmail_thread` | View full email conversation thread |
+| `forward_email` | Forward emails with attachments |
+| `get_email_thread` | View full email conversation thread |
 | `send_email_with_attachment` | Send email with documents from storage |
-| `download_email_attachment` / `gmail_attachment` | Download email attachments for analysis |
+| `download_email_attachment` | Download email attachments for analysis |
 
 </details>
 
@@ -187,8 +187,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 
 | Tool | Description |
 |------|-------------|
-| `create_project` | Create a new Code CLI project workspace |
-| `list_projects` | List project workspaces by recent modification with pagination (`limit`, `cursor`) |
+| `manage_projects` | Create a new Code CLI project workspace or list existing ones |
 | `browse_project` | View project file tree |
 | `read_project_file` | Read a file from a project |
 | `add_project_files` | Copy local files into a project |
@@ -220,8 +219,7 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 | `set_reminder` | Schedule a one-time or recurring reminder |
 | `list_reminders` | View pending reminders |
 | `delete_reminder` | Cancel a reminder |
-| `list_shortcuts` | List available macOS Shortcuts |
-| `run_shortcut` | Run a macOS Shortcut with optional input |
+| `shortcuts` | List available macOS Shortcuts or run one with optional input |
 | `generate_image` | Generate an image from a text prompt |
 | `find_contact` | Search contacts by name or email |
 | `add_contact` | Add a new contact |

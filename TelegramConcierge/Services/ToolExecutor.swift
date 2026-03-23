@@ -87,8 +87,12 @@ actor ToolExecutor {
             return await executeReadProjectFile(call)
         case "download_email_attachment":
             return await executeDownloadEmailAttachment(call)
+        case "gmailreader":
+            return await executeGmailReader(call)
         case "gmail_attachment":
             return await executeGmailAttachment(call)
+        case "shortcuts":
+            return await executeShortcuts(call)
         case "generate_image":
             return await executeGenerateImage(call)
         case "view_page_image":
@@ -158,6 +162,9 @@ actor ToolExecutor {
         case "send_document_to_chat":
             content = await executeSendDocumentToChat(call)
             
+        case "manage_projects":
+            content = await executeManageProjects(call)
+
         case "create_project":
             content = await executeCreateProject(call)
             
@@ -206,6 +213,9 @@ actor ToolExecutor {
         // run_shortcut is handled above with file attachment for media output
             
         // Gmail API Tools
+        case "gmailcomposer":
+            content = await executeGmailComposer(call)
+
         case "gmail_query":
             content = await executeGmailQuery(call)
             
@@ -2102,7 +2112,244 @@ extension ToolExecutor {
     }
     
     // MARK: - Gmail API Tool Implementations
-    
+
+    private func executeGmailReader(_ call: ToolCall) async -> ToolResultMessage {
+        guard await GmailService.shared.isAuthenticated else {
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings and complete OAuth authentication."}"#
+            )
+        }
+
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GmailReaderArguments.self, from: argsData) else {
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: #"{"error": "Failed to parse gmailreader arguments"}"#
+            )
+        }
+
+        switch normalizedGmailAction(args.action) {
+        case "search":
+            guard let syntheticCall = syntheticToolCall(
+                from: call,
+                name: "gmail_query",
+                arguments: compactJSONObject([
+                    "query": args.query,
+                    "limit": args.limit
+                ])
+            ) else {
+                return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Failed to prepare gmailreader search arguments"}"#)
+            }
+            return ToolResultMessage(toolCallId: call.id, content: await executeGmailQuery(syntheticCall))
+
+        case "read_message":
+            guard let messageId = nonEmptyGmailField(args.messageId) else {
+                return ToolResultMessage(
+                    toolCallId: call.id,
+                    content: #"{"error": "gmailreader action='read_message' requires message_id"}"#
+                )
+            }
+            return ToolResultMessage(toolCallId: call.id, content: await executeGmailReadMessage(messageId: messageId))
+
+        case "read_thread":
+            guard let threadId = nonEmptyGmailField(args.threadId),
+                  let syntheticCall = syntheticToolCall(
+                    from: call,
+                    name: "gmail_thread",
+                    arguments: ["thread_id": threadId]
+                  ) else {
+                return ToolResultMessage(
+                    toolCallId: call.id,
+                    content: #"{"error": "gmailreader action='read_thread' requires thread_id"}"#
+                )
+            }
+            return ToolResultMessage(toolCallId: call.id, content: await executeGmailThread(syntheticCall))
+
+        case "download_attachment":
+            guard let messageId = nonEmptyGmailField(args.messageId),
+                  let attachmentId = nonEmptyGmailField(args.attachmentId),
+                  let filename = nonEmptyGmailField(args.filename),
+                  let syntheticCall = syntheticToolCall(
+                    from: call,
+                    name: "gmail_attachment",
+                    arguments: [
+                        "message_id": messageId,
+                        "attachment_id": attachmentId,
+                        "filename": filename
+                    ]
+                  ) else {
+                return ToolResultMessage(
+                    toolCallId: call.id,
+                    content: #"{"error": "gmailreader action='download_attachment' requires message_id, attachment_id, and filename"}"#
+                )
+            }
+            return await executeGmailAttachment(syntheticCall)
+
+        default:
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: #"{"error": "Unknown gmailreader action. Use 'search', 'read_message', 'read_thread', or 'download_attachment'."}"#
+            )
+        }
+    }
+
+    private func executeGmailComposer(_ call: ToolCall) async -> String {
+        guard await GmailService.shared.isAuthenticated else {
+            return #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings."}"#
+        }
+
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(GmailComposerArguments.self, from: argsData) else {
+            return #"{"error": "Failed to parse gmailcomposer arguments"}"#
+        }
+
+        let action = normalizedGmailAction(args.action)
+        guard let to = nonEmptyGmailField(args.to) else {
+            return #"{"error": "gmailcomposer requires a non-empty 'to' address"}"#
+        }
+
+        switch action {
+        case "new":
+            guard let subject = nonEmptyGmailField(args.subject),
+                  let body = nonEmptyGmailField(args.body),
+                  let syntheticCall = syntheticToolCall(
+                    from: call,
+                    name: "gmail_send",
+                    arguments: compactJSONObject([
+                        "to": to,
+                        "subject": subject,
+                        "body": body,
+                        "cc": args.cc.isEmpty ? nil : args.cc,
+                        "bcc": args.bcc.isEmpty ? nil : args.bcc,
+                        "attachment_filenames": args.attachmentFilenames
+                    ])
+                  ) else {
+                return #"{"error": "gmailcomposer action='new' requires subject and body"}"#
+            }
+            return await executeGmailSend(syntheticCall)
+
+        case "reply":
+            guard let subject = nonEmptyGmailField(args.subject),
+                  let body = nonEmptyGmailField(args.body),
+                  let threadId = nonEmptyGmailField(args.threadId),
+                  let syntheticCall = syntheticToolCall(
+                    from: call,
+                    name: "gmail_send",
+                    arguments: compactJSONObject([
+                        "to": to,
+                        "subject": subject,
+                        "body": body,
+                        "thread_id": threadId,
+                        "in_reply_to": nonEmptyGmailField(args.inReplyTo),
+                        "cc": args.cc.isEmpty ? nil : args.cc,
+                        "bcc": args.bcc.isEmpty ? nil : args.bcc,
+                        "attachment_filenames": args.attachmentFilenames
+                    ])
+                  ) else {
+                return #"{"error": "gmailcomposer action='reply' requires subject, body, and thread_id"}"#
+            }
+            return await executeGmailSend(syntheticCall)
+
+        case "forward":
+            guard let messageId = nonEmptyGmailField(args.messageId),
+                  let syntheticCall = syntheticToolCall(
+                    from: call,
+                    name: "gmail_forward",
+                    arguments: compactJSONObject([
+                        "to": to,
+                        "message_id": messageId,
+                        "comment": nonEmptyGmailField(args.comment)
+                    ])
+                  ) else {
+                return #"{"error": "gmailcomposer action='forward' requires message_id"}"#
+            }
+            return await executeGmailForward(syntheticCall)
+
+        default:
+            return #"{"error": "Unknown gmailcomposer action. Use 'new', 'reply', or 'forward'."}"#
+        }
+    }
+
+    private func executeGmailReadMessage(messageId: String) async -> String {
+        do {
+            let message = try await GmailService.shared.getMessage(id: messageId)
+
+            var response = "=== EMAIL MESSAGE ===\n"
+            response += "Message ID: \(message.id)\n"
+            response += "Thread ID: \(message.threadId)\n"
+            response += "From: \(message.getHeader("From") ?? "Unknown")\n"
+            response += "To: \(message.getHeader("To") ?? "")\n"
+
+            if let cc = message.getHeader("Cc"), !cc.isEmpty {
+                response += "Cc: \(cc)\n"
+            }
+
+            response += "Subject: \(message.getHeader("Subject") ?? "(No subject)")\n"
+            response += "Date: \(message.getHeader("Date") ?? "")\n"
+
+            let attachments = message.payload?.getAttachmentParts() ?? []
+            if !attachments.isEmpty {
+                response += "Attachments:\n"
+                for attachment in attachments {
+                    let filename = attachment.filename ?? "unknown"
+                    let attachmentId = attachment.body?.attachmentId ?? "N/A"
+                    let size = attachment.body?.size ?? 0
+                    response += "  - \(filename) (attachment_id: \(attachmentId), size: \(size) bytes)\n"
+                }
+            }
+
+            let body = message.getPlainTextBody()
+            response += "Body:\n\(body.prefix(4000))"
+            return response
+        } catch {
+            return "{\"error\": \"Failed to read message: \(error.localizedDescription)\"}"
+        }
+    }
+
+    private func normalizedGmailAction(_ action: String) -> String {
+        action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+    }
+
+    private func nonEmptyGmailField(_ value: String?) -> String? {
+        guard let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty else {
+            return nil
+        }
+        return trimmed
+    }
+
+    private func compactJSONObject(_ dictionary: [String: Any?]) -> [String: Any] {
+        dictionary.compactMapValues { value in
+            switch value {
+            case let string as String:
+                return string
+            case let int as Int:
+                return int
+            case let bool as Bool:
+                return bool
+            case let strings as [String]:
+                return strings
+            default:
+                return nil
+            }
+        }
+    }
+
+    private func syntheticToolCall(from call: ToolCall, name: String, arguments: [String: Any]) -> ToolCall? {
+        guard JSONSerialization.isValidJSONObject(arguments),
+              let data = try? JSONSerialization.data(withJSONObject: arguments),
+              let json = String(data: data, encoding: .utf8) else {
+            return nil
+        }
+
+        return ToolCall(
+            id: call.id,
+            type: call.type,
+            function: FunctionCall(name: name, arguments: json)
+        )
+    }
+
     private func executeGmailQuery(_ call: ToolCall) async -> String {
         guard await GmailService.shared.isAuthenticated else {
             return #"{"error": "Gmail not authenticated. Please set up Gmail API in Settings and complete OAuth authentication."}"#
@@ -2141,7 +2388,7 @@ extension ToolExecutor {
                 response += "Date: \(date)\n"
                 response += "Preview: \(snippet.prefix(200))...\n"
                 
-                // List attachments with their attachment IDs (required for gmail_attachment tool)
+                // List attachments with their attachment IDs (used by gmailreader download_attachment)
                 let attachments = email.payload?.getAttachmentParts() ?? []
                 if !attachments.isEmpty {
                     response += "Attachments:\n"
@@ -2254,7 +2501,7 @@ extension ToolExecutor {
                 response += "Subject: \(subject)\n"
                 response += "Date: \(date)\n"
                 
-                // List attachments with their attachment IDs (required for gmail_attachment tool)
+                // List attachments with their attachment IDs (used by gmailreader download_attachment)
                 let attachments = message.payload?.getAttachmentParts() ?? []
                 if !attachments.isEmpty {
                     response += "Attachments:\n"
@@ -2284,6 +2531,10 @@ extension ToolExecutor {
               let args = try? JSONDecoder().decode(GmailForwardArguments.self, from: argsData) else {
             return #"{"error": "Failed to parse gmail_forward arguments"}"#
         }
+
+        guard isLikelyValidEmailAddress(args.to) else {
+            return #"{"error": "Invalid email address format"}"#
+        }
         
         do {
             let success = try await GmailService.shared.forwardEmail(
@@ -2312,7 +2563,7 @@ extension ToolExecutor {
         guard let argsData = call.function.arguments.data(using: .utf8),
               let args = try? JSONDecoder().decode(GmailAttachmentArguments.self, from: argsData) else {
             print("[ToolExecutor] Failed to parse gmail_attachment arguments")
-            return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Failed to parse gmail_attachment arguments. Make sure to include message_id, attachment_id, and filename."}"#)
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Failed to parse gmail_attachment arguments. Make sure to include message_id, attachment_id, and filename for gmailreader action='download_attachment'."}"#)
         }
         
         print("[ToolExecutor] Downloading attachment: messageId=\(args.messageId), attachmentId=\(args.attachmentId), filename=\(args.filename)")
@@ -3034,6 +3285,44 @@ extension ToolExecutor {
     }
     
     // MARK: - macOS Shortcuts Tool Implementations
+
+    private func executeShortcuts(_ call: ToolCall) async -> ToolResultMessage {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ShortcutsArguments.self, from: argsData) else {
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Failed to parse shortcuts arguments"}"#)
+        }
+
+        switch args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "list":
+            let content = await executeListShortcuts(call)
+            return ToolResultMessage(toolCallId: call.id, content: content)
+
+        case "run":
+            guard let name = args.name?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !name.isEmpty else {
+                return ToolResultMessage(toolCallId: call.id, content: #"{"error": "shortcuts action='run' requires a non-empty name"}"#)
+            }
+
+            guard let syntheticCall = syntheticToolCall(
+                from: call,
+                name: "run_shortcut",
+                arguments: compactJSONObject([
+                    "name": name,
+                    "input": args.input?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ])
+            ) else {
+                return ToolResultMessage(toolCallId: call.id, content: #"{"error": "Failed to prepare shortcuts run arguments"}"#)
+            }
+
+            return await executeRunShortcut(syntheticCall)
+
+        default:
+            return ToolResultMessage(
+                toolCallId: call.id,
+                content: #"{"error": "Unknown shortcuts action. Use 'list' or 'run'."}"#
+            )
+        }
+    }
     
     private func executeListShortcuts(_ call: ToolCall) async -> String {
         if Task.isCancelled {
@@ -3104,7 +3393,7 @@ extension ToolExecutor {
             }
             
             let shortcutList = shortcuts.map { "\"\($0.replacingOccurrences(of: "\"", with: "\\\""))\"" }.joined(separator: ", ")
-            return "{\"success\": true, \"count\": \(shortcuts.count), \"shortcuts\": [\(shortcutList)], \"message\": \"Found \(shortcuts.count) shortcut(s). Use run_shortcut with the exact name to execute.\"}"
+            return "{\"success\": true, \"count\": \(shortcuts.count), \"shortcuts\": [\(shortcutList)], \"message\": \"Found \(shortcuts.count) shortcut(s). Use shortcuts with action='run' and the exact name to execute.\"}"
         } catch {
             return "{\"error\": \"Failed to execute shortcuts command: \(error.localizedDescription)\"}"
         }
@@ -3581,6 +3870,12 @@ struct GenerateImageResult: Codable {
 
 // MARK: - Shortcuts Tool Argument Types
 
+struct ShortcutsArguments: Codable {
+    let action: String
+    let name: String?
+    let input: String?
+}
+
 struct RunShortcutArguments: Codable {
     let name: String
     let input: String?
@@ -3935,6 +4230,42 @@ struct CreateProjectArguments: Codable {
     enum CodingKeys: String, CodingKey {
         case projectName = "project_name"
         case initialNotes = "initial_notes"
+    }
+}
+
+struct ManageProjectsArguments: Codable {
+    let action: String
+    let projectName: String?
+    let initialNotes: String?
+    let query: String?
+    let limit: Int?
+    let cursor: String?
+
+    enum CodingKeys: String, CodingKey {
+        case action
+        case projectName = "project_name"
+        case initialNotes = "initial_notes"
+        case query
+        case limit
+        case cursor
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(String.self, forKey: .action)
+        projectName = try container.decodeIfPresent(String.self, forKey: .projectName)
+        initialNotes = try container.decodeIfPresent(String.self, forKey: .initialNotes)
+        query = try container.decodeIfPresent(String.self, forKey: .query)
+        cursor = try container.decodeIfPresent(String.self, forKey: .cursor)
+
+        if let intLimit = try? container.decodeIfPresent(Int.self, forKey: .limit) {
+            limit = intLimit
+        } else if let stringLimit = try? container.decodeIfPresent(String.self, forKey: .limit),
+                  let parsed = Int(stringLimit.trimmingCharacters(in: .whitespacesAndNewlines)) {
+            limit = parsed
+        } else {
+            limit = nil
+        }
     }
 }
 
@@ -4780,6 +5111,50 @@ extension ToolExecutor {
         }
         return json
     }
+
+    private func executeManageProjects(_ call: ToolCall) async -> String {
+        guard let argsData = call.function.arguments.data(using: .utf8),
+              let args = try? JSONDecoder().decode(ManageProjectsArguments.self, from: argsData) else {
+            return #"{"error":"Failed to parse manage_projects arguments"}"#
+        }
+
+        switch args.action.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "create":
+            guard let projectName = args.projectName?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !projectName.isEmpty else {
+                return #"{"error":"manage_projects action='create' requires project_name"}"#
+            }
+
+            guard let syntheticCall = syntheticToolCall(
+                from: call,
+                name: "create_project",
+                arguments: compactJSONObject([
+                    "project_name": projectName,
+                    "initial_notes": args.initialNotes?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ])
+            ) else {
+                return #"{"error":"Failed to prepare manage_projects create arguments"}"#
+            }
+            return await executeCreateProject(syntheticCall)
+
+        case "list":
+            guard let syntheticCall = syntheticToolCall(
+                from: call,
+                name: "list_projects",
+                arguments: compactJSONObject([
+                    "query": args.query?.trimmingCharacters(in: .whitespacesAndNewlines),
+                    "limit": args.limit,
+                    "cursor": args.cursor?.trimmingCharacters(in: .whitespacesAndNewlines)
+                ])
+            ) else {
+                return #"{"error":"Failed to prepare manage_projects list arguments"}"#
+            }
+            return await executeListProjects(syntheticCall)
+
+        default:
+            return #"{"error":"Unknown manage_projects action. Use 'create' or 'list'."}"#
+        }
+    }
     
     private func executeCreateProject(_ call: ToolCall) async -> String {
         guard let argsData = call.function.arguments.data(using: .utf8),
@@ -4866,7 +5241,7 @@ extension ToolExecutor {
             
             if let rawCursor = args.cursor?.trimmingCharacters(in: .whitespacesAndNewlines), !rawCursor.isEmpty {
                 guard let parsedOffset = parseListDocumentsCursor(rawCursor) else {
-                    return #"{"error":"Invalid cursor '\(rawCursor)'. Use next_cursor from the previous list_projects response."}"#
+                    return #"{"error":"Invalid cursor '\(rawCursor)'. Use next_cursor from the previous manage_projects list response."}"#
                 }
                 pageOffset = parsedOffset
                 cursorUsed = rawCursor
@@ -4959,7 +5334,7 @@ extension ToolExecutor {
                 if searchQuery != nil {
                     message = "No projects found matching the search query."
                 } else {
-                    message = "No projects found. Use create_project to create a workspace."
+                    message = "No projects found. Use manage_projects with action='create' to create a workspace."
                 }
             } else if pageProjects.isEmpty {
                 message = "No projects found for cursor \(pageOffset). Use a smaller cursor to see available pages."
@@ -4993,7 +5368,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let relativeBase = (args.relativePath ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -5034,7 +5409,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Project not found. Use list_projects first."}"#)
+            return ToolResultMessage(toolCallId: call.id, content: #"{"error":"Project not found. Use manage_projects with action='list' first."}"#)
         }
         
         guard let fileURL = resolvePath(in: projectURL, relativePath: args.relativePath) else {
@@ -5097,7 +5472,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let sourceDirectoryName = (args.sourceDirectory ?? "documents")
@@ -5250,7 +5625,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let maxTokens = min(max(args.maxTokens ?? 10_000, 500), 20_000)
@@ -5279,7 +5654,7 @@ extension ToolExecutor {
         }
 
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
 
         let vercelHistory = buildProjectCommandHistoryContext(
@@ -5316,7 +5691,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let provider = resolvedCodeCLIProvider()
@@ -5729,7 +6104,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let destination = args.destination.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
@@ -5971,7 +6346,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let requestedRelativePath = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6337,7 +6712,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let provider = (args.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
@@ -6537,7 +6912,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let provider = (args.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
@@ -6687,7 +7062,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let requestedRelativePath = (args.relativePath ?? ".").trimmingCharacters(in: .whitespacesAndNewlines)
@@ -6837,7 +7212,7 @@ extension ToolExecutor {
         }
         
         guard let projectURL = resolveProjectDirectory(projectId: args.projectId) else {
-            return #"{"error":"Project not found. Use list_projects first."}"#
+            return #"{"error":"Project not found. Use manage_projects with action='list' first."}"#
         }
         
         let provider = (args.provider?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased().isEmpty == false)
@@ -9877,6 +10252,69 @@ extension ToolExecutor {
 }
 
 // MARK: - Gmail Tool Argument Types
+
+struct GmailReaderArguments: Codable {
+    let action: String
+    let query: String?
+    let limit: Int?
+    let messageId: String?
+    let threadId: String?
+    let attachmentId: String?
+    let filename: String?
+
+    enum CodingKeys: String, CodingKey {
+        case action, query, limit, filename
+        case messageId = "message_id"
+        case threadId = "thread_id"
+        case attachmentId = "attachment_id"
+    }
+}
+
+struct GmailComposerArguments: Codable {
+    let action: String
+    let to: String?
+    let subject: String?
+    let body: String?
+    let threadId: String?
+    let inReplyTo: String?
+    let cc: [String]
+    let bcc: [String]
+    let attachmentFilenames: [String]?
+    let messageId: String?
+    let comment: String?
+
+    enum CodingKeys: String, CodingKey {
+        case action, to, subject, body, cc, bcc, comment
+        case threadId = "thread_id"
+        case inReplyTo = "in_reply_to"
+        case attachmentFilenames = "attachment_filenames"
+        case messageId = "message_id"
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        action = try container.decode(String.self, forKey: .action)
+        to = try container.decodeIfPresent(String.self, forKey: .to)
+        subject = try container.decodeIfPresent(String.self, forKey: .subject)
+        body = try container.decodeIfPresent(String.self, forKey: .body)
+        threadId = try container.decodeIfPresent(String.self, forKey: .threadId)
+        inReplyTo = try container.decodeIfPresent(String.self, forKey: .inReplyTo)
+        cc = decodeRecipients(from: container, forKey: .cc)
+        bcc = decodeRecipients(from: container, forKey: .bcc)
+        messageId = try container.decodeIfPresent(String.self, forKey: .messageId)
+        comment = try container.decodeIfPresent(String.self, forKey: .comment)
+
+        if let array = try? container.decodeIfPresent([String].self, forKey: .attachmentFilenames) {
+            attachmentFilenames = array
+        } else if let jsonString = try? container.decodeIfPresent(String.self, forKey: .attachmentFilenames),
+                  let data = jsonString.data(using: .utf8),
+                  let parsed = try? JSONDecoder().decode([String].self, from: data) {
+            attachmentFilenames = parsed
+        } else {
+            attachmentFilenames = nil
+        }
+    }
+}
 
 struct GmailQueryArguments: Codable {
     let query: String?
