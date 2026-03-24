@@ -32,6 +32,12 @@ actor OpenRouterService {
         return effort
     }
 
+    /// Whether the current model is an Anthropic/Claude model (requires explicit cache_control markers)
+    private var isAnthropicModel: Bool {
+        let m = model.lowercased()
+        return m.contains("anthropic") || m.contains("claude")
+    }
+
     private func formatUSD(_ value: Double) -> String {
         var formatted = String(format: "%.6f", value)
         while formatted.contains(".") && formatted.last == "0" {
@@ -782,11 +788,28 @@ actor OpenRouterService {
                 apiMessages.append(OpenRouterAPIMessage(role: role, content: .text(textContent)))
             }
         }
-        
+
+        // MARK: - Anthropic Prompt Caching
+        // Anthropic models don't auto-cache like Gemini — they need explicit cache_control breakpoints.
+        // We place breakpoints at (1) the system prompt and (2) the last conversation history message.
+        // Everything from the start up to a breakpoint is cached as a prefix, so within a turn's
+        // agentic tool loop these two regions are reused without re-processing.
+        // For Gemini/other models this block is skipped — they either auto-cache or ignore cache_control.
+        if isAnthropicModel && apiMessages.count >= 1 {
+            // Breakpoint 1: System prompt (index 0) — stable across the entire turn
+            apiMessages[0] = apiMessages[0].withCacheControl()
+
+            // Breakpoint 2: Last conversation history message — stable across tool loop rounds
+            if apiMessages.count >= 2 {
+                let lastHistoryIndex = apiMessages.count - 1
+                apiMessages[lastHistoryIndex] = apiMessages[lastHistoryIndex].withCacheControl()
+            }
+        }
+
         // Add tool interactions if this is a follow-up call
         // IMPORTANT: Collect file attachments separately - OpenRouter doesn't support
         // multimodal content in tool role messages, so we inject files as a user message
-        
+
         if let interactions = toolResultMessages {
             for interaction in interactions {
                 // Add assistant's tool call message
@@ -1180,6 +1203,40 @@ struct OpenRouterAPIMessage: Codable {
         self.reasoning = reasoning
         self.reasoningDetails = reasoningDetails
     }
+
+    /// Returns a copy with cache_control added to the last content block.
+    /// For plain text content, converts to a content array so the cache_control field can be attached.
+    /// This is required for Anthropic models which need explicit cache breakpoints.
+    func withCacheControl() -> OpenRouterAPIMessage {
+        guard let content = content else { return self }
+        let newContent: MessageContent
+        switch content {
+        case .text(let str):
+            // Convert plain string to content array with cache_control on the text block
+            newContent = .parts([.text(str, cacheControl: .ephemeral)])
+        case .parts(var parts):
+            guard !parts.isEmpty else { return self }
+            // Replace the last part's cache_control
+            let lastIndex = parts.count - 1
+            switch parts[lastIndex] {
+            case .text(let str, _):
+                parts[lastIndex] = .text(str, cacheControl: .ephemeral)
+            default:
+                // For image/file parts, append a zero-width text part with cache_control
+                // (cache_control must be on a text block for Anthropic)
+                parts.append(.text("", cacheControl: .ephemeral))
+            }
+            newContent = .parts(parts)
+        }
+        return OpenRouterAPIMessage(
+            role: role,
+            content: newContent,
+            toolCalls: toolCalls,
+            toolCallId: toolCallId,
+            reasoning: reasoning,
+            reasoningDetails: reasoningDetails
+        )
+    }
 }
 
 // Supports both plain string and multimodal array content
@@ -1209,24 +1266,34 @@ enum MessageContent: Codable {
     }
 }
 
+/// Anthropic prompt caching marker — tells the API to cache everything up to and including this content block
+struct CacheControl: Codable {
+    let type: String
+    static let ephemeral = CacheControl(type: "ephemeral")
+}
+
 enum ContentPart: Codable {
-    case text(String)
+    case text(String, cacheControl: CacheControl? = nil)
     case image(ImageURL)
     case file(FileURL)
-    
+
     enum CodingKeys: String, CodingKey {
         case type
         case text
         case imageUrl = "image_url"
         case fileUrl = "file_url"
+        case cacheControl = "cache_control"
     }
-    
+
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
         switch self {
-        case .text(let text):
+        case .text(let text, let cacheControl):
             try container.encode("text", forKey: .type)
             try container.encode(text, forKey: .text)
+            if let cc = cacheControl {
+                try container.encode(cc, forKey: .cacheControl)
+            }
         case .image(let imageUrl):
             try container.encode("image_url", forKey: .type)
             try container.encode(imageUrl, forKey: .imageUrl)
@@ -1237,7 +1304,7 @@ enum ContentPart: Codable {
             try container.encode(ImageURL(url: fileUrl.url), forKey: .imageUrl)
         }
     }
-    
+
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let type = try container.decode(String.self, forKey: .type)
