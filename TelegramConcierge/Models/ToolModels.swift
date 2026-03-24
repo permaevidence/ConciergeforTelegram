@@ -88,6 +88,19 @@ struct FunctionParameters: Codable {
 struct ParameterProperty: Codable {
     let type: String
     let description: String
+    let enumValues: [String]?
+
+    enum CodingKeys: String, CodingKey {
+        case type
+        case description
+        case enumValues = "enum"
+    }
+
+    init(type: String, description: String, enumValues: [String]? = nil) {
+        self.type = type
+        self.description = description
+        self.enumValues = enumValues
+    }
 }
 
 // MARK: - Tool Calls (from LLM response)
@@ -255,7 +268,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Reminder action: 'set', 'list', or 'delete'."
+                        description: "Reminder action: 'set', 'list', or 'delete'.",
+                        enumValues: ["set", "list", "delete"]
                     ),
                     "trigger_datetime": ParameterProperty(
                         type: "string",
@@ -301,7 +315,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Calendar action: 'view', 'add', 'edit', or 'delete'."
+                        description: "Calendar action: 'view', 'add', 'edit', or 'delete'.",
+                        enumValues: ["view", "add", "edit", "delete"]
                     ),
                     "include_past": ParameterProperty(
                         type: "boolean",
@@ -393,7 +408,8 @@ enum AvailableTools {
                     ),
                     "folder": ParameterProperty(
                         type: "string",
-                        description: "Email folder to search. Use 'sent' to search sent emails, 'drafts' for drafts, 'trash' for trash, or 'inbox' (default). The tool automatically handles Gmail folder naming conventions."
+                        description: "Email folder to search. Use 'sent' to search sent emails, 'drafts' for drafts, 'trash' for trash, or 'inbox' (default). The tool automatically handles Gmail folder naming conventions.",
+                        enumValues: ["inbox", "sent", "drafts", "trash"]
                     ),
                     "limit": ParameterProperty(
                         type: "integer",
@@ -635,7 +651,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Contact action: 'find', 'add', 'list', or 'delete'."
+                        description: "Contact action: 'find', 'add', 'list', or 'delete'.",
+                        enumValues: ["find", "add", "list", "delete"]
                     ),
                     "query": ParameterProperty(
                         type: "string",
@@ -701,7 +718,8 @@ enum AvailableTools {
                     ),
                     "size": ParameterProperty(
                         type: "string",
-                        description: "Optional output size. Supported values: '1K' (default), '2K', '4K'. Use '4K' when the user requests ultra-high resolution or when high-detail output is important."
+                        description: "Optional output size. Supported values: '1K' (default), '2K', '4K'. Use '4K' when the user requests ultra-high resolution or when high-detail output is important.",
+                        enumValues: ["1K", "2K", "4K"]
                     )
                 ],
                 required: ["prompt"]
@@ -777,7 +795,8 @@ enum AvailableTools {
                 properties: [
                     "document_type": ParameterProperty(
                         type: "string",
-                        description: "Type of document: 'pdf' (best for formatted reports, letters, or fullscreen images), 'excel' (CSV format, best for data/tables), or 'word' (RTF format, best for editable documents)."
+                        description: "Type of document: 'pdf' (best for formatted reports, letters, or fullscreen images), 'excel' (CSV format, best for data/tables), or 'word' (RTF format, best for editable documents).",
+                        enumValues: ["pdf", "excel", "word"]
                     ),
                     "title": ParameterProperty(
                         type: "string",
@@ -785,7 +804,8 @@ enum AvailableTools {
                     ),
                     "layout": ParameterProperty(
                         type: "string",
-                        description: "PDF layout mode: 'standard' (default, with title/sections/margins) or 'fullscreen_image' (image fills entire page with no margins or title). Only applies to PDFs."
+                        description: "PDF layout mode: 'standard' (default, with title/sections/margins) or 'fullscreen_image' (image fills entire page with no margins or title). Only applies to PDFs.",
+                        enumValues: ["standard", "fullscreen_image"]
                     ),
                     "image_filenames": ParameterProperty(
                         type: "string",
@@ -837,7 +857,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Required Gmail reader action: 'search', 'read_message', 'read_thread', or 'download_attachment'."
+                        description: "Required Gmail reader action: 'search', 'read_message', 'read_thread', or 'download_attachment'.",
+                        enumValues: ["search", "read_message", "read_thread", "download_attachment"]
                     ),
                     "query": ParameterProperty(
                         type: "string",
@@ -877,7 +898,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Required Gmail composer action: 'new', 'reply', or 'forward'."
+                        description: "Required Gmail composer action: 'new', 'reply', or 'forward'.",
+                        enumValues: ["new", "reply", "forward"]
                     ),
                     "to": ParameterProperty(
                         type: "string",
@@ -935,7 +957,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Required shortcuts action: 'list' or 'run'."
+                        description: "Required shortcuts action: 'list' or 'run'.",
+                        enumValues: ["list", "run"]
                     ),
                     "name": ParameterProperty(
                         type: "string",
@@ -992,11 +1015,13 @@ enum AvailableTools {
                     ),
                     "provider": ParameterProperty(
                         type: "string",
-                        description: "Database provider. Supported: 'instantdb' (default)."
+                        description: "Database provider. Supported: 'instantdb' (default).",
+                        enumValues: ["instantdb"]
                     ),
                     "environment": ParameterProperty(
                         type: "string",
-                        description: "Optional database environment. Use 'test' for preview/testing DB or 'prod' for production DB. Default: existing legacy project link."
+                        description: "Optional database environment. Use 'test' for preview/testing DB or 'prod' for production DB. Default: existing legacy project link.",
+                        enumValues: ["test", "prod"]
                     ),
                     "database_title": ParameterProperty(
                         type: "string",
@@ -1040,11 +1065,13 @@ enum AvailableTools {
                     ),
                     "provider": ParameterProperty(
                         type: "string",
-                        description: "Database provider. Supported: 'instantdb' (default)."
+                        description: "Database provider. Supported: 'instantdb' (default).",
+                        enumValues: ["instantdb"]
                     ),
                     "environment": ParameterProperty(
                         type: "string",
-                        description: "Optional database environment to push schema to: 'test' or 'prod'. Default: existing legacy project link."
+                        description: "Optional database environment to push schema to: 'test' or 'prod'. Default: existing legacy project link.",
+                        enumValues: ["test", "prod"]
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1088,7 +1115,8 @@ enum AvailableTools {
                     ),
                     "environment": ParameterProperty(
                         type: "string",
-                        description: "Optional database environment source: 'test' or 'prod'. When set and targets are omitted, defaults are test->development+preview, prod->production."
+                        description: "Optional database environment source: 'test' or 'prod'. When set and targets are omitted, defaults are test->development+preview, prod->production.",
+                        enumValues: ["test", "prod"]
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1144,7 +1172,8 @@ enum AvailableTools {
                     ),
                     "provider": ParameterProperty(
                         type: "string",
-                        description: "MCP provider target. Supported: 'instantdb' (default)."
+                        description: "MCP provider target. Supported: 'instantdb' (default).",
+                        enumValues: ["instantdb"]
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1152,7 +1181,8 @@ enum AvailableTools {
                     ),
                     "mode": ParameterProperty(
                         type: "string",
-                        description: "MCP mode: 'remote' (default, https endpoint) or 'local' (command-based MCP server)."
+                        description: "MCP mode: 'remote' (default, https endpoint) or 'local' (command-based MCP server).",
+                        enumValues: ["remote", "local"]
                     ),
                     "output_path": ParameterProperty(
                         type: "string",
@@ -1174,7 +1204,8 @@ enum AvailableTools {
                 properties: [
                     "action": ParameterProperty(
                         type: "string",
-                        description: "Required project admin action: 'create' or 'list'."
+                        description: "Required project admin action: 'create' or 'list'.",
+                        enumValues: ["create", "list"]
                     ),
                     "project_name": ParameterProperty(
                         type: "string",
@@ -1270,7 +1301,8 @@ enum AvailableTools {
                     ),
                     "source_directory": ParameterProperty(
                         type: "string",
-                        description: "Optional source storage location: 'documents' (default) or 'images'. Use 'images' for files from the app image directory."
+                        description: "Optional source storage location: 'documents' (default) or 'images'. Use 'images' for files from the app image directory.",
+                        enumValues: ["documents", "images"]
                     ),
                     "relative_path": ParameterProperty(
                         type: "string",
@@ -1350,7 +1382,8 @@ enum AvailableTools {
                     ),
                     "destination": ParameterProperty(
                         type: "string",
-                        description: "Where to send files: 'chat' or 'email'."
+                        description: "Where to send files: 'chat' or 'email'.",
+                        enumValues: ["chat", "email"]
                     ),
                     "to": ParameterProperty(
                         type: "string",
@@ -1370,7 +1403,8 @@ enum AvailableTools {
                     ),
                     "package_as": ParameterProperty(
                         type: "string",
-                        description: "Packaging mode: 'files' (default, send files directly), 'zip_selection' (zip selected files), or 'zip_project' (zip the full project deliverables)."
+                        description: "Packaging mode: 'files' (default, send files directly), 'zip_selection' (zip selected files), or 'zip_project' (zip the full project deliverables).",
+                        enumValues: ["files", "zip_selection", "zip_project"]
                     ),
                     "archive_name": ParameterProperty(
                         type: "string",

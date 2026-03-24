@@ -558,7 +558,11 @@ actor OpenRouterService {
         
         // Convert conversation messages
         for message in truncatedMessages {
-            let role = message.role == .user ? "user" : "assistant"
+            // Tool run log messages are system metadata, not model output.
+            // Sending them as "assistant" causes Claude to mimic the log format
+            // instead of actually invoking tools.
+            let isToolRunLog = message.role == .assistant && message.content.hasPrefix("[TOOL RUN LOG")
+            let role = message.role == .user ? "user" : (isToolRunLog ? "system" : "assistant")
             
             // Check if we need to add a date header (new day)
             var dateHeader = ""
