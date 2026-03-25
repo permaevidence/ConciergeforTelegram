@@ -8508,7 +8508,7 @@ extension ToolExecutor {
         IMPORTANT: If the notes or name indicate this is an internal tool, script, or automation for the AI agent's own use to help the user, start the description with "[AGENT AUTOMATION]". Otherwise, start it with "[USER PROJECT]".
         """
         
-        if let generated = await requestGeminiProjectDescription(prompt: prompt) {
+        if let generated = await requestLLMProjectDescription(prompt: prompt) {
             return generated
         }
         
@@ -8561,7 +8561,7 @@ extension ToolExecutor {
         IMPORTANT: Maintain the "[AGENT AUTOMATION]" or "[USER PROJECT]" prefix from the previous description, or infer it if missing. An "[AGENT AUTOMATION]" is an internal script/tool for the AI's own use to help the user; a "[USER PROJECT]" is regular software built for the user.
         """
         
-        if let generated = await requestGeminiProjectDescription(prompt: promptText) {
+        if let generated = await requestLLMProjectDescription(prompt: promptText) {
             return generated
         }
         
@@ -8592,13 +8592,46 @@ extension ToolExecutor {
         return trimProjectDescription("Project '\(projectName)' workspace.")
     }
     
-    private func requestGeminiProjectDescription(prompt: String) async -> String? {
+    private func requestLLMProjectDescription(prompt: String) async -> String? {
         let apiKey = (KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) ?? "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !apiKey.isEmpty else { return nil }
+        let provider = LLMProvider.fromStoredValue(KeychainHelper.load(key: KeychainHelper.llmProviderKey))
+        let model: String
+        let requestURL: URL
+
+        if provider == .lmStudio {
+            model = (KeychainHelper.load(key: KeychainHelper.lmStudioModelKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !model.isEmpty else { return nil }
+
+            var base = (KeychainHelper.load(key: KeychainHelper.lmStudioBaseURLKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if base.isEmpty { base = KeychainHelper.defaultLMStudioBaseURL }
+            while base.hasSuffix("/") { base.removeLast() }
+            if base.hasSuffix("/chat/completions"), let url = URL(string: base) {
+                requestURL = url
+            } else {
+                if !base.hasSuffix("/v1") {
+                    base += "/v1"
+                }
+                requestURL = URL(string: base + "/chat/completions")!
+            }
+        } else {
+            guard !apiKey.isEmpty else { return nil }
+            let configuredModel = (KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            model = configuredModel.isEmpty ? "google/gemini-3-flash-preview" : configuredModel
+            requestURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        }
+        let configuredReasoningEffort: String? = {
+            guard provider == .openRouter else { return nil }
+            let stored = (KeychainHelper.load(key: KeychainHelper.openRouterReasoningEffortKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stored.isEmpty ? "high" : stored
+        }()
         
         let body: [String: Any] = [
-            "model": "google/gemini-3-flash-preview",
+            "model": model,
             "messages": [
                 [
                     "role": "system",
@@ -8615,16 +8648,27 @@ extension ToolExecutor {
                 ["role": "user", "content": prompt]
             ]
         ]
+        var requestPayload = body
+        if let configuredReasoningEffort {
+            requestPayload["reasoning"] = ["effort": configuredReasoningEffort]
+        }
         
-        guard let requestBody = try? JSONSerialization.data(withJSONObject: body) else {
+        guard let requestBody = try? JSONSerialization.data(withJSONObject: requestPayload) else {
             return nil
         }
         
-        var request = URLRequest(url: URL(string: "https://openrouter.ai/api/v1/chat/completions")!)
+        var request = URLRequest(url: requestURL)
         request.httpMethod = "POST"
-        request.timeoutInterval = 15
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if provider == .lmStudio {
+            request.setValue("Bearer lm-studio", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 60
+        } else {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("TelegramConcierge/1.0", forHTTPHeaderField: "HTTP-Referer")
+            request.setValue("Telegram Concierge Bot", forHTTPHeaderField: "X-Title")
+            request.timeoutInterval = 15
+        }
         request.httpBody = requestBody
         
         do {

@@ -153,11 +153,16 @@ class ConversationManager: ObservableObject {
     // MARK: - Configuration
     
     func configure() async {
+        let currentLLMProvider = LLMProvider.fromStoredValue(KeychainHelper.load(key: KeychainHelper.llmProviderKey))
         guard let token = KeychainHelper.load(key: KeychainHelper.telegramBotTokenKey),
               let chatIdString = KeychainHelper.load(key: KeychainHelper.telegramChatIdKey),
-              let chatId = Int(chatIdString),
-              let apiKey = KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) else {
-            error = "Please configure all settings first"
+              let chatId = Int(chatIdString) else {
+            error = "Please configure Telegram settings first"
+            return
+        }
+        let apiKey = KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) ?? ""
+        if currentLLMProvider == .openRouter && apiKey.isEmpty {
+            error = "Please configure your OpenRouter API key"
             return
         }
         

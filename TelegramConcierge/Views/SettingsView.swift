@@ -7,6 +7,9 @@ struct SettingsView: View {
     
     @State private var telegramToken: String = ""
     @State private var chatId: String = ""
+    @State private var llmProvider: String = "openrouter"
+    @State private var lmStudioBaseURL: String = ""
+    @State private var lmStudioModel: String = ""
     @State private var openRouterApiKey: String = ""
     @State private var openRouterModel: String = ""
     @State private var openRouterProviders: String = ""
@@ -239,39 +242,78 @@ struct SettingsView: View {
             }
             
             Section {
-                SecureField("API Key", text: $openRouterApiKey)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Get your API key from openrouter.ai")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("Model", text: $openRouterModel)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Default: google/gemini-3-flash-preview")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("Preferred Providers", text: $openRouterProviders)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Comma-separated list (e.g., google, anthropic). Leave empty to allow all.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Picker("Reasoning Effort", selection: $openRouterReasoningEffort) {
-                    Text("Not Specified").tag("")
-                    Text("Minimal").tag("minimal")
-                    Text("Low").tag("low")
-                    Text("Medium").tag("medium")
-                    Text("High").tag("high")
+                Picker("LLM Provider", selection: $llmProvider) {
+                    Text("OpenRouter").tag("openrouter")
+                    Text("LMStudio (Local)").tag("lmstudio")
                 }
-                .pickerStyle(.menu)
-                
-                Text("Controls thinking depth for supported models (Gemini 3, o1/o3, Grok).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                .pickerStyle(.segmented)
+
+                if llmProvider == "lmstudio" {
+                    TextField("Base URL", text: $lmStudioBaseURL)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("Default: http://localhost:1234/v1 — Leave empty for default. LMStudio must be running with a local server active.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    TextField("Model Name", text: $lmStudioModel)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("Enter the model identifier loaded in LMStudio (e.g., qwen2.5-vl-7b).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Text("Use a multimodal model that supports tool/function calling (e.g., Qwen2.5-VL, Llama 3.2 Vision). Non-multimodal models will not work correctly with images, documents, and tools.")
+                        .font(.caption)
+                        .foregroundColor(.orange)
+
+                    Text("Prompt processing is cached via LMStudio's KV cache automatically when message prefixes stay stable (which they do during agentic tool loops).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                SecureField("OpenRouter API Key", text: $openRouterApiKey)
+                    .textFieldStyle(.roundedBorder)
+
+                if llmProvider == "lmstudio" {
+                    Text("OpenRouter API key is still needed for web search and deep research.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } else {
+                    Text("Get your API key from openrouter.ai")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
+
+                if llmProvider == "openrouter" {
+                    TextField("Model", text: $openRouterModel)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("Default: google/gemini-3-flash-preview")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    TextField("Preferred Providers", text: $openRouterProviders)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("Comma-separated list (e.g., google, anthropic). Leave empty to allow all.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Picker("Reasoning Effort", selection: $openRouterReasoningEffort) {
+                        Text("Not Specified").tag("")
+                        Text("Minimal").tag("minimal")
+                        Text("Low").tag("low")
+                        Text("Medium").tag("medium")
+                        Text("High").tag("high")
+                    }
+                    .pickerStyle(.menu)
+
+                    Text("Controls thinking depth for supported models (Gemini 3, o1/o3, Grok).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                }
 
                 HStack {
                     Text("Tool Spend Limit / Turn (USD)")
@@ -313,12 +355,12 @@ struct SettingsView: View {
                 Text("Daily/monthly limits pause further tool usage once reached. Totals include OpenRouter tool calls, web/deep research subcalls, and Gemini image generation. Leave blank for no cap. Min when set: 0.001.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+
                 sectionSaveButton("openrouter") {
                     saveOpenRouterSection()
                 }
             } header: {
-                Label("OpenRouter", systemImage: "brain.head.profile")
+                Label("LLM Provider", systemImage: "brain.head.profile")
             }
             
             Section {
@@ -1655,6 +1697,9 @@ struct SettingsView: View {
     private func loadSettings() {
         telegramToken = KeychainHelper.load(key: KeychainHelper.telegramBotTokenKey) ?? ""
         chatId = KeychainHelper.load(key: KeychainHelper.telegramChatIdKey) ?? ""
+        llmProvider = KeychainHelper.load(key: KeychainHelper.llmProviderKey) ?? "openrouter"
+        lmStudioBaseURL = KeychainHelper.load(key: KeychainHelper.lmStudioBaseURLKey) ?? ""
+        lmStudioModel = KeychainHelper.load(key: KeychainHelper.lmStudioModelKey) ?? ""
         openRouterApiKey = KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) ?? ""
         openRouterModel = KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? ""
         openRouterProviders = KeychainHelper.load(key: KeychainHelper.openRouterProvidersKey) ?? ""
@@ -2157,6 +2202,23 @@ struct SettingsView: View {
     }
     
     private func saveOpenRouterSection() {
+        // Save LLM provider selection
+        try? KeychainHelper.save(key: KeychainHelper.llmProviderKey, value: llmProvider)
+
+        // Save LMStudio settings
+        let trimmedBaseURL = lmStudioBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedBaseURL.isEmpty {
+            try? KeychainHelper.save(key: KeychainHelper.lmStudioBaseURLKey, value: trimmedBaseURL)
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.lmStudioBaseURLKey)
+        }
+        let trimmedLMModel = lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedLMModel.isEmpty {
+            try? KeychainHelper.save(key: KeychainHelper.lmStudioModelKey, value: trimmedLMModel)
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.lmStudioModelKey)
+        }
+        // Save OpenRouter settings (always needed for web search)
         try? KeychainHelper.save(key: KeychainHelper.openRouterApiKeyKey, value: openRouterApiKey)
         if !openRouterModel.isEmpty {
             try? KeychainHelper.save(key: KeychainHelper.openRouterModelKey, value: openRouterModel)
@@ -2658,8 +2720,7 @@ struct SettingsView: View {
                 let structured = try await structureWithAI(
                     assistantName: assistantName,
                     userName: userName,
-                    rawContext: userContext,
-                    apiKey: openRouterApiKey
+                    rawContext: userContext
                 )
                 await MainActor.run {
                     structuredUserContext = structured
@@ -2679,7 +2740,59 @@ struct SettingsView: View {
         }
     }
     
-    private func structureWithAI(assistantName: String, userName: String, rawContext: String, apiKey: String) async throws -> String {
+    private func structureWithAI(assistantName: String, userName: String, rawContext: String) async throws -> String {
+        let provider = LLMProvider.fromStoredValue(llmProvider)
+        let trimmedOpenRouterAPIKey = openRouterApiKey.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        func configuredURL() -> URL {
+            if provider == .lmStudio {
+                var base = lmStudioBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                if base.isEmpty { base = KeychainHelper.defaultLMStudioBaseURL }
+                while base.hasSuffix("/") { base.removeLast() }
+                if base.hasSuffix("/chat/completions"), let url = URL(string: base) {
+                    return url
+                }
+                if !base.hasSuffix("/v1") {
+                    base += "/v1"
+                }
+                return URL(string: base + "/chat/completions")!
+            }
+            return URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+        }
+
+        let configuredModel: String = {
+            switch provider {
+            case .lmStudio:
+                return lmStudioModel.trimmingCharacters(in: .whitespacesAndNewlines)
+            case .openRouter:
+                let configured = openRouterModel.trimmingCharacters(in: .whitespacesAndNewlines)
+                return configured.isEmpty ? "google/gemini-3-flash-preview" : configured
+            }
+        }()
+
+        if provider == .lmStudio && configuredModel.isEmpty {
+            throw NSError(
+                domain: "StructureAI",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "LMStudio model name is not configured"]
+            )
+        }
+
+        if provider == .openRouter && trimmedOpenRouterAPIKey.isEmpty {
+            throw NSError(
+                domain: "StructureAI",
+                code: 0,
+                userInfo: [NSLocalizedDescriptionKey: "OpenRouter API key is not configured"]
+            )
+        }
+
+        let configuredReasoningEffort: String? = {
+            guard provider == .openRouter else { return nil }
+            let stored = (KeychainHelper.load(key: KeychainHelper.openRouterReasoningEffortKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return stored.isEmpty ? "high" : stored
+        }()
+
         // Load existing structured context
         let existingContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
         
@@ -2746,18 +2859,29 @@ struct SettingsView: View {
         }
         
         let body: [String: Any] = [
-            "model": "google/gemini-3-flash-preview",
+            "model": configuredModel,
             "messages": [
                 ["role": "user", "content": prompt]
             ]
         ]
+        var requestPayload = body
+        if let configuredReasoningEffort {
+            requestPayload["reasoning"] = ["effort": configuredReasoningEffort]
+        }
         
-        let url = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
-        var request = URLRequest(url: url)
+        var request = URLRequest(url: configuredURL())
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.httpBody = try JSONSerialization.data(withJSONObject: body)
+        if provider == .lmStudio {
+            request.setValue("Bearer lm-studio", forHTTPHeaderField: "Authorization")
+            request.timeoutInterval = 300
+        } else {
+            request.setValue("Bearer \(trimmedOpenRouterAPIKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("TelegramConcierge/1.0", forHTTPHeaderField: "HTTP-Referer")
+            request.setValue("Telegram Concierge Bot", forHTTPHeaderField: "X-Title")
+            request.timeoutInterval = 120
+        }
+        request.httpBody = try JSONSerialization.data(withJSONObject: requestPayload)
         
         let (data, response) = try await URLSession.shared.data(for: request)
         

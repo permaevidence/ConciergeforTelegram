@@ -1,6 +1,30 @@
 import Foundation
 import Security
 
+enum LLMProvider: String, CaseIterable, Identifiable {
+    case openRouter = "openrouter"
+    case lmStudio = "lmstudio"
+
+    var id: String { rawValue }
+
+    var displayName: String {
+        switch self {
+        case .openRouter: return "OpenRouter"
+        case .lmStudio: return "LMStudio (Local)"
+        }
+    }
+
+    static var defaultProvider: LLMProvider { .openRouter }
+
+    static func fromStoredValue(_ value: String?) -> LLMProvider {
+        guard let normalized = value?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+              let provider = LLMProvider(rawValue: normalized) else {
+            return .defaultProvider
+        }
+        return provider
+    }
+}
+
 enum VoiceTranscriptionProvider: String, CaseIterable, Identifiable {
     case local
     case openAI = "openai"
@@ -184,6 +208,12 @@ extension KeychainHelper {
     static let voiceTranscriptionProviderKey = "voice_transcription_provider"
     static let openAITranscriptionApiKeyKey = "openai_transcription_api_key"
     
+    // LLM Provider Selection
+    static let llmProviderKey = "llm_provider"  // "openrouter" or "lmstudio"
+    static let lmStudioBaseURLKey = "lmstudio_base_url"
+    static let lmStudioModelKey = "lmstudio_model"
+    static let defaultLMStudioBaseURL = "http://localhost:1234/v1"
+
     // Archive Settings
     static let archiveChunkSizeKey = "archive_chunk_size"
     

@@ -1,17 +1,44 @@
 import Foundation
 
 actor OpenRouterService {
-    private let baseURL = "https://openrouter.ai/api/v1/chat/completions"
+    private let openRouterBaseURL = "https://openrouter.ai/api/v1/chat/completions"
     private let defaultModel = "google/gemini-3-flash-preview"
     private var apiKey: String = ""
-    
+
+    /// Whether the user has selected LMStudio as their LLM provider
+    private var isLMStudio: Bool {
+        LLMProvider.fromStoredValue(KeychainHelper.load(key: KeychainHelper.llmProviderKey)) == .lmStudio
+    }
+
+    /// The active API base URL — LMStudio local endpoint or OpenRouter
+    private var baseURL: String {
+        if isLMStudio {
+            var base = KeychainHelper.load(key: KeychainHelper.lmStudioBaseURLKey)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if base.isEmpty { base = KeychainHelper.defaultLMStudioBaseURL }
+            // Strip trailing slash for consistent handling
+            while base.hasSuffix("/") { base.removeLast() }
+            // Already a full completions URL
+            if base.hasSuffix("/chat/completions") { return base }
+            // User entered just the base (e.g. http://localhost:1234) — append /v1/chat/completions
+            if !base.hasSuffix("/v1") {
+                base += "/v1"
+            }
+            return base + "/chat/completions"
+        }
+        return openRouterBaseURL
+    }
+
     /// Returns the user-configured model or falls back to default
     private var model: String {
-        KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? defaultModel
+        if isLMStudio {
+            return KeychainHelper.load(key: KeychainHelper.lmStudioModelKey) ?? ""
+        }
+        return KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? defaultModel
     }
-    
+
     /// Returns the user-configured provider order, or nil if not set
     private var providers: [String]? {
+        guard !isLMStudio else { return nil }
         guard let providersString = KeychainHelper.load(key: KeychainHelper.openRouterProvidersKey),
               !providersString.isEmpty else {
             return nil
@@ -22,9 +49,10 @@ actor OpenRouterService {
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
     }
-    
+
     /// Returns the user-configured reasoning effort, defaulting to "high" for Gemini models
     private var reasoningEffort: String? {
+        guard !isLMStudio else { return nil }
         guard let effort = KeychainHelper.load(key: KeychainHelper.openRouterReasoningEffortKey),
               !effort.isEmpty else {
             return "high"
@@ -34,6 +62,7 @@ actor OpenRouterService {
 
     /// Whether the current model is an Anthropic/Claude model (requires explicit cache_control markers)
     private var isAnthropicModel: Bool {
+        guard !isLMStudio else { return false }
         let m = model.lowercased()
         return m.contains("anthropic") || m.contains("claude")
     }
@@ -347,13 +376,17 @@ actor OpenRouterService {
         turnStartDate: Date? = nil,
         finalResponseInstruction: String? = nil
     ) async throws -> LLMResponse {
-        guard !apiKey.isEmpty else {
+        guard isLMStudio || !apiKey.isEmpty else {
             throw OpenRouterError.notConfigured
         }
-        
+
+        if isLMStudio && model.isEmpty {
+            throw OpenRouterError.apiError("LMStudio model name is not configured. Set it in Settings.")
+        }
+
         // Build API messages
         var apiMessages: [OpenRouterAPIMessage] = []
-        
+
         // Truncate messages to fit within token budget
         let truncatedMessages = truncateMessagesToTokenLimit(messages, maxTokens: maxContextTokens)
         
@@ -600,7 +633,7 @@ actor OpenRouterService {
             if hasMultimodal && isCurrentMessage {
                 // Current message: use multimodal content array with inline base64 data
                 var contentParts: [ContentPart] = []
-                
+
                 // Add referenced images first (context from replied-to messages)
                 for refImageFileName in message.referencedImageFileNames {
                     let imageURL = imagesDirectory.appendingPathComponent(refImageFileName)
@@ -611,7 +644,7 @@ actor OpenRouterService {
                         contentParts.append(.image(ImageURL(url: dataURL)))
                     }
                 }
-                
+
                 // Add referenced documents (context from replied-to messages)
                 for refDocFileName in message.referencedDocumentFileNames {
                     let documentURL = documentsDirectory.appendingPathComponent(refDocFileName)
@@ -635,7 +668,7 @@ actor OpenRouterService {
                         }
                     }
                 }
-                
+
                 // Add primary images
                 for imageFileName in message.imageFileNames {
                     let imageURL = imagesDirectory.appendingPathComponent(imageFileName)
@@ -646,7 +679,7 @@ actor OpenRouterService {
                         contentParts.append(.image(ImageURL(url: dataURL)))
                     }
                 }
-                
+
                 // Add primary documents (PDFs sent directly to Gemini)
                 for documentFileName in message.documentFileNames {
                     let documentURL = documentsDirectory.appendingPathComponent(documentFileName)
@@ -670,10 +703,10 @@ actor OpenRouterService {
                         }
                     }
                 }
-                
+
                 // Build text content with timestamp, date header, and filename hints
                 var textContent = message.content
-                
+
                 // Add hints for referenced attachments
                 if !message.referencedImageFileNames.isEmpty {
                     let refImageList = message.referencedImageFileNames.joined(separator: ", ")
@@ -683,7 +716,7 @@ actor OpenRouterService {
                     let refDocList = message.referencedDocumentFileNames.joined(separator: ", ")
                     textContent = "[Referenced document(s) from cited message: \(refDocList)] \(textContent)"
                 }
-                
+
                 // Add hints for primary attachments
                 if !message.imageFileNames.isEmpty {
                     let imageList = message.imageFileNames.joined(separator: ", ")
@@ -693,14 +726,14 @@ actor OpenRouterService {
                     let docList = message.documentFileNames.joined(separator: ", ")
                     textContent = "[Document file(s): \(docList)] \(textContent)"
                 }
-                
+
                 if textContent.isEmpty {
                     textContent = (hasDocuments || hasReferencedDocuments) ? "Please analyze this document." : "What's in this image?"
                 }
                 // Add date header (if new day) and time prefix
                 textContent = dateHeader + timePrefix + textContent
                 contentParts.append(.text(textContent))
-                
+
                 apiMessages.append(OpenRouterAPIMessage(role: role, content: .parts(contentParts)))
             } else if hasMultimodal {
                 // Historical message with media: text-only with hints to use read_document tool
@@ -844,7 +877,7 @@ actor OpenRouterService {
                 if !currentInteractionFiles.isEmpty {
                     print("[OpenRouterService] Injecting \(currentInteractionFiles.count) file attachment(s) as user-role multimodal message")
                     var contentParts: [ContentPart] = []
-                    
+
                     // Build descriptive text about the files
                     var visibleFiles: [String] = []
                     var nonInlineFiles: [String] = []
@@ -860,7 +893,7 @@ actor OpenRouterService {
                             nonInlineFiles.append(attachment.filename)
                         }
                     }
-                    
+
                     // Add text explaining what these files are
                     let filesText: String
                     if !visibleFiles.isEmpty && !nonInlineFiles.isEmpty {
@@ -871,7 +904,7 @@ actor OpenRouterService {
                         filesText = "[The tool downloaded file(s) not viewable inline in this model: \(nonInlineFiles.joined(separator: ", ")). Use the filenames and tool outputs to continue (e.g., import ZIPs with project tools).]"
                     }
                     contentParts.append(.text(filesText))
-                    
+
                     apiMessages.append(OpenRouterAPIMessage(
                         role: "user",
                         content: .parts(contentParts)
@@ -880,17 +913,19 @@ actor OpenRouterService {
             }
         }
         
-        // Build request
+        // Build request — skip OpenRouter-specific fields when using LMStudio
+        let usingLMStudio = isLMStudio
+
         var providerPrefs: ProviderPreferences? = nil
-        if let providerOrder = providers, !providerOrder.isEmpty {
+        if !usingLMStudio, let providerOrder = providers, !providerOrder.isEmpty {
             providerPrefs = ProviderPreferences(order: providerOrder)
         }
-        
+
         var reasoningConfig: ReasoningConfig? = nil
-        if let effort = reasoningEffort {
+        if !usingLMStudio, let effort = reasoningEffort {
             reasoningConfig = ReasoningConfig(effort: effort)
         }
-        
+
         let body = OpenRouterRequest(
             model: model,
             messages: apiMessages,
@@ -898,20 +933,29 @@ actor OpenRouterService {
             provider: providerPrefs,
             reasoning: reasoningConfig
         )
-        
+
         let url = URL(string: baseURL)!
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.setValue("TelegramConcierge/1.0", forHTTPHeaderField: "HTTP-Referer")
-        request.setValue("Telegram Concierge Bot", forHTTPHeaderField: "X-Title")
-        request.timeoutInterval = 120 // Longer timeout for tool reasoning
+        if usingLMStudio {
+            // LMStudio doesn't need auth but some builds expect a header
+            request.setValue("Bearer lm-studio", forHTTPHeaderField: "Authorization")
+        } else {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("TelegramConcierge/1.0", forHTTPHeaderField: "HTTP-Referer")
+            request.setValue("Telegram Concierge Bot", forHTTPHeaderField: "X-Title")
+        }
+        // LMStudio local inference can be slow for large models
+        request.timeoutInterval = usingLMStudio ? 300 : 120
         
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         request.httpBody = try encoder.encode(body)
-        
+
+        let providerLabel = usingLMStudio ? "LMStudio" : "OpenRouter"
+        print("[OpenRouterService] Sending request to \(providerLabel) (\(model)) with \(apiMessages.count) messages")
+
         let (data, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
@@ -988,14 +1032,14 @@ actor OpenRouterService {
     }
     
     // MARK: - File Description Generation
-    
+
     /// Generate brief descriptions for files while context is still available
     /// Returns a dictionary mapping filename to description
     func generateFileDescriptions(
         files: [(filename: String, data: Data, mimeType: String)],
         conversationContext: [Message] = []
     ) async throws -> [String: String] {
-        guard !apiKey.isEmpty else {
+        guard isLMStudio || !apiKey.isEmpty else {
             throw OpenRouterError.notConfigured
         }
         
@@ -1080,19 +1124,25 @@ actor OpenRouterService {
         // Add user message with files
         apiMessages.append(OpenRouterAPIMessage(role: "user", content: .parts(contentParts)))
         
+        let usingLMStudioForDescriptions = isLMStudio
         let request = OpenRouterRequest(
             model: model,
             messages: apiMessages,
             tools: nil,
-            provider: providers.map { ProviderPreferences(order: $0) },
-            reasoning: nil  // Keep it fast
+            provider: usingLMStudioForDescriptions ? nil : providers.map { ProviderPreferences(order: $0) },
+            reasoning: usingLMStudioForDescriptions ? nil : reasoningEffort.map { ReasoningConfig(effort: $0) }
         )
-        
+
         // Make API call
         var urlRequest = URLRequest(url: URL(string: baseURL)!)
         urlRequest.httpMethod = "POST"
-        urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        if usingLMStudioForDescriptions {
+            urlRequest.setValue("Bearer lm-studio", forHTTPHeaderField: "Authorization")
+        } else {
+            urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        urlRequest.timeoutInterval = usingLMStudioForDescriptions ? 300 : 120
         urlRequest.httpBody = try JSONEncoder().encode(request)
         
         let (data, response) = try await URLSession.shared.data(for: urlRequest)

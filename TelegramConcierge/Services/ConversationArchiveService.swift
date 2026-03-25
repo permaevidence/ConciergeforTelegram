@@ -29,14 +29,40 @@ actor ConversationArchiveService {
     private let chunksToConsolidate = 4      // 4 × chunk_size = consolidatedChunkSize
     private let consolidationTriggerCount = 6 // Trigger at 6 temps, leaving 2 as buffer
     
-    // OpenRouter config for summarization/search
-    // Using Gemini for summarization since it can understand multimodal context
-    private let model = "google/gemini-3-flash-preview"
-    private let openRouterURL = URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+    // Archive LLM config
+    private var isLMStudio: Bool {
+        LLMProvider.fromStoredValue(KeychainHelper.load(key: KeychainHelper.llmProviderKey)) == .lmStudio
+    }
+
+    private var baseURL: URL {
+        if isLMStudio {
+            var base = KeychainHelper.load(key: KeychainHelper.lmStudioBaseURLKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if base.isEmpty { base = KeychainHelper.defaultLMStudioBaseURL }
+            while base.hasSuffix("/") { base.removeLast() }
+            if base.hasSuffix("/chat/completions"), let url = URL(string: base) {
+                return url
+            }
+            if !base.hasSuffix("/v1") {
+                base += "/v1"
+            }
+            return URL(string: base + "/chat/completions")!
+        }
+        return URL(string: "https://openrouter.ai/api/v1/chat/completions")!
+    }
+
+    private var model: String {
+        if isLMStudio {
+            return (KeychainHelper.load(key: KeychainHelper.lmStudioModelKey) ?? "")
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? "google/gemini-3-flash-preview"
+    }
     private var apiKey: String = ""
     
-    /// Returns the user-configured reasoning effort, defaulting to "high".
-    private var reasoningEffort: String {
+    /// Returns the user-configured reasoning effort, defaulting to "high" on OpenRouter.
+    private var reasoningEffort: String? {
+        guard !isLMStudio else { return nil }
         guard let effort = KeychainHelper.load(key: KeychainHelper.openRouterReasoningEffortKey),
               !effort.isEmpty else {
             return "high"
@@ -513,7 +539,7 @@ actor ConversationArchiveService {
         Which chunks might contain information relevant to the query?
         """
         
-        let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 2000)
+        let response = try await callLLM(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 2000)
         
         guard let jsonData = extractFirstJSONObjectData(from: response),
               let result = try? JSONDecoder().decode(ChunkIdentificationResult.self, from: jsonData) else {
@@ -884,7 +910,7 @@ actor ConversationArchiveService {
         \(conversationText.prefix(100000))
         """
         
-        let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: nil)
+        let response = try await callLLM(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: nil)
         let clippedResponse = String(response.prefix(summaryMaxCharacters))
         return try validateSummaryText(clippedResponse)
     }
@@ -969,7 +995,7 @@ actor ConversationArchiveService {
         \(sourceText.prefix(60000))
         """
 
-        let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 1400)
+        let response = try await callLLM(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 1400)
         let clippedResponse = String(response.prefix(summaryMaxCharacters))
         return try validateSummaryText(clippedResponse)
     }
@@ -1041,7 +1067,7 @@ actor ConversationArchiveService {
         while !completed {
             do {
                 try Task.checkCancellation()
-                let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 500)
+                let response = try await callLLM(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 500)
                 let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
 
                 if trimmed == "NO_CHANGES" || trimmed.isEmpty {
@@ -1120,7 +1146,7 @@ actor ConversationArchiveService {
         while !completed {
             do {
                 try Task.checkCancellation()
-                let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: "Restructure the user context above.", maxTokens: nil)
+                let response = try await callLLM(systemPrompt: systemPrompt, userPrompt: "Restructure the user context above.", maxTokens: nil)
                 let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
 
                 guard !trimmed.isEmpty else {
@@ -1280,7 +1306,7 @@ actor ConversationArchiveService {
         \(text.prefix(100000))
         """
         
-        let response = try await callOpenRouter(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 4000)
+        let response = try await callLLM(systemPrompt: systemPrompt, userPrompt: userPrompt, maxTokens: 4000)
         
         if let jsonData = extractFirstJSONObjectData(from: response) {
             struct ExcerptResult: Codable { let excerpts: [String] }
@@ -1292,11 +1318,17 @@ actor ConversationArchiveService {
         return []
     }
     
-    // MARK: - OpenRouter API
+    // MARK: - Archive LLM API
     
-    private func callOpenRouter(systemPrompt: String, userPrompt: String, maxTokens: Int?) async throws -> String {
-        guard !apiKey.isEmpty else {
-            throw ArchiveError.notConfigured
+    private func callLLM(systemPrompt: String, userPrompt: String, maxTokens: Int?) async throws -> String {
+        let usingLMStudio = isLMStudio
+
+        if usingLMStudio && model.isEmpty {
+            throw ArchiveError.notConfigured(reason: "LMStudio model name is not configured for archive operations")
+        }
+
+        if !usingLMStudio && apiKey.isEmpty {
+            throw ArchiveError.notConfigured(reason: "OpenRouter API key is not configured for archive operations")
         }
         
         struct Request: Encodable {
@@ -1306,7 +1338,7 @@ actor ConversationArchiveService {
             let messages: [Message]
             let max_tokens: Int?
             let temperature: Double
-            let reasoning: ReasoningConfig
+            let reasoning: ReasoningConfig?
         }
         
         struct Response: Decodable {
@@ -1325,14 +1357,20 @@ actor ConversationArchiveService {
             ],
             max_tokens: maxTokens,
             temperature: 0.3,
-            reasoning: .init(effort: reasoningEffort)
+            reasoning: reasoningEffort.map { .init(effort: $0) }
         )
         
-        var request = URLRequest(url: openRouterURL)
+        var request = URLRequest(url: baseURL)
         request.httpMethod = "POST"
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
-        request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
-        request.timeoutInterval = 120
+        if usingLMStudio {
+            request.setValue("Bearer lm-studio", forHTTPHeaderField: "Authorization")
+        } else {
+            request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+            request.setValue("TelegramConcierge/1.0", forHTTPHeaderField: "HTTP-Referer")
+            request.setValue("Telegram Concierge Bot", forHTTPHeaderField: "X-Title")
+        }
+        request.timeoutInterval = usingLMStudio ? 300 : 120
         request.httpBody = try JSONEncoder().encode(body)
         
         let (data, response) = try await URLSession.shared.data(for: request)
@@ -1631,7 +1669,7 @@ enum ArchiveError: LocalizedError {
     case emptyMessages
     case chunkNotFound
     case fileNotFound(path: String)
-    case notConfigured
+    case notConfigured(reason: String)
     case apiError
     case emptySummary
     case summaryTooShort(actualWords: Int, minimumWords: Int)
@@ -1641,7 +1679,7 @@ enum ArchiveError: LocalizedError {
         case .emptyMessages: return "Cannot archive empty message list"
         case .chunkNotFound: return "Chunk not found in archive"
         case .fileNotFound(let path): return "Chunk file not found at: \(path)"
-        case .notConfigured: return "Archive service not configured with API key"
+        case .notConfigured(let reason): return reason
         case .apiError: return "API call failed"
         case .emptySummary: return "Summary generation returned empty output"
         case .summaryTooShort(let actualWords, let minimumWords):
