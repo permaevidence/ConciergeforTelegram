@@ -622,6 +622,10 @@ actor OpenRouterService {
                         ))
                     }
                 }
+            } else if message.role == .assistant && !isToolRunLog && message.toolInteractions.isEmpty,
+                      let compactLog = message.compactToolLog, !compactLog.isEmpty {
+                // Interactions were pruned — emit the compact log as system context
+                apiMessages.append(OpenRouterAPIMessage(role: "system", content: .text(compactLog)))
             }
             
             // Check if we need to add a date header (new day)

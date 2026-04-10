@@ -734,14 +734,7 @@ class ConversationManager: ObservableObject {
             
             var didMutateHistory = false
 
-            // Store compact tool log for backward compatibility with FractalMind summaries
-            if let toolLog = response.compactToolLog, !toolLog.isEmpty {
-                messages.append(Message(role: .assistant, content: toolLog))
-                pruneOldToolLogMessages()
-                didMutateHistory = true
-            }
-
-            // Add assistant message with tool interactions, downloaded files, and accessed projects
+            // Add assistant message with tool interactions, compact log, downloaded files, and accessed projects
             let finalResponseRaw = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "I completed the requested actions."
                 : response.finalText
@@ -752,7 +745,8 @@ class ConversationManager: ObservableObject {
                 content: finalResponse,
                 downloadedDocumentFileNames: downloadedFilenames,
                 accessedProjectIds: response.accessedProjects ?? [],
-                toolInteractions: response.toolInteractions
+                toolInteractions: response.toolInteractions,
+                compactToolLog: response.compactToolLog
             )
             messages.append(assistantMessage)
             didMutateHistory = true
@@ -1652,6 +1646,7 @@ class ConversationManager: ObservableObject {
         }
 
         if prunedCount > 0 {
+            pruneOldCompactToolLogs()
             saveConversation()
             print("[ConversationManager] Pruned tool interactions from \(prunedCount) turn(s). New estimate: ~\(totalTokens) tokens")
         }
@@ -1709,11 +1704,34 @@ class ConversationManager: ObservableObject {
                     messages[i].toolInteractions = []
                 }
             }
+            pruneOldCompactToolLogs()
+            // Also sync log pruning to messagesForLLM
+            for i in 0..<min(messagesForLLM.count, messages.count) {
+                if messagesForLLM[i].id == messages[i].id {
+                    messagesForLLM[i].compactToolLog = messages[i].compactToolLog
+                }
+            }
             saveConversation()
             print("[ConversationManager] Mid-loop pruned \(prunedCount) turn(s). New estimate: ~\(totalTokens) tokens")
         }
 
         return prunedCount > 0
+    }
+
+    /// Keep at most 5 active compact tool logs (messages where interactions were pruned but log remains).
+    /// Clears the oldest logs beyond the limit.
+    private func pruneOldCompactToolLogs() {
+        let maxRetainedCompactLogs = 5
+        let activeLogIndices = messages.indices.filter {
+            messages[$0].compactToolLog != nil && messages[$0].toolInteractions.isEmpty
+        }
+        let excessCount = activeLogIndices.count - maxRetainedCompactLogs
+        guard excessCount > 0 else { return }
+
+        for i in activeLogIndices.prefix(excessCount) {
+            messages[i].compactToolLog = nil
+        }
+        print("[ConversationManager] Cleared \(excessCount) old compact tool log(s), keeping \(maxRetainedCompactLogs)")
     }
 
     // MARK: - System Prompt Cache Epoch

@@ -25,6 +25,9 @@ struct Message: Identifiable, Codable, Equatable {
 
     // Tool interactions from the agentic loop (persisted for prompt cache continuity)
     var toolInteractions: [ToolInteraction]
+
+    // Compact tool log — generated at turn end, used as fallback when toolInteractions are pruned
+    var compactToolLog: String?
     
     enum Role: String, Codable {
         case user
@@ -58,7 +61,8 @@ struct Message: Identifiable, Codable, Equatable {
         referencedDocumentFileSizes: [Int] = [],
         downloadedDocumentFileNames: [String] = [],
         accessedProjectIds: [String] = [],
-        toolInteractions: [ToolInteraction] = []
+        toolInteractions: [ToolInteraction] = [],
+        compactToolLog: String? = nil
     ) {
         self.id = id
         self.role = role
@@ -74,6 +78,7 @@ struct Message: Identifiable, Codable, Equatable {
         self.downloadedDocumentFileNames = downloadedDocumentFileNames
         self.accessedProjectIds = accessedProjectIds
         self.toolInteractions = toolInteractions
+        self.compactToolLog = compactToolLog
     }
     
     // MARK: - Codable (with backward compatibility)
@@ -84,7 +89,7 @@ struct Message: Identifiable, Codable, Equatable {
         case imageFileNames, documentFileNames, imageFileSizes, documentFileSizes
         case referencedImageFileNames, referencedDocumentFileNames
         case referencedDocumentFileSizes
-        case downloadedDocumentFileNames, accessedProjectIds, toolInteractions
+        case downloadedDocumentFileNames, accessedProjectIds, toolInteractions, compactToolLog
         // Legacy single-value fields (for decoding old data)
         case imageFileName, documentFileName, imageFileSize, documentFileSize
         case referencedImageFileName, referencedDocumentFileName
@@ -165,6 +170,9 @@ struct Message: Identifiable, Codable, Equatable {
 
         // Tool interactions (new field, default to empty for old messages)
         toolInteractions = (try? container.decode([ToolInteraction].self, forKey: .toolInteractions)) ?? []
+
+        // Compact tool log (new field, default nil for old messages)
+        compactToolLog = try? container.decodeIfPresent(String.self, forKey: .compactToolLog)
     }
     
     func encode(to encoder: Encoder) throws {
@@ -188,6 +196,7 @@ struct Message: Identifiable, Codable, Equatable {
         if !toolInteractions.isEmpty {
             try container.encode(toolInteractions, forKey: .toolInteractions)
         }
+        try container.encodeIfPresent(compactToolLog, forKey: .compactToolLog)
     }
 
     // Manual Equatable — excludes toolInteractions (ToolInteraction is not Equatable)
