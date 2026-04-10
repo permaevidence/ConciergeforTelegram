@@ -1193,8 +1193,8 @@ class ConversationManager: ObservableObject {
         // Use the frozen system prompt timestamp (only refreshes on prune events or day change)
         let systemPromptDate = currentSystemPromptTimestamp()
 
-        // Capture messages after archival + pruning for the agentic loop
-        let messagesForLLM = messages
+        // Capture messages after archival + pruning for the agentic loop (var for mid-loop pruning)
+        var messagesForLLM = messages
 
         // Tool interaction loop with per-turn, daily, and monthly spend caps (USD).
         let toolSpendLimitPerTurnUSD = configuredToolSpendLimitPerTurnUSD()
@@ -1377,6 +1377,15 @@ class ConversationManager: ObservableObject {
                     results: orderedToolResults
                 )
                 toolInteractions.append(interaction)
+
+                // Mid-loop: prune stored tool interactions from older turns if context is growing too large
+                let _ = pruneStoredToolInteractionsMidLoop(
+                    messagesForLLM: &messagesForLLM,
+                    currentTurnInteractions: toolInteractions,
+                    calendarContext: calendarContext,
+                    emailContext: emailContext,
+                    chunkSummaries: chunkSummaries
+                )
 
                 if cumulativeToolSpendUSD >= toolSpendLimitPerTurnUSD {
                     didHitToolSpendLimit = true
@@ -1645,6 +1654,63 @@ class ConversationManager: ObservableObject {
         if prunedCount > 0 {
             saveConversation()
             print("[ConversationManager] Pruned tool interactions from \(prunedCount) turn(s). New estimate: ~\(totalTokens) tokens")
+        }
+
+        return prunedCount > 0
+    }
+
+    /// Mid-loop variant: prunes stored tool interactions from historical turns when the
+    /// current turn's growing context would exceed the budget. Only touches historical
+    /// messages (messagesForLLM), never the current turn's in-memory toolInteractions.
+    private func pruneStoredToolInteractionsMidLoop(
+        messagesForLLM: inout [Message],
+        currentTurnInteractions: [ToolInteraction],
+        calendarContext: String?,
+        emailContext: String?,
+        chunkSummaries: [ArchivedSummaryItem]
+    ) -> Bool {
+        let maxTokens = configuredMaxContextTokens()
+        let targetTokens = configuredTargetContextTokens()
+
+        var totalTokens = estimateSystemPromptTokens(
+            calendarContext: calendarContext,
+            emailContext: emailContext,
+            chunkSummaries: chunkSummaries
+        )
+        for message in messagesForLLM {
+            totalTokens += message.content.count / 4 + 1
+            totalTokens += message.imageFileNames.count * 50
+            totalTokens += message.documentFileNames.count * 50
+            totalTokens += estimateToolInteractionTokens(message.toolInteractions)
+        }
+        totalTokens += estimateToolInteractionTokens(currentTurnInteractions)
+
+        guard totalTokens > maxTokens else { return false }
+
+        print("[ConversationManager] Mid-loop context exceeded: ~\(totalTokens) > \(maxTokens). Pruning stored tool interactions...")
+
+        var prunedCount = 0
+        for i in 0..<messagesForLLM.count {
+            guard totalTokens > targetTokens else { break }
+            guard messagesForLLM[i].role == .assistant && !messagesForLLM[i].toolInteractions.isEmpty else { continue }
+
+            let savedTokens = estimateToolInteractionTokens(messagesForLLM[i].toolInteractions)
+            messagesForLLM[i].toolInteractions = []
+            totalTokens -= savedTokens
+            prunedCount += 1
+        }
+
+        if prunedCount > 0 {
+            // Persist to self.messages (indices correspond since no mutations during the loop)
+            for i in 0..<min(messagesForLLM.count, messages.count) {
+                if messagesForLLM[i].id == messages[i].id
+                    && messagesForLLM[i].toolInteractions.isEmpty
+                    && !messages[i].toolInteractions.isEmpty {
+                    messages[i].toolInteractions = []
+                }
+            }
+            saveConversation()
+            print("[ConversationManager] Mid-loop pruned \(prunedCount) turn(s). New estimate: ~\(totalTokens) tokens")
         }
 
         return prunedCount > 0
