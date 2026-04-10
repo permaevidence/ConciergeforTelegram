@@ -216,7 +216,11 @@ extension KeychainHelper {
 
     // Archive Settings
     static let archiveChunkSizeKey = "archive_chunk_size"
-    
+
+    // Context Budget Settings (tool interaction pruning)
+    static let maxContextTokensKey = "max_context_tokens"
+    static let targetContextTokensKey = "target_context_tokens"
+
     // Email Mode Selection
     static let emailModeKey = "email_mode" // "imap" or "gmail"
     

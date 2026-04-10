@@ -387,13 +387,14 @@ actor OpenRouterService {
         // Build API messages
         var apiMessages: [OpenRouterAPIMessage] = []
 
-        // Truncate messages to fit within token budget
-        let truncatedMessages = truncateMessagesToTokenLimit(messages, maxTokens: maxContextTokens)
+        // ConversationManager handles context budgeting (tool interaction pruning + FractalMind archival)
+        // so no truncation needed here
+        let truncatedMessages = messages
         
-        // Add system message with date/time context and tool awareness
+        // Add system message with date context (date-only for prompt cache stability)
         let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "EEEE, MMMM d, yyyy 'at' HH:mm:ss"
-        let currentDateTime = dateFormatter.string(from: turnStartDate ?? Date())
+        dateFormatter.dateFormat = "EEEE, MMMM d, yyyy"
+        let currentDate = dateFormatter.string(from: turnStartDate ?? Date())
         let timezone = TimeZone.current.identifier
         
         // Load persona settings
@@ -435,15 +436,14 @@ actor OpenRouterService {
         if tools != nil && !tools!.isEmpty {
             var prompt = """
             \(personaIntro)
-            
+
             The user communicates with you via Telegram. They may send text messages, voice messages (which are automatically transcribed before you receive them), images, and documents.
-            
-            **Turn start time**: \(currentDateTime) (\(timezone))
-            ⚠️ This timestamp represents when the user sent their request. Use it as your baseline for ALL relative time logic ("today", "tomorrow", etc).
-            If you use tools, the current time elapsed since the turn started will be appended to the bottom of the tool results.
+
+            **Today's date**: \(currentDate) (\(timezone))
+            For the exact current time, check the most recent message timestamp or tool result time note in the conversation below.
             Reply with short direct messages, like all humans do via Telegram.
             Do not use Markdown syntax in user-facing replies (no headings like ###, no **bold**, no backticks, no markdown links).
-            
+
             """
             
             // Inject calendar context if available
@@ -525,8 +525,8 @@ actor OpenRouterService {
             }
 
             prompt += """
-            
-            🕐 **Reminder: The turn started at exactly \(currentDateTime) (\(timezone))**
+
+            🕐 **Today is \(currentDate). Check conversation timestamps for the current time.**
             """
             if let finalResponseInstruction, !finalResponseInstruction.isEmpty {
                 prompt += "\n\n\(finalResponseInstruction)"
@@ -535,11 +535,11 @@ actor OpenRouterService {
         } else {
             var prompt = """
             \(personaIntro)
-            
+
             The user communicates with you via Telegram. They may send text messages, voice messages (which are automatically transcribed before you receive them), images, and documents.
-            
-            **Turn start time**: \(currentDateTime) (\(timezone))
-            ⚠️ This timestamp represents when the user sent their request. Use it as your baseline for ALL relative time logic ("today", "tomorrow", etc).
+
+            **Today's date**: \(currentDate) (\(timezone))
+            For the exact current time, check the most recent message timestamp or tool result time note in the conversation below.
             Reply with short direct messages, like all humans do via Telegram.
             Do not use Markdown syntax in user-facing replies (no headings like ###, no **bold**, no backticks, no markdown links).
             """
@@ -573,7 +573,7 @@ actor OpenRouterService {
                 prompt += formatChunkSummaries(chunks, totalChunkCount: totalChunkCount)
             }
             
-            prompt += "\n\n🕐 **Reminder: The turn started at exactly \(currentDateTime) (\(timezone))**"
+            prompt += "\n\n🕐 **Today is \(currentDate). Check conversation timestamps for the current time.**"
             if let finalResponseInstruction, !finalResponseInstruction.isEmpty {
                 prompt += "\n\n\(finalResponseInstruction)"
             }
@@ -595,13 +595,34 @@ actor OpenRouterService {
         let calendar = Calendar.current
         var lastMessageDate: Date? = nil
         
-        // Convert conversation messages
+        // Convert conversation messages, interleaving stored tool interactions
         for message in truncatedMessages {
             // Tool run log messages are system metadata, not model output.
             // Sending them as "assistant" causes Claude to mimic the log format
             // instead of actually invoking tools.
             let isToolRunLog = message.role == .assistant && message.content.hasPrefix("[TOOL RUN LOG")
             let role = message.role == .user ? "user" : (isToolRunLog ? "system" : "assistant")
+
+            // For assistant messages with stored tool interactions, emit the interactions
+            // BEFORE the final text so the model sees the full reasoning chain
+            if message.role == .assistant && !isToolRunLog && !message.toolInteractions.isEmpty {
+                for interaction in message.toolInteractions {
+                    apiMessages.append(OpenRouterAPIMessage(
+                        role: "assistant",
+                        content: interaction.assistantMessage.content.map { .text($0) },
+                        toolCalls: interaction.assistantMessage.toolCalls,
+                        reasoning: interaction.assistantMessage.reasoning,
+                        reasoningDetails: interaction.assistantMessage.reasoningDetails
+                    ))
+                    for result in interaction.results {
+                        apiMessages.append(OpenRouterAPIMessage(
+                            role: "tool",
+                            content: .text(result.content),
+                            toolCallId: result.toolCallId
+                        ))
+                    }
+                }
+            }
             
             // Check if we need to add a date header (new day)
             var dateHeader = ""
@@ -1198,7 +1219,7 @@ actor OpenRouterService {
 
 // MARK: - Tool Interaction (for follow-up calls)
 
-struct ToolInteraction {
+struct ToolInteraction: Codable {
     let assistantMessage: AssistantToolCallMessage
     let results: [ToolResultMessage]
 }

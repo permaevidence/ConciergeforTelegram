@@ -19,9 +19,12 @@ struct Message: Identifiable, Codable, Equatable {
     
     // Files downloaded via tools (email attachments, URL downloads, etc.)
     var downloadedDocumentFileNames: [String]
-    
+
     // Project workspaces accessed during the turn
     var accessedProjectIds: [String]
+
+    // Tool interactions from the agentic loop (persisted for prompt cache continuity)
+    var toolInteractions: [ToolInteraction]
     
     enum Role: String, Codable {
         case user
@@ -54,7 +57,8 @@ struct Message: Identifiable, Codable, Equatable {
         referencedDocumentFileNames: [String] = [],
         referencedDocumentFileSizes: [Int] = [],
         downloadedDocumentFileNames: [String] = [],
-        accessedProjectIds: [String] = []
+        accessedProjectIds: [String] = [],
+        toolInteractions: [ToolInteraction] = []
     ) {
         self.id = id
         self.role = role
@@ -69,6 +73,7 @@ struct Message: Identifiable, Codable, Equatable {
         self.referencedDocumentFileSizes = referencedDocumentFileSizes
         self.downloadedDocumentFileNames = downloadedDocumentFileNames
         self.accessedProjectIds = accessedProjectIds
+        self.toolInteractions = toolInteractions
     }
     
     // MARK: - Codable (with backward compatibility)
@@ -79,7 +84,7 @@ struct Message: Identifiable, Codable, Equatable {
         case imageFileNames, documentFileNames, imageFileSizes, documentFileSizes
         case referencedImageFileNames, referencedDocumentFileNames
         case referencedDocumentFileSizes
-        case downloadedDocumentFileNames, accessedProjectIds
+        case downloadedDocumentFileNames, accessedProjectIds, toolInteractions
         // Legacy single-value fields (for decoding old data)
         case imageFileName, documentFileName, imageFileSize, documentFileSize
         case referencedImageFileName, referencedDocumentFileName
@@ -157,6 +162,9 @@ struct Message: Identifiable, Codable, Equatable {
         
         // Accessed projects (new field, default to empty for old messages)
         accessedProjectIds = (try? container.decode([String].self, forKey: .accessedProjectIds)) ?? []
+
+        // Tool interactions (new field, default to empty for old messages)
+        toolInteractions = (try? container.decode([ToolInteraction].self, forKey: .toolInteractions)) ?? []
     }
     
     func encode(to encoder: Encoder) throws {
@@ -177,5 +185,25 @@ struct Message: Identifiable, Codable, Equatable {
         try container.encode(referencedDocumentFileSizes, forKey: .referencedDocumentFileSizes)
         try container.encode(downloadedDocumentFileNames, forKey: .downloadedDocumentFileNames)
         try container.encode(accessedProjectIds, forKey: .accessedProjectIds)
+        if !toolInteractions.isEmpty {
+            try container.encode(toolInteractions, forKey: .toolInteractions)
+        }
+    }
+
+    // Manual Equatable — excludes toolInteractions (ToolInteraction is not Equatable)
+    static func == (lhs: Message, rhs: Message) -> Bool {
+        lhs.id == rhs.id &&
+        lhs.role == rhs.role &&
+        lhs.content == rhs.content &&
+        lhs.timestamp == rhs.timestamp &&
+        lhs.imageFileNames == rhs.imageFileNames &&
+        lhs.documentFileNames == rhs.documentFileNames &&
+        lhs.imageFileSizes == rhs.imageFileSizes &&
+        lhs.documentFileSizes == rhs.documentFileSizes &&
+        lhs.referencedImageFileNames == rhs.referencedImageFileNames &&
+        lhs.referencedDocumentFileNames == rhs.referencedDocumentFileNames &&
+        lhs.referencedDocumentFileSizes == rhs.referencedDocumentFileSizes &&
+        lhs.downloadedDocumentFileNames == rhs.downloadedDocumentFileNames &&
+        lhs.accessedProjectIds == rhs.accessedProjectIds
     }
 }

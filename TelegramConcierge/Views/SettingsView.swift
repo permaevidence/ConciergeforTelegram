@@ -107,7 +107,12 @@ struct SettingsView: View {
     
     // Archive settings
     @State private var archiveChunkSize: String = ""
-    
+
+    // Context budget settings
+    @State private var maxContextTokens: String = ""
+    @State private var targetContextTokens: String = ""
+    @State private var showingContextBudgetSaved: Bool = false
+
     // Memory deletion
     @State private var showingDeleteMemoryConfirmation: Bool = false
     @State private var showingDeleteContextConfirmation: Bool = false
@@ -136,6 +141,8 @@ struct SettingsView: View {
     private let telegramService = TelegramBotService()
     private let defaultArchiveChunkSize = 10000
     private let minimumArchiveChunkSize = 5000
+    private let defaultMaxContextTokens = 100000
+    private let defaultTargetContextTokens = 50000
     private let defaultToolSpendLimitPerTurnUSD = 0.20
     private let minimumToolSpendLimitPerTurnUSD = 0.001
     
@@ -726,7 +733,43 @@ struct SettingsView: View {
                 Text("Size of each memory chunk. Archival triggers at 2× this value. Consolidation merges 4 chunks. Min: 5,000. If left empty, the default value is used. Changes apply to new chunks only.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+
+                Divider()
+
+                HStack {
+                    Text("Max Context Tokens")
+                    Spacer()
+                    TextField("\(defaultMaxContextTokens)", text: $maxContextTokens)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                        .multilineTextAlignment(.trailing)
+                    Text("tokens")
+                        .foregroundColor(.secondary)
+                }
+
+                HStack {
+                    Text("Prune Target Tokens")
+                    Spacer()
+                    TextField("\(defaultTargetContextTokens)", text: $targetContextTokens)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                        .multilineTextAlignment(.trailing)
+                    if showingContextBudgetSaved {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                            .transition(.opacity)
+                    }
+                }
+
+                Button("Save Context Budget") {
+                    saveContextBudget()
+                }
+                .buttonStyle(.bordered)
+
+                Text("When the full context (system prompt + history + stored tool interactions) exceeds Max, tool interactions are pruned from oldest turns down to Target. This preserves prompt caching by keeping recent tool context intact. Min Max: 10,000. Min Target: 5,000.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
             } header: {
                 Label("Developer Tools", systemImage: "wrench.and.screwdriver")
             }
@@ -1822,6 +1865,20 @@ struct SettingsView: View {
         } else {
             archiveChunkSize = ""
         }
+
+        // Load context budget settings
+        if let saved = KeychainHelper.load(key: KeychainHelper.maxContextTokensKey),
+           let val = Int(saved), val >= 10000, val != defaultMaxContextTokens {
+            maxContextTokens = saved
+        } else {
+            maxContextTokens = ""
+        }
+        if let saved = KeychainHelper.load(key: KeychainHelper.targetContextTokensKey),
+           let val = Int(saved), val >= 5000, val != defaultTargetContextTokens {
+            targetContextTokens = saved
+        } else {
+            targetContextTokens = ""
+        }
     }
     
     private func testConnection() {
@@ -2538,7 +2595,51 @@ struct SettingsView: View {
             conversationManager.error = "Failed to save chunk size: \(error.localizedDescription)"
         }
     }
-    
+
+    private func saveContextBudget() {
+        let rawMax = maxContextTokens.trimmingCharacters(in: .whitespacesAndNewlines)
+        let rawTarget = targetContextTokens.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let maxVal: String
+        if rawMax.isEmpty {
+            maxContextTokens = ""
+            maxVal = "\(defaultMaxContextTokens)"
+        } else if let v = Int(rawMax), v >= 10000 {
+            maxContextTokens = rawMax
+            maxVal = rawMax
+        } else {
+            maxContextTokens = ""
+            maxVal = "\(defaultMaxContextTokens)"
+        }
+
+        let targetVal: String
+        if rawTarget.isEmpty {
+            targetContextTokens = ""
+            targetVal = "\(defaultTargetContextTokens)"
+        } else if let v = Int(rawTarget), v >= 5000 {
+            targetContextTokens = rawTarget
+            targetVal = rawTarget
+        } else {
+            targetContextTokens = ""
+            targetVal = "\(defaultTargetContextTokens)"
+        }
+
+        do {
+            try KeychainHelper.save(key: KeychainHelper.maxContextTokensKey, value: maxVal)
+            try KeychainHelper.save(key: KeychainHelper.targetContextTokensKey, value: targetVal)
+            withAnimation {
+                showingContextBudgetSaved = true
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                withAnimation {
+                    showingContextBudgetSaved = false
+                }
+            }
+        } catch {
+            conversationManager.error = "Failed to save context budget: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Mind Export/Import
     
     private func exportMind() {

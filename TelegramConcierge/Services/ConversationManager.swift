@@ -34,10 +34,14 @@ class ConversationManager: ObservableObject {
     private let maxToolRoundsSafetyLimit = 120
     private let shouldResumePollingDefaultsKey = "should_resume_polling_on_launch"
     private let privacyModeDefaultsKey = "telegram_privacy_mode_enabled"
-    
+    private let systemPromptTimestampKey = "system_prompt_cache_epoch"
+    private let defaultMaxContextTokens = 100_000
+    private let defaultTargetContextTokens = 50_000
+
     private struct ToolAwareResponse {
         let finalText: String
         let compactToolLog: String?
+        let toolInteractions: [ToolInteraction]
         let accessedProjects: [String]?
     }
 
@@ -730,23 +734,25 @@ class ConversationManager: ObservableObject {
             
             var didMutateHistory = false
 
+            // Store compact tool log for backward compatibility with FractalMind summaries
             if let toolLog = response.compactToolLog, !toolLog.isEmpty {
                 messages.append(Message(role: .assistant, content: toolLog))
                 pruneOldToolLogMessages()
                 didMutateHistory = true
             }
-            
-            // Add assistant message with any downloaded files and accessed projects tracked
+
+            // Add assistant message with tool interactions, downloaded files, and accessed projects
             let finalResponseRaw = response.finalText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                 ? "I completed the requested actions."
                 : response.finalText
             let finalResponse = capAssistantMessageForHistoryAndTelegram(finalResponseRaw)
             let downloadedFilenames = ToolExecutor.getPendingDownloadedFilenames()
             let assistantMessage = Message(
-                role: .assistant, 
-                content: finalResponse, 
+                role: .assistant,
+                content: finalResponse,
                 downloadedDocumentFileNames: downloadedFilenames,
-                accessedProjectIds: response.accessedProjects ?? []
+                accessedProjectIds: response.accessedProjects ?? [],
+                toolInteractions: response.toolInteractions
             )
             messages.append(assistantMessage)
             didMutateHistory = true
@@ -1130,7 +1136,7 @@ class ConversationManager: ObservableObject {
         try Task.checkCancellation()
         print("[TIMING] Context fetch took: \(String(format: "%.2f", Date().timeIntervalSince(contextStartTime)))s")
         
-        // Archive messages if threshold exceeded - BLOCKING with infinite retry
+        // Archive messages if threshold exceeded (based on conversation text weight only)
         // Summarization is critical: we MUST complete it before proceeding to avoid data loss
         if contextResult.needsArchiving && !contextResult.messagesToArchive.isEmpty {
             let archiveStartTime = Date()
@@ -1173,7 +1179,23 @@ class ConversationManager: ObservableObject {
             }
             print("[TIMING] Archive took: \(String(format: "%.2f", Date().timeIntervalSince(archiveStartTime)))s")
         }
-        
+
+        // Prune stored tool interactions if full context exceeds budget
+        let didPrune = pruneToolInteractionsIfNeeded(
+            calendarContext: calendarContext,
+            emailContext: emailContext,
+            chunkSummaries: chunkSummaries
+        )
+        if didPrune {
+            refreshSystemPromptTimestamp()
+        }
+
+        // Use the frozen system prompt timestamp (only refreshes on prune events or day change)
+        let systemPromptDate = currentSystemPromptTimestamp()
+
+        // Capture messages after archival + pruning for the agentic loop
+        let messagesForLLM = messages
+
         // Tool interaction loop with per-turn, daily, and monthly spend caps (USD).
         let toolSpendLimitPerTurnUSD = configuredToolSpendLimitPerTurnUSD()
         let spendLimitStatus = currentSpendLimitStatus(referenceDate: Date())
@@ -1195,6 +1217,7 @@ class ConversationManager: ObservableObject {
             return ToolAwareResponse(
                 finalText: exceededMessage,
                 compactToolLog: nil,
+                toolInteractions: [],
                 accessedProjects: []
             )
         }
@@ -1214,7 +1237,7 @@ class ConversationManager: ObservableObject {
             }
             let allowedToolNames = Set(toolsForRound.map { $0.function.name })
             let response = try await openRouterService.generateResponse(
-                messages: contextResult.messagesToSend,
+                messages: messagesForLLM,
                 imagesDirectory: imagesDirectory,
                 documentsDirectory: documentsDirectory,
                 tools: toolsForRound,  // Always pass tools so LLM can chain calls
@@ -1225,7 +1248,7 @@ class ConversationManager: ObservableObject {
                 totalChunkCount: totalChunkCount,
                 currentUserMessageId: currentUserMessageId,
                 deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
-                turnStartDate: turnStartDate
+                turnStartDate: systemPromptDate
             )
             print("[TIMING] LLM API call took: \(String(format: "%.2f", Date().timeIntervalSince(llmStartTime)))s")
             let roundSpendUSD = spendUSD(from: response)
@@ -1251,6 +1274,7 @@ class ConversationManager: ObservableObject {
                 return ToolAwareResponse(
                     finalText: content,
                     compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                    toolInteractions: toolInteractions,
                     accessedProjects: accessedProjects
                 )
                 
@@ -1275,6 +1299,7 @@ class ConversationManager: ObservableObject {
                     return ToolAwareResponse(
                         finalText: exceededMessage,
                         compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                        toolInteractions: toolInteractions,
                         accessedProjects: extractAccessedProjects(from: toolInteractions)
                     )
                 }
@@ -1370,6 +1395,7 @@ class ConversationManager: ObservableObject {
                     return ToolAwareResponse(
                         finalText: exceededMessage,
                         compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                        toolInteractions: toolInteractions,
                         accessedProjects: extractAccessedProjects(from: toolInteractions)
                     )
                 }
@@ -1399,7 +1425,7 @@ class ConversationManager: ObservableObject {
 
         try Task.checkCancellation()
         let finalResponse = try await openRouterService.generateResponse(
-            messages: contextResult.messagesToSend,
+            messages: messagesForLLM,
             imagesDirectory: imagesDirectory,
             documentsDirectory: documentsDirectory,
             tools: nil,  // No tools to force text response
@@ -1410,7 +1436,7 @@ class ConversationManager: ObservableObject {
             totalChunkCount: totalChunkCount,
             currentUserMessageId: currentUserMessageId,
             deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
-            turnStartDate: turnStartDate,
+            turnStartDate: systemPromptDate,
             finalResponseInstruction: finalResponseInstruction
         )
         if let finalSpendUSD = spendUSD(from: finalResponse), finalSpendUSD > 0 {
@@ -1424,12 +1450,14 @@ class ConversationManager: ObservableObject {
             return ToolAwareResponse(
                 finalText: content,
                 compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                toolInteractions: toolInteractions,
                 accessedProjects: accessedProjects
             )
         case .toolCalls(_, _, _, _):
             return ToolAwareResponse(
                 finalText: "I completed the requested actions but had trouble summarizing the results.",
                 compactToolLog: buildCompactToolExecutionLog(from: toolInteractions),
+                toolInteractions: toolInteractions,
                 accessedProjects: accessedProjects
             )
         }
@@ -1521,7 +1549,127 @@ class ConversationManager: ObservableObject {
             .filter { $0.isFinite && $0 > 0 }
             .reduce(0, +)
     }
-    
+
+    // MARK: - Context Budget & Tool Interaction Pruning
+
+    private func configuredMaxContextTokens() -> Int {
+        if let raw = KeychainHelper.load(key: KeychainHelper.maxContextTokensKey),
+           let value = Int(raw), value >= 10000 {
+            return value
+        }
+        return defaultMaxContextTokens
+    }
+
+    private func configuredTargetContextTokens() -> Int {
+        if let raw = KeychainHelper.load(key: KeychainHelper.targetContextTokensKey),
+           let value = Int(raw), value >= 5000 {
+            return value
+        }
+        return defaultTargetContextTokens
+    }
+
+    /// Estimate tokens for tool interactions (assistant tool_calls + tool results)
+    private func estimateToolInteractionTokens(_ interactions: [ToolInteraction]) -> Int {
+        var tokens = 0
+        for interaction in interactions {
+            tokens += (interaction.assistantMessage.content?.count ?? 0) / 4
+            for call in interaction.assistantMessage.toolCalls {
+                tokens += call.function.arguments.count / 4
+                tokens += call.function.name.count / 4 + 20
+            }
+            for result in interaction.results {
+                tokens += result.content.count / 4 + 20
+            }
+        }
+        return tokens
+    }
+
+    /// Estimate system prompt size from its components
+    private func estimateSystemPromptTokens(
+        calendarContext: String?,
+        emailContext: String?,
+        chunkSummaries: [ArchivedSummaryItem]
+    ) -> Int {
+        var chars = 3000 // Fixed instruction overhead
+        let persona = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+        chars += persona.count
+        if let cal = calendarContext { chars += cal.count }
+        if let email = emailContext { chars += email.count }
+        for summary in chunkSummaries {
+            chars += summary.summary.count + 100
+        }
+        return chars / 4
+    }
+
+    /// Prune stored tool interactions from oldest turns to stay under context budget.
+    /// Returns true if any pruning occurred (cache was broken).
+    private func pruneToolInteractionsIfNeeded(
+        calendarContext: String?,
+        emailContext: String?,
+        chunkSummaries: [ArchivedSummaryItem]
+    ) -> Bool {
+        let maxTokens = configuredMaxContextTokens()
+        let targetTokens = configuredTargetContextTokens()
+
+        // Estimate full context: system prompt + all messages + all stored tool interactions
+        var totalTokens = estimateSystemPromptTokens(
+            calendarContext: calendarContext,
+            emailContext: emailContext,
+            chunkSummaries: chunkSummaries
+        )
+        for message in messages {
+            totalTokens += message.content.count / 4 + 1
+            totalTokens += message.imageFileNames.count * 50
+            totalTokens += message.documentFileNames.count * 50
+            totalTokens += estimateToolInteractionTokens(message.toolInteractions)
+        }
+
+        guard totalTokens > maxTokens else {
+            print("[ConversationManager] Context budget OK: ~\(totalTokens) tokens <= \(maxTokens)")
+            return false
+        }
+
+        print("[ConversationManager] Context budget exceeded: ~\(totalTokens) tokens > \(maxTokens). Pruning tool interactions to ~\(targetTokens)...")
+
+        var prunedCount = 0
+        for i in 0..<messages.count {
+            guard totalTokens > targetTokens else { break }
+            guard messages[i].role == .assistant && !messages[i].toolInteractions.isEmpty else { continue }
+
+            let savedTokens = estimateToolInteractionTokens(messages[i].toolInteractions)
+            messages[i].toolInteractions = []
+            totalTokens -= savedTokens
+            prunedCount += 1
+        }
+
+        if prunedCount > 0 {
+            saveConversation()
+            print("[ConversationManager] Pruned tool interactions from \(prunedCount) turn(s). New estimate: ~\(totalTokens) tokens")
+        }
+
+        return prunedCount > 0
+    }
+
+    // MARK: - System Prompt Cache Epoch
+
+    /// Returns a frozen timestamp for the system prompt. Only refreshes on prune events
+    /// or when the date changes (to keep "today" accurate).
+    private func currentSystemPromptTimestamp() -> Date {
+        if let stored = UserDefaults.standard.object(forKey: systemPromptTimestampKey) as? Date {
+            if Calendar.current.isDateInToday(stored) {
+                return stored
+            }
+        }
+        let now = Date()
+        UserDefaults.standard.set(now, forKey: systemPromptTimestampKey)
+        return now
+    }
+
+    /// Force-refresh the system prompt timestamp (called when cache is already broken by pruning)
+    private func refreshSystemPromptTimestamp() {
+        UserDefaults.standard.set(Date(), forKey: systemPromptTimestampKey)
+    }
+
     private func formatUSD(_ value: Double) -> String {
         var formatted = String(format: "%.6f", value)
         while formatted.contains(".") && formatted.last == "0" {
