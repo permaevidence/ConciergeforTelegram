@@ -122,6 +122,13 @@ actor ConversationArchiveService {
     
     // Cached live context for consolidation (updated when archiveMessages is called)
     private var cachedLiveContext: String?
+
+    /// Optional callback for status notifications (e.g., sending Telegram messages)
+    private var onStatusNotification: (@Sendable (String) -> Void)?
+
+    func setStatusNotificationHandler(_ handler: @escaping @Sendable (String) -> Void) {
+        onStatusNotification = handler
+    }
     
     // MARK: - Initialization
     
@@ -553,11 +560,12 @@ actor ConversationArchiveService {
     
     private func checkAndConsolidate() async {
         let temps = chunkIndex.temporaryChunks
-        
+
         if temps.count >= consolidationTriggerCount {
             let toConsolidate = Array(temps.prefix(chunksToConsolidate))
-            
+
             do {
+                onStatusNotification?("🧠 Consolidating memory chunks...")
                 try await consolidateChunks(toConsolidate)
             } catch {
                 print("[ArchiveService] Consolidation failed: \(error)")
@@ -654,6 +662,7 @@ actor ConversationArchiveService {
         // Restructure user context at consolidation time (~every 4 chunks).
         // After several append-only additions, the context may have duplicates or could
         // benefit from reorganization. This does a full intelligent merge.
+        onStatusNotification?("🧠 Reorganizing user context...")
         await restructureUserContext()
     }
 

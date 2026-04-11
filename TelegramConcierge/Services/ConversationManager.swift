@@ -102,6 +102,19 @@ class ConversationManager: ObservableObject {
     init() {
         isPrivacyModeEnabled = UserDefaults.standard.bool(forKey: privacyModeDefaultsKey)
         loadConversation()
+
+        // Wire up archive status notifications to Telegram
+        let telegramSvc = telegramService
+        let archiveSvc = archiveService
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let chatId = self.pairedChatId
+            await archiveSvc.setStatusNotificationHandler { message in
+                guard let chatId else { return }
+                Task { try? await telegramSvc.sendMessage(chatId: chatId, text: message) }
+            }
+        }
+
         if shouldResumePollingOnLaunch && hasRequiredPollingConfiguration() {
             Task { [weak self] in
                 await self?.startPolling()
