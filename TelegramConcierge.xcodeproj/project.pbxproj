@@ -29,6 +29,7 @@
 		A100000F282D4F0100000001 /* ConversationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000010282D4F0100000001 /* ConversationManager.swift */; };
 		A1000011282D4F0100000001 /* KeychainHelper.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000012282D4F0100000001 /* KeychainHelper.swift */; };
 		A1000013282D4F0100000001 /* SettingsView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000014282D4F0100000001 /* SettingsView.swift */; };
+		A10000A0282D4F0100000001 /* OnboardingView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A10000A1282D4F0100000001 /* OnboardingView.swift */; };
 		A1000015282D4F0100000001 /* MessageBubbleView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A1000016282D4F0100000001 /* MessageBubbleView.swift */; };
 		A20FA62FAD25E07335060F6F /* WebOrchestrator.swift in Sources */ = {isa = PBXBuildFile; fileRef = DA0AE409F8E6598E75DFDF72 /* WebOrchestrator.swift */; };
 		A494EEEA1729398C6C50A56F /* ToolModels.swift in Sources */ = {isa = PBXBuildFile; fileRef = FC662244A7AAD92235CE193B /* ToolModels.swift */; };
@@ -65,6 +66,7 @@
 		A1000010282D4F0100000001 /* ConversationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConversationManager.swift; sourceTree = "<group>"; };
 		A1000012282D4F0100000001 /* KeychainHelper.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = KeychainHelper.swift; sourceTree = "<group>"; };
 		A1000014282D4F0100000001 /* SettingsView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsView.swift; sourceTree = "<group>"; };
+		A10000A1282D4F0100000001 /* OnboardingView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = OnboardingView.swift; sourceTree = "<group>"; };
 		A1000016282D4F0100000001 /* MessageBubbleView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MessageBubbleView.swift; sourceTree = "<group>"; };
 		A1000017282D4F0100000001 /* TelegramConcierge.entitlements */ = {isa = PBXFileReference; lastKnownFileType = text.plist.entitlements; path = TelegramConcierge.entitlements; sourceTree = "<group>"; };
 		AD50E4C9FE60DE1DEB6071AF /* WebOrchestrator+Helpers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "WebOrchestrator+Helpers.swift"; sourceTree = "<group>"; };
@@ -157,6 +159,7 @@
 			children = (
 				A1000004282D4F0100000001 /* ContentView.swift */,
 				A1000014282D4F0100000001 /* SettingsView.swift */,
+				A10000A1282D4F0100000001 /* OnboardingView.swift */,
 				A1000016282D4F0100000001 /* MessageBubbleView.swift */,
 				CONTEXTVIEW0123456789ABC2 /* ContextViewerView.swift */,
 			);
@@ -269,6 +272,7 @@
 				1BAD23572F2E2F00000A88B2 /* WhisperKitService.swift in Sources */,
 				A1000011282D4F0100000001 /* KeychainHelper.swift in Sources */,
 				A1000013282D4F0100000001 /* SettingsView.swift in Sources */,
+				A10000A0282D4F0100000001 /* OnboardingView.swift in Sources */,
 				A1000015282D4F0100000001 /* MessageBubbleView.swift in Sources */,
 				A494EEEA1729398C6C50A56F /* ToolModels.swift in Sources */,
 				A20FA62FAD25E07335060F6F /* WebOrchestrator.swift in Sources */,

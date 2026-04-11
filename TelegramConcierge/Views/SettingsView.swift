@@ -1077,6 +1077,24 @@ struct SettingsView: View {
                 Text("Permanently deletes all conversation history, chunks, summaries, user context, and reminders. Calendar and contacts are preserved.")
                     .font(.caption)
                     .foregroundColor(.secondary)
+
+                Divider()
+
+                Button {
+                    UserDefaults.standard.set(false, forKey: "onboarding_completed")
+                } label: {
+                    HStack {
+                        Image(systemName: "arrow.counterclockwise")
+                            .foregroundColor(.accentColor)
+                        Text("Restart Onboarding")
+                        Spacer()
+                    }
+                }
+                .buttonStyle(.plain)
+
+                Text("Reopens the guided setup wizard on next app launch. Your existing settings are preserved — fields will be pre-filled.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
             } header: {
                 Label("Data", systemImage: "externaldrive.fill")
             }
