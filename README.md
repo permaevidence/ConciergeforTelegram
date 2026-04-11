@@ -14,9 +14,11 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 
 ### 🤖 AI Core
 - **Any LLM** via [OpenRouter](https://openrouter.ai) — Gemini, Claude, GPT, Grok, and more
+- **Local inference** via [LM Studio](https://lmstudio.ai) — run models locally with automatic KV cache preservation
 - **Configurable reasoning effort** — adjust thinking depth per model
 - **Full tool-use (function calling)** — the LLM autonomously decides when and how to use over 30 tools
 - **Multimodal** — understands images, PDFs, audio, and documents you send via Telegram
+- **Prompt cache optimization** — tool interactions persist across turns, system prompt stays stable, and a two-threshold pruning system keeps context within budget while maximizing cache hit rates
 - **Remote privacy mode** — send `/hide` from Telegram to hide conversations and other sensitive UI on the Mac until `/show` is sent
 
 ### 🧠 Persistent Memory (FractalMind)
@@ -122,7 +124,9 @@ A native macOS AI assistant that lives inside a Telegram bot you control. It rea
 
 - **Agentic loop** — the LLM runs iteratively: it can call tools, observe results, then call more tools until it has a final answer
 - **Parallel tool execution** — multiple independent tool calls are dispatched concurrently
-- **Dynamic context window** — conversation is kept within token limits (~10k–20k) with automatic overflow archival
+- **Tool interaction persistence** — tool calls and results are stored on assistant messages across turns, enabling prompt cache reuse between turns (see below)
+- **Token-budget context management** — a two-threshold system (max trigger / prune target, default 100K/50K) collapses stored tool interactions from oldest turns when context grows too large, while FractalMind archival independently manages conversation text weight
+- **Prompt cache optimization** — system prompt uses a frozen date-only timestamp that refreshes only on prune events or day boundaries; combined with stable message history prefix, this maximizes prompt cache hit rates across consecutive API calls
 - **Keychain storage** — all API keys and secrets are stored in the macOS Keychain, never on disk
 - **Sandbox-aware** — runs in the macOS app sandbox with network, audio input, and Apple Events entitlements
 
@@ -312,29 +316,65 @@ TelegramConcierge/
 
 Telegram Concierge uses a tiered memory system inspired by how human memory works:
 
-1. **Active context** (~10k–20k tokens) — the most recent conversation messages, sent directly to the LLM.
-2. **Temporary chunks** (~10k tokens each) — when the active context overflows, the oldest messages are archived into a chunk and summarized by the LLM.
-3. **Consolidated chunks** (~40k tokens each) — when 6 temporary chunks accumulate, the oldest 4 are merged into a larger consolidated chunk with a richer summary.
-4. **User context** — persistent facts about you (preferences, relationships, details), learned automatically or via the `add_to_user_context` tool.
-5. **Chunk summaries in system prompt** — summaries of recent chunks are always visible to the AI, so it knows what was discussed even if the raw messages are no longer in context.
-6. **Deep search** — the AI can retrieve and read full archived chunks when it needs to recall specific details.
+1. **Active context** — the most recent conversation messages plus their tool interactions, sent directly to the LLM. Total context is managed by a configurable token budget (default 100K max).
+2. **Tool interaction persistence** — tool calls and results from each turn are stored on the assistant message and included in subsequent API calls. This creates a stable message prefix that enables prompt caching across turns. When the context budget is exceeded, tool interactions are pruned from the oldest turns first (down to the target, default 50K), while the most recent turn is always protected.
+3. **Compact tool logs** — when tool interactions are pruned, a lightweight summary of what tools were used replaces them. Up to 5 active logs are retained as system-role context so the LLM still knows what happened in those turns.
+4. **Temporary chunks** (~10k tokens each) — when conversation text weight (excluding tool interactions) overflows, the oldest messages are archived into a chunk and summarized by the LLM. This is independent of the tool interaction budget.
+5. **Consolidated chunks** (~40k tokens each) — when 6 temporary chunks accumulate, the oldest 4 are merged into a larger consolidated chunk with a richer summary.
+6. **User context** — persistent facts about you (preferences, relationships, details), learned automatically during archival or via the `add_to_user_context` tool. Restructured at consolidation time to remove duplicates.
+7. **Chunk summaries in system prompt** — summaries of recent chunks are always visible to the AI, so it knows what was discussed even if the raw messages are no longer in context.
+8. **Deep search** — the AI can retrieve and read full archived chunks when it needs to recall specific details.
+
+### Prompt Caching
+
+The architecture is designed to maximize prompt cache hit rates:
+
+- **Frozen system prompt** — the date in the system prompt updates only on prune events or day boundaries, not on every turn. The current time comes from message timestamps instead.
+- **Stable history prefix** — tool interactions stored on messages become part of the cacheable prefix. Between prune events, the prefix is byte-identical across API calls.
+- **LM Studio KV cache** — for local inference, a separate description model can be configured to prevent file description calls from evicting the main model's KV cache. Web search calls always go through OpenRouter and never touch the local cache.
+- **Anthropic cache control** — breakpoints are placed on the system prompt and the last historical message for explicit cache reuse during agentic tool loops.
+
+### Telegram Commands
+
+| Command | Description |
+|---------|-------------|
+| `/stop` | Interrupt the current processing |
+| `/spend` | View API spend summary |
+| `/more1` `/more5` `/more10` | Temporarily raise spend limits |
+| `/prune` | Manually prune stored tool interactions to target context size |
+| `/hide` / `/show` | Toggle privacy mode (hide/show UI on Mac) |
+| `/claude` `/gemini` `/codex` | Switch Code CLI provider |
+| `/transcribe_local` `/transcribe_openai` | Switch voice transcription method |
 
 ---
 
 ## 📋 Configuration Reference
 
-All configuration is done in the app's Settings panel (⌘,). See [SETUP.md](SETUP.md) for detailed instructions.
+All configuration is done in the app's Settings panel (⌘,), organized into four tabs. Settings auto-save as you type (0.5s debounce). See [SETUP.md](SETUP.md) for detailed instructions.
 
-| Section | Required? | What it does |
-|---|---|---|
-| **Persona** | ✅ | Name your AI, tell it about yourself |
-| **Telegram Bot** | ✅ | Bot token + your Chat ID |
-| **OpenRouter** | ✅ | LLM API key, model selection, reasoning effort |
-| **Web Search** | Optional | Serper + Jina keys for web browsing |
-| **Image Generation** | Optional | Gemini API key for image generation |
-| **Code CLI** | Optional | Choose Claude Code, Gemini CLI, or Codex CLI and configure command + args |
-| **Email** | Optional | Gmail API (recommended) or IMAP/SMTP |
-| **Voice Transcription** | Optional | Download + compile WhisperKit model |
+| Tab | Section | Required? | What it does |
+|---|---|---|---|
+| **Identity** | Persona | ✅ | Name your AI, tell it about yourself |
+| **Connection** | Telegram Bot | ✅ | Bot token + your Chat ID |
+| **Connection** | LLM Provider | ✅ | OpenRouter or LM Studio, model selection, reasoning effort, spend limits |
+| **Services** | Voice Transcription | Optional | On-device WhisperKit or OpenAI API |
+| **Services** | Web Search | Optional | Serper + Jina keys for web browsing |
+| **Services** | Email | Optional | Gmail API (recommended) or IMAP/SMTP |
+| **Services** | Image Generation | Optional | Gemini API key for image generation |
+| **Services** | Code CLI | Optional | Choose Claude Code, Gemini CLI, or Codex CLI |
+| **Services** | Vercel | Optional | Deploy projects to Vercel |
+| **Services** | Instant Database | Optional | Provision and manage InstantDB databases |
+| **Data** | Developer Tools | — | Context viewer, archive chunk size, context budget (max/target tokens) |
+| **Data** | Data Portability | — | Mind export/import, calendar export/import, contacts, delete memory |
+
+### LM Studio Configuration
+
+When using LM Studio as the LLM provider:
+
+- **Description Model** (optional) — a separate smaller model for generating file descriptions, so these calls don't evict the main model's KV cache. Configure under Connection > LM Studio.
+- **Description Base URL** (optional) — if the description model runs on a different LM Studio port.
+- The main model's KV cache persists indefinitely while loaded (no TTL). Manually load the model in LM Studio to prevent idle eviction (default 60min for JIT-loaded models).
+- Web search and deep research always route through OpenRouter regardless of provider selection, preserving the local KV cache.
 
 ---
 
