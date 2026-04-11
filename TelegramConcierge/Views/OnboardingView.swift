@@ -200,7 +200,7 @@ struct OnboardingView: View {
 
                         TextField("Model Name", text: $lmStudioModel)
                             .textFieldStyle(.roundedBorder)
-                        Text("Recommended: Gemma 4 27B or Gemma 4 12B — excellent reasoning and tool use for local inference.")
+                        Text("Recommended: Gemma 4 26B or Gemma 4 31B — excellent reasoning and tool use. Use a multimodal model so the assistant can see images and documents.")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -222,7 +222,7 @@ struct OnboardingView: View {
 
                         TextField("Description Model (recommended)", text: $lmStudioDescriptionModel)
                             .textFieldStyle(.roundedBorder)
-                        Text("A separate smaller model for file descriptions, so the main model's KV cache isn't evicted. Highly recommended.")
+                        Text("A separate multimodal model for file descriptions (it needs to see images/PDFs), so the main model's KV cache isn't evicted. Highly recommended.")
                             .font(.caption)
                             .foregroundColor(.orange)
 
