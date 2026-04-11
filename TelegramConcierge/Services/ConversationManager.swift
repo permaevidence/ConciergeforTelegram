@@ -904,25 +904,28 @@ class ConversationManager: ObservableObject {
 
     private func manualPruneToolInteractions() async {
         let targetTokens = configuredTargetContextTokens()
+        let protectedIndex = lastAssistantIndexWithTools(in: messages)
 
         // Estimate current context with a rough system prompt estimate
         var totalTokens = 3000 // System prompt overhead estimate
         let persona = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
         totalTokens += persona.count / 4
 
-        var toolTokens = 0
-        for message in messages {
+        var prunableToolTokens = 0
+        for (i, message) in messages.enumerated() {
             totalTokens += message.content.count / 4 + 1
             totalTokens += message.imageFileNames.count * 50
             totalTokens += message.documentFileNames.count * 50
             let msgToolTokens = estimateToolInteractionTokens(message.toolInteractions)
             totalTokens += msgToolTokens
-            toolTokens += msgToolTokens
+            if i != protectedIndex && message.role == .assistant && !message.toolInteractions.isEmpty {
+                prunableToolTokens += msgToolTokens
+            }
         }
 
-        guard toolTokens > 0 else {
+        guard prunableToolTokens > 0 else {
             if let chatId = pairedChatId {
-                try? await telegramService.sendMessage(chatId: chatId, text: "No stored tool interactions to prune.")
+                try? await telegramService.sendMessage(chatId: chatId, text: "No prunable tool interactions (the latest turn is always protected).")
             }
             return
         }
@@ -932,6 +935,7 @@ class ConversationManager: ObservableObject {
         var prunedCount = 0
         for i in 0..<messages.count {
             guard totalTokens > targetTokens else { break }
+            guard i != protectedIndex else { continue }
             guard messages[i].role == .assistant && !messages[i].toolInteractions.isEmpty else { continue }
 
             let savedTokens = estimateToolInteractionTokens(messages[i].toolInteractions)
@@ -948,7 +952,7 @@ class ConversationManager: ObservableObject {
 
         if let chatId = pairedChatId {
             let msg = prunedCount > 0
-                ? "✂️ Pruned tool interactions from \(prunedCount) turn(s). Context: ~\(beforeTokens / 1000)K → ~\(totalTokens / 1000)K tokens (target: \(targetTokens / 1000)K)."
+                ? "✂️ Pruned tool interactions from \(prunedCount) turn(s). Context: ~\(beforeTokens / 1000)K → ~\(totalTokens / 1000)K tokens (target: \(targetTokens / 1000)K). Latest turn protected."
                 : "Context already under target (~\(totalTokens / 1000)K ≤ \(targetTokens / 1000)K). Nothing to prune."
             try? await telegramService.sendMessage(chatId: chatId, text: msg)
         }
@@ -1677,7 +1681,13 @@ class ConversationManager: ObservableObject {
         return chars / 4
     }
 
+    /// Index of the most recent assistant message with tool interactions (protected from pruning).
+    private func lastAssistantIndexWithTools(in msgs: [Message]) -> Int? {
+        msgs.indices.last { msgs[$0].role == .assistant && !msgs[$0].toolInteractions.isEmpty }
+    }
+
     /// Prune stored tool interactions from oldest turns to stay under context budget.
+    /// The most recent turn with tools is always protected.
     /// Returns true if any pruning occurred (cache was broken).
     private func pruneToolInteractionsIfNeeded(
         calendarContext: String?,
@@ -1686,6 +1696,7 @@ class ConversationManager: ObservableObject {
     ) -> Bool {
         let maxTokens = configuredMaxContextTokens()
         let targetTokens = configuredTargetContextTokens()
+        let protectedIndex = lastAssistantIndexWithTools(in: messages)
 
         // Estimate full context: system prompt + all messages + all stored tool interactions
         var totalTokens = estimateSystemPromptTokens(
@@ -1693,15 +1704,26 @@ class ConversationManager: ObservableObject {
             emailContext: emailContext,
             chunkSummaries: chunkSummaries
         )
-        for message in messages {
+        var prunableToolTokens = 0
+        for (i, message) in messages.enumerated() {
             totalTokens += message.content.count / 4 + 1
             totalTokens += message.imageFileNames.count * 50
             totalTokens += message.documentFileNames.count * 50
-            totalTokens += estimateToolInteractionTokens(message.toolInteractions)
+            let toolTokens = estimateToolInteractionTokens(message.toolInteractions)
+            totalTokens += toolTokens
+            if i != protectedIndex && message.role == .assistant && !message.toolInteractions.isEmpty {
+                prunableToolTokens += toolTokens
+            }
         }
 
         guard totalTokens > maxTokens else {
             print("[ConversationManager] Context budget OK: ~\(totalTokens) tokens <= \(maxTokens)")
+            return false
+        }
+
+        // Skip if the only tool tokens are on the protected (most recent) turn
+        guard prunableToolTokens > 0 else {
+            print("[ConversationManager] Context budget exceeded (~\(totalTokens) > \(maxTokens)) but only the latest turn has tools — skipping prune")
             return false
         }
 
@@ -1710,6 +1732,7 @@ class ConversationManager: ObservableObject {
         var prunedCount = 0
         for i in 0..<messages.count {
             guard totalTokens > targetTokens else { break }
+            guard i != protectedIndex else { continue }
             guard messages[i].role == .assistant && !messages[i].toolInteractions.isEmpty else { continue }
 
             let savedTokens = estimateToolInteractionTokens(messages[i].toolInteractions)
@@ -1730,6 +1753,7 @@ class ConversationManager: ObservableObject {
     /// Mid-loop variant: prunes stored tool interactions from historical turns when the
     /// current turn's growing context would exceed the budget. Only touches historical
     /// messages (messagesForLLM), never the current turn's in-memory toolInteractions.
+    /// The most recent historical turn with tools is always protected.
     private func pruneStoredToolInteractionsMidLoop(
         messagesForLLM: inout [Message],
         currentTurnInteractions: [ToolInteraction],
@@ -1739,27 +1763,34 @@ class ConversationManager: ObservableObject {
     ) -> Bool {
         let maxTokens = configuredMaxContextTokens()
         let targetTokens = configuredTargetContextTokens()
+        let protectedIndex = lastAssistantIndexWithTools(in: messagesForLLM)
 
         var totalTokens = estimateSystemPromptTokens(
             calendarContext: calendarContext,
             emailContext: emailContext,
             chunkSummaries: chunkSummaries
         )
-        for message in messagesForLLM {
+        var prunableToolTokens = 0
+        for (i, message) in messagesForLLM.enumerated() {
             totalTokens += message.content.count / 4 + 1
             totalTokens += message.imageFileNames.count * 50
             totalTokens += message.documentFileNames.count * 50
-            totalTokens += estimateToolInteractionTokens(message.toolInteractions)
+            let toolTokens = estimateToolInteractionTokens(message.toolInteractions)
+            totalTokens += toolTokens
+            if i != protectedIndex && message.role == .assistant && !message.toolInteractions.isEmpty {
+                prunableToolTokens += toolTokens
+            }
         }
         totalTokens += estimateToolInteractionTokens(currentTurnInteractions)
 
-        guard totalTokens > maxTokens else { return false }
+        guard totalTokens > maxTokens, prunableToolTokens > 0 else { return false }
 
         print("[ConversationManager] Mid-loop context exceeded: ~\(totalTokens) > \(maxTokens). Pruning stored tool interactions...")
 
         var prunedCount = 0
         for i in 0..<messagesForLLM.count {
             guard totalTokens > targetTokens else { break }
+            guard i != protectedIndex else { continue }
             guard messagesForLLM[i].role == .assistant && !messagesForLLM[i].toolInteractions.isEmpty else { continue }
 
             let savedTokens = estimateToolInteractionTokens(messagesForLLM[i].toolInteractions)
