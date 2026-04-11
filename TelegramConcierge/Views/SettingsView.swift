@@ -178,8 +178,59 @@ struct SettingsView: View {
     }
     
     var body: some View {
+        TabView {
+            // MARK: - Tab 1: General
+            generalTab
+                .tabItem { Label("General", systemImage: "gear") }
+
+            // MARK: - Tab 2: AI Models
+            aiModelsTab
+                .tabItem { Label("AI Models", systemImage: "brain.head.profile") }
+
+            // MARK: - Tab 3: Tools
+            toolsTab
+                .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
+
+            // MARK: - Tab 4: Advanced
+            advancedTab
+                .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+        }
+        .frame(width: 620, height: 580)
+        .onAppear {
+            loadSettings()
+            structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+            structuredContextDraft = structuredUserContext
+            Task {
+                if voiceTranscriptionProvider == .local {
+                    await WhisperKitService.shared.checkModelStatus()
+                }
+                calendarEventCount = await CalendarService.shared.totalEventCount()
+            }
+        }
+        .alert("Restore Mind Backup?", isPresented: $showingRestoreConfirmation) {
+            Button("Cancel", role: .cancel) { pendingImportURL = nil }
+            Button("Restore", role: .destructive) {
+                if let url = pendingImportURL {
+                    importMind(from: url)
+                }
+            }
+        } message: {
+            Text("This will replace ALL current data (conversation, chunks, files, reminders, calendar, contacts, persona) with the backup. API keys are not affected. This cannot be undone.")
+        }
+        .alert("Delete All Memory?", isPresented: $showingDeleteMemoryConfirmation) {
+            Button("Cancel", role: .cancel) {}
+            Button("Delete", role: .destructive) {
+                Task { await conversationManager.deleteAllMemory() }
+            }
+        } message: {
+            Text("This permanently deletes all conversation history, chunks, summaries, user context, and reminders. Calendar and contacts are preserved. This cannot be undone.")
+        }
+    }
+
+    // MARK: - General Tab
+
+    private var generalTab: some View {
         Form {
-            // MARK: - Persona Section
             if !conversationManager.isPrivacyModeEnabled {
                 Section {
                     personaSettingsContent
@@ -187,32 +238,32 @@ struct SettingsView: View {
                     Label("Persona", systemImage: "person.text.rectangle")
                 }
             }
-            
+
             Section {
                 SecureField("Bot Token", text: $telegramToken)
                     .textFieldStyle(.roundedBorder)
-                
+
                 TextField("Chat ID", text: $chatId)
                     .textFieldStyle(.roundedBorder)
-                
+
                 HStack {
                     Text("Get this from @BotFather on Telegram")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    
+
                     Spacer()
-                    
+
                     Button("Test") {
                         testConnection()
                     }
                     .buttonStyle(.bordered)
                     .disabled(telegramToken.isEmpty || isTesting)
                 }
-                
+
                 Text("Your Telegram user ID. Send /start to @userinfobot to get it.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
+
                 if isTesting {
                     HStack {
                         ProgressView()
@@ -222,7 +273,7 @@ struct SettingsView: View {
                             .foregroundColor(.secondary)
                     }
                 }
-                
+
                 if let info = botInfo {
                     HStack {
                         Image(systemName: "checkmark.circle.fill")
@@ -232,7 +283,7 @@ struct SettingsView: View {
                             .foregroundColor(.green)
                     }
                 }
-                
+
                 if let error = testError {
                     HStack {
                         Image(systemName: "xmark.circle.fill")
@@ -242,13 +293,52 @@ struct SettingsView: View {
                             .foregroundColor(.red)
                     }
                 }
-                
+
                 sectionSaveButton("telegram") {
                     saveTelegramSection()
                 }
             } header: {
                 Label("Telegram Bot", systemImage: "paperplane.fill")
             }
+
+            Section {
+                HStack {
+                    Spacer()
+                    Button("Save & Start Bot") {
+                        saveSettings()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!isFormValid)
+                    Spacer()
+                }
+
+                if showingSaveConfirmation {
+                    HStack {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("Settings saved! Bot is now active.")
+                            .foregroundColor(.green)
+                    }
+                }
+
+                if let error = conversationManager.error {
+                    HStack {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                        Text(error)
+                            .foregroundColor(.red)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
+    }
+
+    // MARK: - AI Models Tab
+
+    private var aiModelsTab: some View {
+        Form {
             
             Section {
                 Picker("LLM Provider", selection: $llmProvider) {
@@ -657,51 +747,30 @@ struct SettingsView: View {
             } header: {
                 Label("Email (IMAP/SMTP)", systemImage: "envelope.fill")
             }
-            
-            // MARK: - Voice Transcription Section
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
+    }
+
+    // MARK: - Advanced Tab
+
+    private var advancedTab: some View {
+        Form {
+            // MARK: - Developer Tools Section
             Section {
                 voiceTranscriptionContent
             } header: {
                 Label("Voice Transcription", systemImage: "waveform")
             }
-            
-            Section {
-                HStack {
-                    Spacer()
-                    
-                    Button("Save & Start Bot") {
-                        saveSettings()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!isFormValid)
-                    
-                    Spacer()
-                }
-            }
-            
-            if showingSaveConfirmation {
-                Section {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                        Text("Settings saved! Bot is now active.")
-                            .foregroundColor(.green)
-                    }
-                }
-            }
-            
-            if let error = conversationManager.error {
-                Section {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                        Text(error)
-                            .foregroundColor(.red)
-                    }
-                }
-            }
-            
-            // MARK: - Developer Tools Section
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
+    }
+
+    // MARK: - Tools Tab
+
+    private var toolsTab: some View {
+        Form {
             Section {
                 Button {
                     showingContextViewer = true
@@ -999,20 +1068,7 @@ struct SettingsView: View {
             }
         }
         .formStyle(.grouped)
-        .padding()
-        .frame(width: 450, height: 750)
-        .onAppear {
-            loadSettings()
-            // Always refresh user context from Keychain (Gemini may have changed it via tools)
-            structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
-            structuredContextDraft = structuredUserContext
-            Task {
-                if voiceTranscriptionProvider == .local {
-                    await WhisperKitService.shared.checkModelStatus()
-                }
-                calendarEventCount = await CalendarService.shared.totalEventCount()
-            }
-        }
+        .padding(.horizontal)
         .onChange(of: structuredUserContext) { newValue in
             if !isEditingStructuredContext {
                 structuredContextDraft = newValue
@@ -1034,21 +1090,6 @@ struct SettingsView: View {
             ContextViewerView()
                 .environmentObject(conversationManager)
         }
-        .alert("Delete All Memory?", isPresented: $showingDeleteMemoryConfirmation) {
-            Button("Cancel", role: .cancel) { }
-            Button("Delete", role: .destructive) {
-                Task {
-                    await conversationManager.deleteAllMemory()
-                    // Clear local state to reflect deletion
-                    userContext = ""
-                    structuredUserContext = ""
-                    structuredContextDraft = ""
-                    isEditingStructuredContext = false
-                }
-            }
-        } message: {
-            Text("This will permanently delete all conversation history, archived chunks, summaries, user context, and reminders. Calendar and contacts will be preserved. This action cannot be undone.")
-        }
         .fileImporter(
             isPresented: $showingMindFilePicker,
             allowedContentTypes: [.item],
@@ -1062,8 +1103,7 @@ struct SettingsView: View {
                     return
                 }
                 defer { url.stopAccessingSecurityScopedResource() }
-                
-                // Copy to temp location since security-scoped access may expire
+
                 let tempURL = FileManager.default.temporaryDirectory.appendingPathComponent(url.lastPathComponent)
                 try? FileManager.default.removeItem(at: tempURL)
                 do {
@@ -1073,22 +1113,10 @@ struct SettingsView: View {
                 } catch {
                     mindExportError = "Failed to read file: \(error.localizedDescription)"
                 }
-                
+
             case .failure(let error):
                 mindExportError = "Failed to select file: \(error.localizedDescription)"
             }
-        }
-        .alert("Restore Mind?", isPresented: $showingRestoreConfirmation) {
-            Button("Cancel", role: .cancel) {
-                pendingImportURL = nil
-            }
-            Button("Restore", role: .destructive) {
-                if let url = pendingImportURL {
-                    importMind(from: url)
-                }
-            }
-        } message: {
-            Text("This will replace all your current data with the imported mind. Your existing conversation, files, and settings will be overwritten. This cannot be undone.")
         }
         .fileImporter(
             isPresented: $showingCalendarFilePicker,
@@ -1103,9 +1131,9 @@ struct SettingsView: View {
                     return
                 }
                 defer { url.stopAccessingSecurityScopedResource() }
-                
+
                 importCalendar(from: url)
-                
+
             case .failure(let error):
                 calendarExportError = "Failed to select file: \(error.localizedDescription)"
             }
