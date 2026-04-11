@@ -396,17 +396,27 @@ struct SettingsView: View {
                     TextField("Model Name", text: $lmStudioModel)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("The model identifier (e.g., gemma-4-27b, qwen2.5-vl-7b, llama3.2-vision).")
+                    Text("Recommended: Gemma 4 27B or Gemma 4 12B — excellent reasoning and tool use for local inference. Use a model that supports tool/function calling.")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Text("Use a multimodal model that supports tool/function calling. Non-multimodal models will not work correctly with images, documents, and tools.")
-                        .font(.caption)
-                        .foregroundColor(.orange)
-
-                    Text("Prompt processing is cached via the server's KV cache automatically when message prefixes stay stable (which they do during agentic tool loops).")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
+                    // Provider-specific caching notes
+                    Group {
+                        let preset = localServerPreset(from: lmStudioBaseURL)
+                        if preset == "vllm" {
+                            Text("⚠️ vLLM: prefix caching is OFF by default. Start vLLM with --enable-prefix-caching for our architecture to benefit from cache reuse.")
+                                .font(.caption)
+                                .foregroundColor(.orange)
+                        } else if preset == "custom" {
+                            Text("Prompt caching depends on your server. Most llama.cpp-based servers cache automatically. vLLM needs --enable-prefix-caching. MLX-based servers only cache for full-attention models (not sliding window / Mamba).")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        } else {
+                            Text("Prompt processing is cached automatically via the server's KV cache when message prefixes stay stable (which they do during agentic tool loops).")
+                                .font(.caption)
+                                .foregroundColor(.secondary)
+                        }
+                    }
 
                     Divider()
 

@@ -199,9 +199,23 @@ struct OnboardingView: View {
 
                         TextField("Model Name", text: $lmStudioModel)
                             .textFieldStyle(.roundedBorder)
-                        Text("The model identifier (e.g., gemma-4-27b, gemma-4-12b).")
+                        Text("Recommended: Gemma 4 27B or Gemma 4 12B — excellent reasoning and tool use for local inference.")
                             .font(.caption)
                             .foregroundColor(.secondary)
+
+                        // Provider-specific caching note
+                        Group {
+                            let preset = onboardingLocalPreset(from: lmStudioBaseURL)
+                            if preset == "vllm" {
+                                Text("⚠️ vLLM: start with --enable-prefix-caching for prompt cache reuse.")
+                                    .font(.caption)
+                                    .foregroundColor(.orange)
+                            } else if preset == "custom" {
+                                Text("Prompt caching depends on your server. llama.cpp-based servers cache automatically. vLLM needs --enable-prefix-caching. MLX only caches for full-attention models.")
+                                    .font(.caption)
+                                    .foregroundColor(.secondary)
+                            }
+                        }
 
                         Divider()
 
