@@ -1379,7 +1379,8 @@ class ConversationManager: ObservableObject {
                     calls,
                     allowedToolNames: allowedToolNames,
                     deploymentToolsUnlockedForTurn: deploymentToolsUnlockedForTurn,
-                    priorInteractions: toolInteractions
+                    priorInteractions: toolInteractions,
+                    historicalMessages: messagesForLLM
                 )
                 if !blockedResults.isEmpty {
                     print("[ConversationManager] Round \(round): blocked \(blockedResults.count) tool call(s) due to turn policy or tool availability")
@@ -1931,9 +1932,10 @@ class ConversationManager: ObservableObject {
         _ calls: [ToolCall],
         allowedToolNames: Set<String>,
         deploymentToolsUnlockedForTurn: Bool,
-        priorInteractions: [ToolInteraction]
+        priorInteractions: [ToolInteraction],
+        historicalMessages: [Message] = []
     ) -> (executableCalls: [ToolCall], blockedResults: [ToolResultMessage]) {
-        let turnState = buildProjectToolTurnState(from: priorInteractions)
+        let turnState = buildProjectToolTurnState(from: priorInteractions, historicalMessages: historicalMessages)
         let deploymentToolsRequiringHistory = Set([
             "deploy_project_to_vercel",
             "provision_project_database",
@@ -2047,72 +2049,84 @@ class ConversationManager: ObservableObject {
         return (executableCalls, blockedResults)
     }
 
-    private func buildProjectToolTurnState(from interactions: [ToolInteraction]) -> ProjectToolTurnState {
+    private func buildProjectToolTurnState(from interactions: [ToolInteraction], historicalMessages: [Message] = []) -> ProjectToolTurnState {
         var state = ProjectToolTurnState()
 
-        for interaction in interactions {
-            var resultByCallID: [String: ToolResultMessage] = [:]
-            for result in interaction.results {
-                resultByCallID[result.toolCallId] = result
-            }
-
-            for call in interaction.assistantMessage.toolCalls {
-                guard let result = resultByCallID[call.id],
-                      let resultDictionary = parseJSONDictionary(from: result.content) else {
-                    continue
-                }
-
-                switch call.function.name {
-                case "create_project":
-                    guard (resultDictionary["success"] as? Bool) == true,
-                          let projectID = resultDictionary["project_id"] as? String,
-                          !projectID.isEmpty else {
-                        continue
-                    }
-                    state.createdProjectIDs.insert(projectID)
-
-                case "manage_projects":
-                    guard manageProjectsAction(from: call) == "create",
-                          (resultDictionary["success"] as? Bool) == true,
-                          let projectID = resultDictionary["project_id"] as? String,
-                          !projectID.isEmpty else {
-                        continue
-                    }
-                    state.createdProjectIDs.insert(projectID)
-
-                case "view_project_history":
-                    guard (resultDictionary["success"] as? Bool) == true else {
-                        continue
-                    }
-
-                    if let projectID = resultDictionary["projectId"] as? String, !projectID.isEmpty {
-                        state.projectsWithSuccessfulHistory.insert(projectID)
-                    } else if let projectID = resultDictionary["project_id"] as? String, !projectID.isEmpty {
-                        state.projectsWithSuccessfulHistory.insert(projectID)
-                    } else if let projectID = projectIDFromArguments(of: call) {
-                        state.projectsWithSuccessfulHistory.insert(projectID)
-                    }
-
-                case "view_project_deployment_history":
-                    guard (resultDictionary["success"] as? Bool) == true else {
-                        continue
-                    }
-
-                    if let projectID = resultDictionary["projectId"] as? String, !projectID.isEmpty {
-                        state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
-                    } else if let projectID = resultDictionary["project_id"] as? String, !projectID.isEmpty {
-                        state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
-                    } else if let projectID = projectIDFromArguments(of: call) {
-                        state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
-                    }
-
-                default:
-                    continue
-                }
+        // Scan stored tool interactions from previous turns (visible to the model via persistence)
+        for message in historicalMessages where message.role == .assistant {
+            for interaction in message.toolInteractions {
+                processInteractionForTurnState(interaction, state: &state)
             }
         }
 
+        // Scan current turn's interactions
+        for interaction in interactions {
+            processInteractionForTurnState(interaction, state: &state)
+        }
+
         return state
+    }
+
+    private func processInteractionForTurnState(_ interaction: ToolInteraction, state: inout ProjectToolTurnState) {
+        var resultByCallID: [String: ToolResultMessage] = [:]
+        for result in interaction.results {
+            resultByCallID[result.toolCallId] = result
+        }
+
+        for call in interaction.assistantMessage.toolCalls {
+            guard let result = resultByCallID[call.id],
+                  let resultDictionary = parseJSONDictionary(from: result.content) else {
+                continue
+            }
+
+            switch call.function.name {
+            case "create_project":
+                guard (resultDictionary["success"] as? Bool) == true,
+                      let projectID = resultDictionary["project_id"] as? String,
+                      !projectID.isEmpty else {
+                    continue
+                }
+                state.createdProjectIDs.insert(projectID)
+
+            case "manage_projects":
+                guard manageProjectsAction(from: call) == "create",
+                      (resultDictionary["success"] as? Bool) == true,
+                      let projectID = resultDictionary["project_id"] as? String,
+                      !projectID.isEmpty else {
+                    continue
+                }
+                state.createdProjectIDs.insert(projectID)
+
+            case "view_project_history":
+                guard (resultDictionary["success"] as? Bool) == true else {
+                    continue
+                }
+
+                if let projectID = resultDictionary["projectId"] as? String, !projectID.isEmpty {
+                    state.projectsWithSuccessfulHistory.insert(projectID)
+                } else if let projectID = resultDictionary["project_id"] as? String, !projectID.isEmpty {
+                    state.projectsWithSuccessfulHistory.insert(projectID)
+                } else if let projectID = projectIDFromArguments(of: call) {
+                    state.projectsWithSuccessfulHistory.insert(projectID)
+                }
+
+            case "view_project_deployment_history":
+                guard (resultDictionary["success"] as? Bool) == true else {
+                    continue
+                }
+
+                if let projectID = resultDictionary["projectId"] as? String, !projectID.isEmpty {
+                    state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
+                } else if let projectID = resultDictionary["project_id"] as? String, !projectID.isEmpty {
+                    state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
+                } else if let projectID = projectIDFromArguments(of: call) {
+                    state.projectsWithSuccessfulDeploymentHistory.insert(projectID)
+                }
+
+            default:
+                continue
+            }
+        }
     }
 
     private func projectIDFromArguments(of call: ToolCall) -> String? {
