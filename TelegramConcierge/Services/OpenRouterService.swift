@@ -1150,16 +1150,39 @@ actor OpenRouterService {
         apiMessages.append(OpenRouterAPIMessage(role: "user", content: .parts(contentParts)))
         
         let usingLMStudioForDescriptions = isLMStudio
+
+        // For LM Studio: use a separate description model/endpoint to avoid busting the main KV cache
+        let descriptionModel: String
+        let descriptionURL: String
+        if usingLMStudioForDescriptions {
+            let descModel = KeychainHelper.load(key: KeychainHelper.lmStudioDescriptionModelKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            descriptionModel = descModel.isEmpty ? model : descModel
+
+            var descBase = KeychainHelper.load(key: KeychainHelper.lmStudioDescriptionBaseURLKey)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if descBase.isEmpty { descBase = baseURL } else {
+                while descBase.hasSuffix("/") { descBase.removeLast() }
+                if descBase.hasSuffix("/chat/completions") { /* already full */ }
+                else if !descBase.hasSuffix("/v1") { descBase += "/v1/chat/completions" }
+                else { descBase += "/chat/completions" }
+            }
+            descriptionURL = descBase
+        } else {
+            descriptionModel = model
+            descriptionURL = baseURL
+        }
+
         let request = OpenRouterRequest(
-            model: model,
+            model: descriptionModel,
             messages: apiMessages,
             tools: nil,
             provider: usingLMStudioForDescriptions ? nil : providers.map { ProviderPreferences(order: $0) },
             reasoning: usingLMStudioForDescriptions ? nil : reasoningEffort.map { ReasoningConfig(effort: $0) }
         )
 
-        // Make API call
-        var urlRequest = URLRequest(url: URL(string: baseURL)!)
+        // Make API call (uses separate endpoint for LM Studio to preserve main KV cache)
+        var urlRequest = URLRequest(url: URL(string: descriptionURL)!)
         urlRequest.httpMethod = "POST"
         if usingLMStudioForDescriptions {
             urlRequest.setValue("Bearer lm-studio", forHTTPHeaderField: "Authorization")

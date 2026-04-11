@@ -10,6 +10,8 @@ struct SettingsView: View {
     @State private var llmProvider: String = "openrouter"
     @State private var lmStudioBaseURL: String = ""
     @State private var lmStudioModel: String = ""
+    @State private var lmStudioDescriptionModel: String = ""
+    @State private var lmStudioDescriptionBaseURL: String = ""
     @State private var openRouterApiKey: String = ""
     @State private var openRouterModel: String = ""
     @State private var openRouterProviders: String = ""
@@ -275,6 +277,22 @@ struct SettingsView: View {
                         .foregroundColor(.orange)
 
                     Text("Prompt processing is cached via LMStudio's KV cache automatically when message prefixes stay stable (which they do during agentic tool loops).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    Divider()
+
+                    TextField("Description Model (optional)", text: $lmStudioDescriptionModel)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("A separate model for generating file descriptions, so these calls don't evict the main model's KV cache. Leave empty to use the main model (will break cache on each file description).")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+
+                    TextField("Description Base URL (optional)", text: $lmStudioDescriptionBaseURL)
+                        .textFieldStyle(.roundedBorder)
+
+                    Text("If the description model runs on a different LMStudio port (e.g., http://localhost:1235/v1). Leave empty to use the same server as the main model.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -1743,6 +1761,8 @@ struct SettingsView: View {
         llmProvider = KeychainHelper.load(key: KeychainHelper.llmProviderKey) ?? "openrouter"
         lmStudioBaseURL = KeychainHelper.load(key: KeychainHelper.lmStudioBaseURLKey) ?? ""
         lmStudioModel = KeychainHelper.load(key: KeychainHelper.lmStudioModelKey) ?? ""
+        lmStudioDescriptionModel = KeychainHelper.load(key: KeychainHelper.lmStudioDescriptionModelKey) ?? ""
+        lmStudioDescriptionBaseURL = KeychainHelper.load(key: KeychainHelper.lmStudioDescriptionBaseURLKey) ?? ""
         openRouterApiKey = KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) ?? ""
         openRouterModel = KeychainHelper.load(key: KeychainHelper.openRouterModelKey) ?? ""
         openRouterProviders = KeychainHelper.load(key: KeychainHelper.openRouterProvidersKey) ?? ""
@@ -2274,6 +2294,18 @@ struct SettingsView: View {
             try? KeychainHelper.save(key: KeychainHelper.lmStudioModelKey, value: trimmedLMModel)
         } else {
             try? KeychainHelper.delete(key: KeychainHelper.lmStudioModelKey)
+        }
+        let trimmedDescModel = lmStudioDescriptionModel.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedDescModel.isEmpty {
+            try? KeychainHelper.save(key: KeychainHelper.lmStudioDescriptionModelKey, value: trimmedDescModel)
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.lmStudioDescriptionModelKey)
+        }
+        let trimmedDescURL = lmStudioDescriptionBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmedDescURL.isEmpty {
+            try? KeychainHelper.save(key: KeychainHelper.lmStudioDescriptionBaseURLKey, value: trimmedDescURL)
+        } else {
+            try? KeychainHelper.delete(key: KeychainHelper.lmStudioDescriptionBaseURLKey)
         }
         // Save OpenRouter settings (always needed for web search)
         try? KeychainHelper.save(key: KeychainHelper.openRouterApiKeyKey, value: openRouterApiKey)

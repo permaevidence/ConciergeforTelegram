@@ -213,6 +213,8 @@ extension KeychainHelper {
     static let lmStudioBaseURLKey = "lmstudio_base_url"
     static let lmStudioModelKey = "lmstudio_model"
     static let defaultLMStudioBaseURL = "http://localhost:1234/v1"
+    static let lmStudioDescriptionModelKey = "lmstudio_description_model"
+    static let lmStudioDescriptionBaseURLKey = "lmstudio_description_base_url"
 
     // Archive Settings
     static let archiveChunkSizeKey = "archive_chunk_size"
