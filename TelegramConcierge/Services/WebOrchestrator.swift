@@ -668,14 +668,15 @@ actor WebOrchestrator {
             .init(role: "user", content: userContent)
         ]
         
+        let agentMdl = agentModel(for: mode)
         let raw = try await callOpenRouter(
             stage: "agent.step\(currentStep)",
             mode: mode,
-            model: agentModel(for: mode),
+            model: agentMdl,
             messages: messages,
             maxTokens: 16000,
             reasoning: agentReasoning(for: mode),
-            provider: providerPreferences(for: mode),
+            provider: providerPreferences(forModel: agentMdl),
             executionID: executionID
         )
         
@@ -1054,7 +1055,7 @@ actor WebOrchestrator {
             messages: msgs,
             maxTokens: 16000,
             reasoning: excerptReasoning(for: mode),
-            provider: providerPreferences(for: mode),
+            provider: providerPreferences(forModel: excerptModel(for: mode)),
             executionID: executionID
         )
         guard let d = extractFirstJSONObjectData(from: raw),
@@ -1125,7 +1126,7 @@ actor WebOrchestrator {
             messages: msgs,
             maxTokens: 8000,
             reasoning: excerptReasoning(for: mode),
-            provider: providerPreferences(for: mode),
+            provider: providerPreferences(forModel: excerptModel(for: mode)),
             executionID: executionID
         )
 
@@ -1246,7 +1247,7 @@ actor WebOrchestrator {
             messages: msgs,
             maxTokens: 16000,
             reasoning: finalAnswerReasoning(for: mode),
-            provider: providerPreferences(for: mode),
+            provider: providerPreferences(forModel: finalAnswerModel(for: mode)),
             executionID: executionID
         )
         return autolinkPhoneNumbers(raw.trimmingCharacters(in: .whitespacesAndNewlines))
@@ -1277,20 +1278,22 @@ actor WebOrchestrator {
         return providers.isEmpty ? nil : providers
     }
 
-    private func providerPreferences(for mode: ResearchMode) -> ORChatReq.Provider {
-        if mode == .deepResearch {
+    private func providerPreferences(forModel model: String) -> ORChatReq.Provider {
+        // gpt-oss models: restrict to Groq/Vertex (where they're hosted)
+        if model.contains("gpt-oss") {
             return .init(
-                order: configuredProviderOrder(),
-                only: nil,
-                allow_fallbacks: true,
+                order: ProviderSettings.order,
+                only: ProviderSettings.only,
+                allow_fallbacks: ProviderSettings.allowFallbacks,
                 sort: nil
             )
         }
 
+        // All other models (Gemini, user-configured): use user's provider order, no restriction
         return .init(
-            order: ProviderSettings.order,
-            only: ProviderSettings.only,
-            allow_fallbacks: ProviderSettings.allowFallbacks,
+            order: configuredProviderOrder(),
+            only: nil,
+            allow_fallbacks: true,
             sort: nil
         )
     }
