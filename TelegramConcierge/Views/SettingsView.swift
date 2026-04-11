@@ -178,24 +178,61 @@ struct SettingsView: View {
     }
     
     var body: some View {
-        TabView {
-            // MARK: - Tab 1: General
-            generalTab
-                .tabItem { Label("General", systemImage: "gear") }
+        VStack(spacing: 0) {
+            // Persistent header with Save & Start
+            HStack {
+                if showingSaveConfirmation {
+                    HStack(spacing: 4) {
+                        Image(systemName: "checkmark.circle.fill")
+                            .foregroundColor(.green)
+                        Text("Saved & started!")
+                            .font(.caption)
+                            .foregroundColor(.green)
+                    }
+                    .transition(.opacity)
+                }
 
-            // MARK: - Tab 2: AI Models
-            aiModelsTab
-                .tabItem { Label("AI Models", systemImage: "brain.head.profile") }
+                if let error = conversationManager.error {
+                    HStack(spacing: 4) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .foregroundColor(.red)
+                            .font(.caption)
+                        Text(error)
+                            .font(.caption)
+                            .foregroundColor(.red)
+                            .lineLimit(1)
+                    }
+                }
 
-            // MARK: - Tab 3: Tools
-            toolsTab
-                .tabItem { Label("Tools", systemImage: "wrench.and.screwdriver") }
+                Spacer()
 
-            // MARK: - Tab 4: Advanced
-            advancedTab
-                .tabItem { Label("Advanced", systemImage: "slider.horizontal.3") }
+                Button("Save & Start") {
+                    saveSettings()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.regular)
+                .disabled(!isFormValid)
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+
+            Divider()
+
+            TabView {
+                identityTab
+                    .tabItem { Label("Identity", systemImage: "person.text.rectangle") }
+
+                connectionTab
+                    .tabItem { Label("Connection", systemImage: "antenna.radiowaves.left.and.right") }
+
+                servicesTab
+                    .tabItem { Label("Services", systemImage: "puzzlepiece.extension") }
+
+                dataTab
+                    .tabItem { Label("Data", systemImage: "externaldrive.fill") }
+            }
         }
-        .frame(width: 620, height: 580)
+        .frame(width: 620, height: 600)
         .onAppear {
             loadSettings()
             structuredUserContext = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
@@ -227,9 +264,9 @@ struct SettingsView: View {
         }
     }
 
-    // MARK: - General Tab
+    // MARK: - Identity Tab
 
-    private var generalTab: some View {
+    private var identityTab: some View {
         Form {
             if !conversationManager.isPrivacyModeEnabled {
                 Section {
@@ -237,8 +274,24 @@ struct SettingsView: View {
                 } header: {
                     Label("Persona", systemImage: "person.text.rectangle")
                 }
+            } else {
+                Section {
+                    Text("Persona settings are hidden while privacy mode is active. Send /show in Telegram to re-enable.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                } header: {
+                    Label("Persona", systemImage: "person.text.rectangle")
+                }
             }
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
+    }
 
+    // MARK: - Connection Tab
+
+    private var connectionTab: some View {
+        Form {
             Section {
                 SecureField("Bot Token", text: $telegramToken)
                     .textFieldStyle(.roundedBorder)
@@ -301,44 +354,7 @@ struct SettingsView: View {
                 Label("Telegram Bot", systemImage: "paperplane.fill")
             }
 
-            Section {
-                HStack {
-                    Spacer()
-                    Button("Save & Start Bot") {
-                        saveSettings()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .disabled(!isFormValid)
-                    Spacer()
-                }
-
-                if showingSaveConfirmation {
-                    HStack {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundColor(.green)
-                        Text("Settings saved! Bot is now active.")
-                            .foregroundColor(.green)
-                    }
-                }
-
-                if let error = conversationManager.error {
-                    HStack {
-                        Image(systemName: "exclamationmark.triangle.fill")
-                            .foregroundColor(.red)
-                        Text(error)
-                            .foregroundColor(.red)
-                    }
-                }
-            }
-        }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-    }
-
-    // MARK: - AI Models Tab
-
-    private var aiModelsTab: some View {
-        Form {
+            // LLM Provider section (was in AI Models tab)
             
             Section {
                 Picker("LLM Provider", selection: $llmProvider) {
@@ -477,7 +493,15 @@ struct SettingsView: View {
             } header: {
                 Label("LLM Provider", systemImage: "brain.head.profile")
             }
-            
+        }
+        .formStyle(.grouped)
+        .padding(.horizontal)
+    }
+
+    // MARK: - Services Tab
+
+    private var servicesTab: some View {
+        Form {
             Section {
                 SecureField("Serper API Key", text: $serperApiKey)
                     .textFieldStyle(.roundedBorder)
@@ -747,16 +771,8 @@ struct SettingsView: View {
             } header: {
                 Label("Email (IMAP/SMTP)", systemImage: "envelope.fill")
             }
-        }
-        .formStyle(.grouped)
-        .padding(.horizontal)
-    }
 
-    // MARK: - Advanced Tab
-
-    private var advancedTab: some View {
-        Form {
-            // MARK: - Developer Tools Section
+            // MARK: - Voice Transcription Section
             Section {
                 voiceTranscriptionContent
             } header: {
@@ -767,9 +783,9 @@ struct SettingsView: View {
         .padding(.horizontal)
     }
 
-    // MARK: - Tools Tab
+    // MARK: - Data Tab
 
-    private var toolsTab: some View {
+    private var dataTab: some View {
         Form {
             Section {
                 Button {
