@@ -47,6 +47,7 @@ struct OnboardingView: View {
 
     // Code CLI
     @State private var codeCLIProvider: String = "claude"
+    @State private var codeCLIDocumentMode: Bool = true
 
     var body: some View {
         VStack(spacing: 0) {
@@ -128,7 +129,7 @@ struct OnboardingView: View {
             .padding(.horizontal, 30)
             .padding(.vertical, 15)
         }
-        .frame(width: 580, height: 520)
+        .frame(width: 580, height: 620)
         .onAppear { loadExistingSettings() }
     }
 
@@ -357,7 +358,7 @@ struct OnboardingView: View {
     }
 
     private var optionalGateStep: some View {
-        VStack(alignment: .center, spacing: 20) {
+        VStack(alignment: .center, spacing: 16) {
             Spacer()
             Image(systemName: "checkmark.seal.fill")
                 .font(.system(size: 50))
@@ -366,11 +367,27 @@ struct OnboardingView: View {
             Text("Core Setup Complete!")
                 .font(.title2.bold())
 
-            Text("Your assistant is ready to start. You can now configure optional services to unlock more capabilities, or start using it right away and configure these later in Settings.")
+            Text("Your assistant can now connect to Telegram and respond to messages. However, without the following services it won't be able to do much beyond basic conversation.")
                 .font(.body)
                 .foregroundColor(.secondary)
                 .multilineTextAlignment(.center)
-                .frame(maxWidth: 400)
+                .frame(maxWidth: 420)
+
+            VStack(alignment: .leading, spacing: 6) {
+                Label("Voice Transcription — understand your voice messages", systemImage: "waveform")
+                Label("Web Search — search the internet and read web pages", systemImage: "magnifyingglass")
+                Label("Email — read and send emails on your behalf", systemImage: "envelope")
+                Label("Image Generation — create and edit images", systemImage: "photo.badge.plus")
+                Label("Code CLI — create documents, run code, build projects", systemImage: "terminal")
+            }
+            .font(.callout)
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 20)
+
+            Text("We strongly recommend continuing to set up at least a few of these.")
+                .font(.callout.bold())
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 420)
 
             Spacer()
         }
@@ -412,19 +429,31 @@ struct OnboardingView: View {
             Label("Web Search", systemImage: "magnifyingglass")
                 .font(.title2.bold())
 
-            Text("Let your assistant search the web and read pages.")
+            Text("Your assistant has two powerful search tools: **Web Search** for quick lookups and **Deep Research** for comprehensive, multi-source analysis.")
                 .font(.callout)
                 .foregroundColor(.secondary)
 
+            GroupBox {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("How it works:")
+                        .font(.headline)
+                    Text("The search tools autonomously query Google, read dozens of web pages, and synthesize the results. They use fast gpt-oss models running on Groq/Vertex for speed.")
+                        .font(.callout)
+                    Text("These tools are cloud-based (local search at this level isn't feasible), but they are completely segregated from your conversation — they only see the search query, never your chat history.")
+                        .font(.callout)
+                        .foregroundColor(.secondary)
+                }
+            }
+
             SecureField("Serper API Key", text: $serperApiKey)
                 .textFieldStyle(.roundedBorder)
-            Text("For Google search results. Get a free key from serper.dev")
+            Text("Powers Google search queries. Free tier available at serper.dev")
                 .font(.caption)
                 .foregroundColor(.secondary)
 
             SecureField("Jina API Key", text: $jinaApiKey)
                 .textFieldStyle(.roundedBorder)
-            Text("For reading web pages. Get a free key from jina.ai")
+            Text("Reads and extracts text from web pages. Free tier available at jina.ai")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -481,7 +510,7 @@ struct OnboardingView: View {
             Label("Code CLI", systemImage: "terminal")
                 .font(.title2.bold())
 
-            Text("Delegate coding and file tasks to a local CLI agent.")
+            Text("A Code CLI is a local sub-agent that your assistant delegates to for coding, document creation, file manipulation, and complex tasks. Without it, the assistant can only generate basic PDFs and spreadsheets.")
                 .font(.callout)
                 .foregroundColor(.secondary)
 
@@ -492,7 +521,13 @@ struct OnboardingView: View {
             }
             .pickerStyle(.segmented)
 
-            Text("The selected CLI must be installed on your machine. You can change this anytime in Settings or via Telegram (/claude, /gemini, /codex).")
+            Text("The selected CLI must be installed on your machine. You can switch anytime in Settings or via Telegram (/claude, /gemini, /codex).")
+                .font(.caption)
+                .foregroundColor(.secondary)
+
+            Toggle("Use Code CLI for document generation", isOn: $codeCLIDocumentMode)
+
+            Text("Recommended ON. When enabled, the assistant uses the Code CLI to generate documents (reports, spreadsheets, presentations) instead of a limited built-in generator. This produces much higher quality output.")
                 .font(.caption)
                 .foregroundColor(.secondary)
         }
@@ -619,6 +654,7 @@ struct OnboardingView: View {
 
     private func saveCodeCLI() {
         try? KeychainHelper.save(key: KeychainHelper.codeCLIProviderKey, value: codeCLIProvider)
+        try? KeychainHelper.save(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey, value: codeCLIDocumentMode ? "true" : "false")
     }
 
     private func finishOnboarding() {
@@ -653,6 +689,8 @@ struct OnboardingView: View {
         gmailClientSecret = KeychainHelper.load(key: KeychainHelper.gmailClientSecretKey) ?? ""
         geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey) ?? ""
         codeCLIProvider = KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? "claude"
+        codeCLIDocumentMode = (KeychainHelper.load(key: KeychainHelper.claudeCodeDisableLegacyDocumentGenerationToolsKey) ?? "true")
+            .trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == "true"
     }
 
     // MARK: - Local Server Presets
