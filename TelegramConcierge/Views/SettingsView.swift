@@ -182,7 +182,7 @@ struct SettingsView: View {
     
     var body: some View {
         VStack(spacing: 0) {
-            // Persistent header with Save & Start
+            // Persistent header with Start Agent
             HStack {
                 if showingSaveConfirmation {
                     HStack(spacing: 4) {
@@ -209,7 +209,7 @@ struct SettingsView: View {
 
                 Spacer()
 
-                Button("Save & Start") {
+                Button("Start Agent") {
                     saveSettings()
                 }
                 .buttonStyle(.borderedProminent)
@@ -515,6 +515,13 @@ struct SettingsView: View {
 
     private var servicesTab: some View {
         Form {
+            // MARK: - Voice Transcription Section
+            Section {
+                voiceTranscriptionContent
+            } header: {
+                Label("Voice Transcription", systemImage: "waveform")
+            }
+
             Section {
                 SecureField("Serper API Key", text: $serperApiKey)
                     .textFieldStyle(.roundedBorder)
@@ -770,12 +777,6 @@ struct SettingsView: View {
                 Label("Email (IMAP/SMTP)", systemImage: "envelope.fill")
             }
 
-            // MARK: - Voice Transcription Section
-            Section {
-                voiceTranscriptionContent
-            } header: {
-                Label("Voice Transcription", systemImage: "waveform")
-            }
         }
         .formStyle(.grouped)
         .padding(.horizontal)
