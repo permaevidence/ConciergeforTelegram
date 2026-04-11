@@ -106,6 +106,10 @@ struct SettingsView: View {
 
     // Auto-save debounce
     @State private var autoSaveTask: Task<Void, Never>?
+
+    // Collapsible sections
+    @State private var isSpendLimitsExpanded: Bool = false
+    @State private var isImagePricingExpanded: Bool = false
     
     // Context viewer
     @State private var showingContextViewer: Bool = false
@@ -448,46 +452,44 @@ struct SettingsView: View {
 
                 }
 
-                HStack {
-                    Text("Tool Spend Limit / Turn (USD)")
-                    Spacer()
-                    TextField(formatUSD(activeToolSpendLimitPerTurnUSD), text: $openRouterToolSpendLimit)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 120)
-                        .multilineTextAlignment(.trailing)
-                }
+                DisclosureGroup("Spend Limits", isExpanded: $isSpendLimitsExpanded) {
+                    HStack {
+                        Text("Per Turn (USD)")
+                        Spacer()
+                        TextField(formatUSD(activeToolSpendLimitPerTurnUSD), text: $openRouterToolSpendLimit)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 120)
+                            .multilineTextAlignment(.trailing)
+                    }
 
-                Text("Stops tool chaining when this turn's cumulative tool/API usage cost reaches the limit. OpenRouter usage is measured from response cost fields; Gemini image generation is estimated from Gemini usage metadata. Min: 0.001. Leave empty to use default (\(formatUSD(defaultToolSpendLimitPerTurnUSD))).")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    HStack {
+                        Text("Daily (USD)")
+                        Spacer()
+                        Text("Today: $\(formatUSD(openRouterTodaySpendUSD))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        TextField("none", text: $openRouterDailySpendLimit)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 90)
+                            .multilineTextAlignment(.trailing)
+                    }
 
-                HStack {
-                    Text("Daily Spend Limit (USD)")
-                    Spacer()
-                    Text("API spend today: $\(formatUSD(openRouterTodaySpendUSD))")
+                    HStack {
+                        Text("Monthly (USD)")
+                        Spacer()
+                        Text("Month: $\(formatUSD(openRouterMonthSpendUSD))")
+                            .font(.caption)
+                            .foregroundColor(.secondary)
+                        TextField("none", text: $openRouterMonthlySpendLimit)
+                            .textFieldStyle(.roundedBorder)
+                            .frame(width: 90)
+                            .multilineTextAlignment(.trailing)
+                    }
+
+                    Text("Pauses tool usage when limits are reached. Leave blank for no cap. Min: 0.001.")
                         .font(.caption)
                         .foregroundColor(.secondary)
-                    TextField("none", text: $openRouterDailySpendLimit)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 90)
-                        .multilineTextAlignment(.trailing)
                 }
-
-                HStack {
-                    Text("Monthly Spend Limit (USD)")
-                    Spacer()
-                    Text("API spend month: $\(formatUSD(openRouterMonthSpendUSD))")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    TextField("none", text: $openRouterMonthlySpendLimit)
-                        .textFieldStyle(.roundedBorder)
-                        .frame(width: 90)
-                        .multilineTextAlignment(.trailing)
-                }
-
-                Text("Daily/monthly limits pause further tool usage once reached. Totals include OpenRouter tool calls, web/deep research subcalls, and Gemini image generation. Leave blank for no cap. Min when set: 0.001.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
 
             } header: {
                 Label("LLM Provider", systemImage: "brain.head.profile")
@@ -556,45 +558,47 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                HStack {
-                    Text("Input $ / 1M tokens")
-                    Spacer()
-                    TextField(
-                        KeychainHelper.defaultGeminiImageInputCostPerMillionTokensUSD,
-                        text: $geminiImageInputCostPerMillionTokensUSD
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                    .multilineTextAlignment(.trailing)
-                }
+                DisclosureGroup("Pricing Overrides", isExpanded: $isImagePricingExpanded) {
+                    HStack {
+                        Text("Input $ / 1M tokens")
+                        Spacer()
+                        TextField(
+                            KeychainHelper.defaultGeminiImageInputCostPerMillionTokensUSD,
+                            text: $geminiImageInputCostPerMillionTokensUSD
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                        .multilineTextAlignment(.trailing)
+                    }
 
-                HStack {
-                    Text("Output Text $ / 1M")
-                    Spacer()
-                    TextField(
-                        KeychainHelper.defaultGeminiImageOutputTextCostPerMillionTokensUSD,
-                        text: $geminiImageOutputTextCostPerMillionTokensUSD
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                    .multilineTextAlignment(.trailing)
-                }
+                    HStack {
+                        Text("Output Text $ / 1M")
+                        Spacer()
+                        TextField(
+                            KeychainHelper.defaultGeminiImageOutputTextCostPerMillionTokensUSD,
+                            text: $geminiImageOutputTextCostPerMillionTokensUSD
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                        .multilineTextAlignment(.trailing)
+                    }
 
-                HStack {
-                    Text("Output Image $ / 1M")
-                    Spacer()
-                    TextField(
-                        KeychainHelper.defaultGeminiImageOutputImageCostPerMillionTokensUSD,
-                        text: $geminiImageOutputImageCostPerMillionTokensUSD
-                    )
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 120)
-                    .multilineTextAlignment(.trailing)
-                }
+                    HStack {
+                        Text("Output Image $ / 1M")
+                        Spacer()
+                        TextField(
+                            KeychainHelper.defaultGeminiImageOutputImageCostPerMillionTokensUSD,
+                            text: $geminiImageOutputImageCostPerMillionTokensUSD
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 120)
+                        .multilineTextAlignment(.trailing)
+                    }
 
-                Text("These pricing fields are optional. Leave them blank to use the current default rates for \(GeminiImagePricing.defaultModel). If you switch to another model, set its pricing here so spend estimates stay accurate.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+                    Text("Leave blank for default rates. Set custom pricing if using a different model.")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 
                 Link("Get your API key from Google AI Studio", destination: URL(string: "https://aistudio.google.com/apikey")!)
                     .font(.caption)
