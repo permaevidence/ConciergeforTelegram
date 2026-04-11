@@ -1138,7 +1138,12 @@ class ConversationManager: ObservableObject {
             var retryCount = 0
             let baseDelay: UInt64 = 2_000_000_000 // 2 seconds
             let maxDelay: UInt64 = 60_000_000_000 // 60 seconds max
-            
+
+            // Notify user that summarization is in progress
+            if let chatId = pairedChatId {
+                try? await telegramService.sendMessage(chatId: chatId, text: "🧠 Summarizing conversation history...")
+            }
+
             // Build full summarization context for high-quality summaries
             let summarizationContext = buildSummarizationContext(
                 chunkSummaries: chunkSummaries,
