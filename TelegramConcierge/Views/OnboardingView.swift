@@ -166,22 +166,40 @@ struct OnboardingView: View {
 
             Picker("Provider", selection: $llmProvider) {
                 Text("OpenRouter (Cloud)").tag("openrouter")
-                Text("LM Studio (Local)").tag("lmstudio")
+                Text("Local Inference").tag("lmstudio")
             }
             .pickerStyle(.segmented)
 
             if llmProvider == "lmstudio" {
                 GroupBox {
                     VStack(alignment: .leading, spacing: 10) {
-                        TextField("LM Studio Base URL", text: $lmStudioBaseURL)
+                        Text("Server")
+                            .font(.headline)
+
+                        Picker("Server", selection: Binding(
+                            get: { onboardingLocalPreset(from: lmStudioBaseURL) },
+                            set: { preset in
+                                if let url = onboardingLocalPresetURL(preset) { lmStudioBaseURL = url }
+                            }
+                        )) {
+                            Text("LM Studio").tag("lmstudio")
+                            Text("Ollama").tag("ollama")
+                            Text("vLLM").tag("vllm")
+                            Text("Custom").tag("custom")
+                        }
+                        .pickerStyle(.segmented)
+
+                        TextField("Base URL", text: $lmStudioBaseURL)
                             .textFieldStyle(.roundedBorder)
-                        Text("Default: http://localhost:1234/v1 — leave empty for default.")
+                        Text("Any OpenAI-compatible server works. Select a preset or enter a custom URL.")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
+                        Divider()
+
                         TextField("Model Name", text: $lmStudioModel)
                             .textFieldStyle(.roundedBorder)
-                        Text("The model loaded in LM Studio (e.g., gemma-4-27b, gemma-4-12b).")
+                        Text("The model identifier (e.g., gemma-4-27b, gemma-4-12b).")
                             .font(.caption)
                             .foregroundColor(.secondary)
 
@@ -195,7 +213,7 @@ struct OnboardingView: View {
 
                         TextField("Description Base URL (optional)", text: $lmStudioDescriptionBaseURL)
                             .textFieldStyle(.roundedBorder)
-                        Text("If the description model runs on a different port (e.g., http://localhost:1235/v1).")
+                        Text("If the description model runs on a different port.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     }
@@ -621,6 +639,25 @@ struct OnboardingView: View {
         gmailClientSecret = KeychainHelper.load(key: KeychainHelper.gmailClientSecretKey) ?? ""
         geminiApiKey = KeychainHelper.load(key: KeychainHelper.geminiApiKeyKey) ?? ""
         codeCLIProvider = KeychainHelper.load(key: KeychainHelper.codeCLIProviderKey) ?? "claude"
+    }
+
+    // MARK: - Local Server Presets
+
+    private func onboardingLocalPreset(from url: String) -> String {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.isEmpty || trimmed.contains(":1234") { return "lmstudio" }
+        if trimmed.contains(":11434") { return "ollama" }
+        if trimmed.contains(":8000") { return "vllm" }
+        return "custom"
+    }
+
+    private func onboardingLocalPresetURL(_ preset: String) -> String? {
+        switch preset {
+        case "lmstudio": return "http://localhost:1234/v1"
+        case "ollama": return "http://localhost:11434/v1"
+        case "vllm": return "http://localhost:8000/v1"
+        default: return nil
+        }
     }
 
     // MARK: - Telegram Test

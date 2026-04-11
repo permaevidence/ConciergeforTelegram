@@ -3,14 +3,14 @@ import Security
 
 enum LLMProvider: String, CaseIterable, Identifiable {
     case openRouter = "openrouter"
-    case lmStudio = "lmstudio"
+    case lmStudio = "lmstudio" // Kept as "lmstudio" for backward compatibility; represents any local provider
 
     var id: String { rawValue }
 
     var displayName: String {
         switch self {
         case .openRouter: return "OpenRouter"
-        case .lmStudio: return "LMStudio (Local)"
+        case .lmStudio: return "Local Inference"
         }
     }
 

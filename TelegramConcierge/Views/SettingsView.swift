@@ -368,46 +368,59 @@ struct SettingsView: View {
             Section {
                 Picker("LLM Provider", selection: $llmProvider) {
                     Text("OpenRouter").tag("openrouter")
-                    Text("LMStudio (Local)").tag("lmstudio")
+                    Text("Local Inference").tag("lmstudio")
                 }
                 .pickerStyle(.segmented)
 
                 if llmProvider == "lmstudio" {
+                    Picker("Server", selection: Binding(
+                        get: { localServerPreset(from: lmStudioBaseURL) },
+                        set: { preset in
+                            if let url = localServerPresetURL(preset) { lmStudioBaseURL = url }
+                        }
+                    )) {
+                        Text("LM Studio").tag("lmstudio")
+                        Text("Ollama").tag("ollama")
+                        Text("vLLM").tag("vllm")
+                        Text("Custom").tag("custom")
+                    }
+                    .pickerStyle(.segmented)
+
                     TextField("Base URL", text: $lmStudioBaseURL)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("Default: http://localhost:1234/v1 — Leave empty for default. LMStudio must be running with a local server active.")
+                    Text("The OpenAI-compatible API endpoint. Any provider that implements /v1/chat/completions works.")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     TextField("Model Name", text: $lmStudioModel)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("Enter the model identifier loaded in LMStudio (e.g., qwen2.5-vl-7b).")
+                    Text("The model identifier (e.g., gemma-4-27b, qwen2.5-vl-7b, llama3.2-vision).")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
-                    Text("Use a multimodal model that supports tool/function calling (e.g., Qwen2.5-VL, Llama 3.2 Vision). Non-multimodal models will not work correctly with images, documents, and tools.")
+                    Text("Use a multimodal model that supports tool/function calling. Non-multimodal models will not work correctly with images, documents, and tools.")
                         .font(.caption)
                         .foregroundColor(.orange)
 
-                    Text("Prompt processing is cached via LMStudio's KV cache automatically when message prefixes stay stable (which they do during agentic tool loops).")
+                    Text("Prompt processing is cached via the server's KV cache automatically when message prefixes stay stable (which they do during agentic tool loops).")
                         .font(.caption)
                         .foregroundColor(.secondary)
 
                     Divider()
 
-                    TextField("Description Model (optional)", text: $lmStudioDescriptionModel)
+                    TextField("Description Model (recommended)", text: $lmStudioDescriptionModel)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("A separate model for generating file descriptions, so these calls don't evict the main model's KV cache. Leave empty to use the main model (will break cache on each file description).")
+                    Text("A separate smaller model for file descriptions, so the main model's KV cache isn't evicted. Highly recommended.")
                         .font(.caption)
-                        .foregroundColor(.secondary)
+                        .foregroundColor(.orange)
 
                     TextField("Description Base URL (optional)", text: $lmStudioDescriptionBaseURL)
                         .textFieldStyle(.roundedBorder)
 
-                    Text("If the description model runs on a different LMStudio port (e.g., http://localhost:1235/v1). Leave empty to use the same server as the main model.")
+                    Text("If the description model runs on a different port. Leave empty to use the same server.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
@@ -416,7 +429,7 @@ struct SettingsView: View {
                     .textFieldStyle(.roundedBorder)
 
                 if llmProvider == "lmstudio" {
-                    Text("OpenRouter API key is still needed for web search and deep research.")
+                    Text("OpenRouter API key is still needed for web search and deep research. Your conversation data is not sent to OpenRouter.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 } else {
@@ -1729,6 +1742,25 @@ struct SettingsView: View {
             return nil
         }
         return formatUSD(parsed)
+    }
+
+    // MARK: - Local Server Presets
+
+    private func localServerPreset(from url: String) -> String {
+        let trimmed = url.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        if trimmed.isEmpty || trimmed.contains(":1234") { return "lmstudio" }
+        if trimmed.contains(":11434") { return "ollama" }
+        if trimmed.contains(":8000") { return "vllm" }
+        return "custom"
+    }
+
+    private func localServerPresetURL(_ preset: String) -> String? {
+        switch preset {
+        case "lmstudio": return "http://localhost:1234/v1"
+        case "ollama": return "http://localhost:11434/v1"
+        case "vllm": return "http://localhost:8000/v1"
+        default: return nil // custom — don't overwrite
+        }
     }
 
     private func formatUSD(_ value: Double) -> String {
