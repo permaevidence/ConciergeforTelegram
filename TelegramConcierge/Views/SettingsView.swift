@@ -545,7 +545,14 @@ struct SettingsView: View {
             } header: {
                 Label("Web Search Tool", systemImage: "magnifyingglass")
             }
-            
+
+            // MARK: - Email Settings Section
+            Section {
+                emailSettingsContent
+            } header: {
+                Label("Email (IMAP/SMTP)", systemImage: "envelope.fill")
+            }
+
             Section {
                 Text("API Key")
                     .font(.caption)
@@ -732,13 +739,6 @@ struct SettingsView: View {
                 Label("Instant Database", systemImage: "externaldrive.badge.icloud")
             }
             
-            // MARK: - Email Settings Section
-            Section {
-                emailSettingsContent
-            } header: {
-                Label("Email (IMAP/SMTP)", systemImage: "envelope.fill")
-            }
-
         }
         .formStyle(.grouped)
         .padding(.horizontal)
