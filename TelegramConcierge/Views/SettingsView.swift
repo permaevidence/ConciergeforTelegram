@@ -110,6 +110,9 @@ struct SettingsView: View {
     // Collapsible sections
     @State private var isSpendLimitsExpanded: Bool = false
     @State private var isImagePricingExpanded: Bool = false
+    @State private var isCodeCLIAdvancedExpanded: Bool = false
+    @State private var isVercelAdvancedExpanded: Bool = false
+    @State private var isInstantAdvancedExpanded: Bool = false
     
     // Context viewer
     @State private var showingContextViewer: Bool = false
@@ -622,87 +625,56 @@ struct SettingsView: View {
                 Text("Active provider: \(activeCodeCLIProviderName)")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
-                Group {
+
+                Toggle("Use selected Code CLI for document generation", isOn: $claudeCodeDisableLegacyDocumentGenerationTools)
+
+                Text("When enabled, the legacy generate_document tool is replaced by project tools powered by the selected Code CLI provider.")
+                    .font(.caption)
+                    .foregroundColor(.secondary)
+
+                DisclosureGroup("CLI Configuration", isExpanded: $isCodeCLIAdvancedExpanded) {
                     if codeCLIProvider == "gemini" {
                         TextField("CLI Command", text: $geminiCodeCommand)
                             .textFieldStyle(.roundedBorder)
-                        
                         Text("Default: \(KeychainHelper.defaultGeminiCodeCommand)")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                    
-                    TextField("Default CLI Args", text: $geminiCodeArgs)
-                        .textFieldStyle(.roundedBorder)
-                    
-                    Text("Default: \(KeychainHelper.defaultGeminiCodeArgs). You can override per tool call.")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
+                        TextField("Default CLI Args", text: $geminiCodeArgs)
+                            .textFieldStyle(.roundedBorder)
                         TextField("CLI Model (optional)", text: $geminiCodeModel)
                             .textFieldStyle(.roundedBorder)
                             .disableAutocorrection(true)
-                        
-                        Text("Optional model to use for Gemini CLI. e.g., gemini-3.1-pro-preview")
-                        .font(.caption)
-                        .foregroundColor(.secondary)
-                    
                         TextField("Default Timeout (seconds)", text: $geminiCodeTimeout)
                             .textFieldStyle(.roundedBorder)
                     } else if codeCLIProvider == "codex" {
                         TextField("CLI Command", text: $codexCodeCommand)
                             .textFieldStyle(.roundedBorder)
-                        
                         Text("Default: \(KeychainHelper.defaultCodexCodeCommand)")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                    
                         TextField("Default CLI Args", text: $codexCodeArgs)
                             .textFieldStyle(.roundedBorder)
-                    
-                        Text("Default: \(KeychainHelper.defaultCodexCodeArgs). You can override per tool call.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    
                         TextField("CLI Model (optional)", text: $codexCodeModel)
                             .textFieldStyle(.roundedBorder)
                             .disableAutocorrection(true)
-                        
-                        Text("Optional model to use for Codex CLI. e.g., o4-mini")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    
                         TextField("Default Timeout (seconds)", text: $codexCodeTimeout)
                             .textFieldStyle(.roundedBorder)
                     } else {
                         TextField("CLI Command", text: $claudeCodeCommand)
                             .textFieldStyle(.roundedBorder)
-                    
                         Text("Default: claude")
                             .font(.caption)
                             .foregroundColor(.secondary)
-                    
                         TextField("Default CLI Args", text: $claudeCodeArgs)
                             .textFieldStyle(.roundedBorder)
-                    
-                        Text("Default: \(KeychainHelper.defaultClaudeCodeArgs). You can override per tool call.")
-                            .font(.caption)
-                            .foregroundColor(.secondary)
-                    
                         TextField("Default Timeout (seconds)", text: $claudeCodeTimeout)
                             .textFieldStyle(.roundedBorder)
                     }
-                
-                    Text("Used by run_claude_code when timeout_seconds is omitted. Range: 30-3600.")
+
+                    Text("Timeout range: 30-3600 seconds.")
                         .font(.caption)
                         .foregroundColor(.secondary)
                 }
-                
-                Toggle("Use selected Code CLI for document generation", isOn: $claudeCodeDisableLegacyDocumentGenerationTools)
-                
-                Text("When enabled, Gemini will not see the legacy generate_document tool and will use project tools powered by the selected Code CLI provider.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
                 
                 
             } header: {
@@ -713,40 +685,25 @@ struct SettingsView: View {
                 SecureField("Vercel API Token", text: $vercelApiToken)
                     .textFieldStyle(.roundedBorder)
                 
-                Text("Create a token in Vercel Dashboard > Settings > Tokens. Required for deploy_project_to_vercel.")
+                Text("Create a token in Vercel Dashboard > Settings > Tokens.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
-                TextField("Default Team Scope (optional)", text: $vercelTeamScope)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Your Vercel team/account scope slug. Used when deploy tool doesn't pass team_scope.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("Default Project Name (optional)", text: $vercelProjectName)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Used for automatic `vercel link` before deploy when project_name is omitted.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("CLI Command", text: $vercelCommand)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Default: \(KeychainHelper.defaultVercelCommand)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                TextField("Default Timeout (seconds)", text: $vercelTimeout)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Used by deploy_project_to_vercel when timeout_seconds is omitted. Range: 60-3600.")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
-                
-                Link("Install Vercel CLI", destination: URL(string: "https://vercel.com/docs/cli")!)
-                    .font(.caption)
+
+                DisclosureGroup("Advanced", isExpanded: $isVercelAdvancedExpanded) {
+                    TextField("Default Team Scope", text: $vercelTeamScope)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("Default Project Name", text: $vercelProjectName)
+                        .textFieldStyle(.roundedBorder)
+                    TextField("CLI Command", text: $vercelCommand)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Default: \(KeychainHelper.defaultVercelCommand)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                    TextField("Default Timeout (seconds)", text: $vercelTimeout)
+                        .textFieldStyle(.roundedBorder)
+                    Link("Install Vercel CLI", destination: URL(string: "https://vercel.com/docs/cli")!)
+                        .font(.caption)
+                }
                 
             } header: {
                 Label("Vercel Deployment", systemImage: "icloud.and.arrow.up")
@@ -759,13 +716,14 @@ struct SettingsView: View {
                 Text("Used by provision/push database tools. Run `npx instant-cli login` to get your CLI auth token.")
                     .font(.caption)
                     .foregroundColor(.secondary)
-                
-                TextField("Instant CLI Command", text: $instantCLICommand)
-                    .textFieldStyle(.roundedBorder)
-                
-                Text("Default: \(KeychainHelper.defaultInstantCLICommand)")
-                    .font(.caption)
-                    .foregroundColor(.secondary)
+
+                DisclosureGroup("Advanced", isExpanded: $isInstantAdvancedExpanded) {
+                    TextField("Instant CLI Command", text: $instantCLICommand)
+                        .textFieldStyle(.roundedBorder)
+                    Text("Default: \(KeychainHelper.defaultInstantCLICommand)")
+                        .font(.caption)
+                        .foregroundColor(.secondary)
+                }
                 
                 Link("Instant CLI Docs", destination: URL(string: "https://www.instantdb.com/docs/cli")!)
                     .font(.caption)
