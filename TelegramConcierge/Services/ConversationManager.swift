@@ -894,8 +894,63 @@ class ConversationManager: ObservableObject {
         case "/transcribe_openai":
             await switchVoiceTranscriptionProvider(to: .openAI)
             return true
+        case "/prune":
+            await manualPruneToolInteractions()
+            return true
         default:
             return false
+        }
+    }
+
+    private func manualPruneToolInteractions() async {
+        let targetTokens = configuredTargetContextTokens()
+
+        // Estimate current context with a rough system prompt estimate
+        var totalTokens = 3000 // System prompt overhead estimate
+        let persona = KeychainHelper.load(key: KeychainHelper.structuredUserContextKey) ?? ""
+        totalTokens += persona.count / 4
+
+        var toolTokens = 0
+        for message in messages {
+            totalTokens += message.content.count / 4 + 1
+            totalTokens += message.imageFileNames.count * 50
+            totalTokens += message.documentFileNames.count * 50
+            let msgToolTokens = estimateToolInteractionTokens(message.toolInteractions)
+            totalTokens += msgToolTokens
+            toolTokens += msgToolTokens
+        }
+
+        guard toolTokens > 0 else {
+            if let chatId = pairedChatId {
+                try? await telegramService.sendMessage(chatId: chatId, text: "No stored tool interactions to prune.")
+            }
+            return
+        }
+
+        let beforeTokens = totalTokens
+
+        var prunedCount = 0
+        for i in 0..<messages.count {
+            guard totalTokens > targetTokens else { break }
+            guard messages[i].role == .assistant && !messages[i].toolInteractions.isEmpty else { continue }
+
+            let savedTokens = estimateToolInteractionTokens(messages[i].toolInteractions)
+            messages[i].toolInteractions = []
+            totalTokens -= savedTokens
+            prunedCount += 1
+        }
+
+        if prunedCount > 0 {
+            pruneOldCompactToolLogs()
+            saveConversation()
+            refreshSystemPromptTimestamp()
+        }
+
+        if let chatId = pairedChatId {
+            let msg = prunedCount > 0
+                ? "✂️ Pruned tool interactions from \(prunedCount) turn(s). Context: ~\(beforeTokens / 1000)K → ~\(totalTokens / 1000)K tokens (target: \(targetTokens / 1000)K)."
+                : "Context already under target (~\(totalTokens / 1000)K ≤ \(targetTokens / 1000)K). Nothing to prune."
+            try? await telegramService.sendMessage(chatId: chatId, text: msg)
         }
     }
     
