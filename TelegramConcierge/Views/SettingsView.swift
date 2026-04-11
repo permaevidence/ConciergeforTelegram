@@ -101,8 +101,11 @@ struct SettingsView: View {
     @State private var isStructuring: Bool = false
     @State private var structuringError: String?
     
-    // Section save confirmations
+    // Section save confirmations (legacy, kept for sectionSaveButton)
     @State private var savedSection: String?
+
+    // Auto-save debounce
+    @State private var autoSaveTask: Task<Void, Never>?
     
     // Context viewer
     @State private var showingContextViewer: Bool = false
@@ -286,6 +289,8 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.horizontal)
+        .onChange(of: assistantName) { _ in autoSave { savePersonaSection() } }
+        .onChange(of: userName) { _ in autoSave { savePersonaSection() } }
     }
 
     // MARK: - Connection Tab
@@ -347,9 +352,6 @@ struct SettingsView: View {
                     }
                 }
 
-                sectionSaveButton("telegram") {
-                    saveTelegramSection()
-                }
             } header: {
                 Label("Telegram Bot", systemImage: "paperplane.fill")
             }
@@ -487,15 +489,26 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
 
-                sectionSaveButton("openrouter") {
-                    saveOpenRouterSection()
-                }
             } header: {
                 Label("LLM Provider", systemImage: "brain.head.profile")
             }
         }
         .formStyle(.grouped)
         .padding(.horizontal)
+        .onChange(of: telegramToken) { _ in autoSave { saveTelegramSection() } }
+        .onChange(of: chatId) { _ in autoSave { saveTelegramSection() } }
+        .onChange(of: llmProvider) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: lmStudioBaseURL) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: lmStudioModel) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: lmStudioDescriptionModel) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: lmStudioDescriptionBaseURL) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterApiKey) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterModel) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterProviders) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterReasoningEffort) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterToolSpendLimit) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterDailySpendLimit) { _ in autoSave { saveOpenRouterSection() } }
+        .onChange(of: openRouterMonthlySpendLimit) { _ in autoSave { saveOpenRouterSection() } }
     }
 
     // MARK: - Services Tab
@@ -517,9 +530,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                sectionSaveButton("websearch") {
-                    saveWebSearchSection()
-                }
             } header: {
                 Label("Web Search Tool", systemImage: "magnifyingglass")
             }
@@ -586,9 +596,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                sectionSaveButton("imagegen") {
-                    saveImageGenSection()
-                }
             } header: {
                 Label("Image Generation (Gemini)", systemImage: "photo.badge.plus")
             }
@@ -686,9 +693,6 @@ struct SettingsView: View {
                     .font(.caption)
                     .foregroundColor(.secondary)
                 
-                sectionSaveButton("claudecode") {
-                    saveClaudeCodeSection()
-                }
                 
             } header: {
                 Label("Code CLI", systemImage: "terminal")
@@ -733,9 +737,6 @@ struct SettingsView: View {
                 Link("Install Vercel CLI", destination: URL(string: "https://vercel.com/docs/cli")!)
                     .font(.caption)
                 
-                sectionSaveButton("vercel") {
-                    saveVercelSection()
-                }
             } header: {
                 Label("Vercel Deployment", systemImage: "icloud.and.arrow.up")
             }
@@ -758,9 +759,6 @@ struct SettingsView: View {
                 Link("Instant CLI Docs", destination: URL(string: "https://www.instantdb.com/docs/cli")!)
                     .font(.caption)
                 
-                sectionSaveButton("instantdb") {
-                    saveInstantDatabaseSection()
-                }
             } header: {
                 Label("Instant Database", systemImage: "externaldrive.badge.icloud")
             }
@@ -781,6 +779,43 @@ struct SettingsView: View {
         }
         .formStyle(.grouped)
         .padding(.horizontal)
+        .onChange(of: serperApiKey) { _ in autoSave { saveWebSearchSection() } }
+        .onChange(of: jinaApiKey) { _ in autoSave { saveWebSearchSection() } }
+        .onChange(of: geminiApiKey) { _ in autoSave { saveImageGenSection() } }
+        .onChange(of: geminiImageModel) { _ in autoSave { saveImageGenSection() } }
+        .onChange(of: geminiImageInputCostPerMillionTokensUSD) { _ in autoSave { saveImageGenSection() } }
+        .onChange(of: geminiImageOutputTextCostPerMillionTokensUSD) { _ in autoSave { saveImageGenSection() } }
+        .onChange(of: geminiImageOutputImageCostPerMillionTokensUSD) { _ in autoSave { saveImageGenSection() } }
+        .onChange(of: codeCLIProvider) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: claudeCodeCommand) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: claudeCodeArgs) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: claudeCodeTimeout) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: geminiCodeCommand) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: geminiCodeArgs) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: geminiCodeModel) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: geminiCodeTimeout) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: codexCodeCommand) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: codexCodeArgs) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: codexCodeModel) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: codexCodeTimeout) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: claudeCodeDisableLegacyDocumentGenerationTools) { _ in autoSave { saveClaudeCodeSection() } }
+        .onChange(of: vercelApiToken) { _ in autoSave { saveVercelSection() } }
+        .onChange(of: vercelTeamScope) { _ in autoSave { saveVercelSection() } }
+        .onChange(of: vercelProjectName) { _ in autoSave { saveVercelSection() } }
+        .onChange(of: vercelCommand) { _ in autoSave { saveVercelSection() } }
+        .onChange(of: vercelTimeout) { _ in autoSave { saveVercelSection() } }
+        .onChange(of: instantApiToken) { _ in autoSave { saveInstantDatabaseSection() } }
+        .onChange(of: instantCLICommand) { _ in autoSave { saveInstantDatabaseSection() } }
+        .onChange(of: voiceTranscriptionProvider) { _ in autoSave { saveVoiceTranscriptionSection() } }
+        .onChange(of: openAITranscriptionApiKey) { _ in autoSave { saveVoiceTranscriptionSection() } }
+        .onChange(of: emailMode) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: imapHost) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: imapPort) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: smtpHost) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: smtpPort) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: emailDisplayName) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: gmailClientId) { _ in autoSave { saveEmailSection() } }
+        .onChange(of: gmailClientSecret) { _ in autoSave { saveEmailSection() } }
     }
 
     // MARK: - Data Tab
@@ -1236,9 +1271,6 @@ struct SettingsView: View {
             .font(.caption)
             .foregroundColor(.secondary)
 
-        sectionSaveButton("voice-transcription") {
-            saveVoiceTranscriptionSection()
-        }
     }
     
     // MARK: - Persona Settings Content
@@ -1259,9 +1291,6 @@ struct SettingsView: View {
             .font(.caption)
             .foregroundColor(.secondary)
         
-        sectionSaveButton("persona") {
-            savePersonaSection()
-        }
         
         VStack(alignment: .leading, spacing: 4) {
             Text(structuredUserContext.isEmpty ? "About You" : "Update About You")
@@ -1691,9 +1720,6 @@ struct SettingsView: View {
             }
         }
         
-        sectionSaveButton("email") {
-            saveEmailSection()
-        }
     }
     
     private var isFormValid: Bool {
@@ -2279,6 +2305,16 @@ struct SettingsView: View {
         }
     }
     
+    /// Debounced auto-save: waits 0.5s after the last change before saving
+    private func autoSave(_ save: @escaping () -> Void) {
+        autoSaveTask?.cancel()
+        autoSaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 500_000_000)
+            guard !Task.isCancelled else { return }
+            save()
+        }
+    }
+
     private func savePersonaSection() {
         try? KeychainHelper.save(key: KeychainHelper.assistantNameKey, value: assistantName)
         try? KeychainHelper.save(key: KeychainHelper.userNameKey, value: userName)
