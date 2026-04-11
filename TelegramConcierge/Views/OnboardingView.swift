@@ -592,6 +592,7 @@ struct OnboardingView: View {
     private func finishOnboarding() {
         saveCurrentStep()
         UserDefaults.standard.set(true, forKey: "onboarding_completed")
+        UserDefaults.standard.set(false, forKey: "restart_onboarding_requested")
         isComplete = true
     }
 
@@ -648,8 +649,11 @@ struct OnboardingView: View {
     // MARK: - Skip detection for existing users
 
     static var shouldShowOnboarding: Bool {
+        // "restart_onboarding_requested" is set by the Restart Onboarding button
+        if UserDefaults.standard.bool(forKey: "restart_onboarding_requested") { return true }
+        // If onboarding was completed before, don't show
         if UserDefaults.standard.bool(forKey: "onboarding_completed") { return false }
-        // If essential fields are already configured, skip onboarding
+        // First launch: skip if essential fields are already configured (existing user updating the app)
         let hasToken = !(KeychainHelper.load(key: KeychainHelper.telegramBotTokenKey) ?? "").isEmpty
         let hasApiKey = !(KeychainHelper.load(key: KeychainHelper.openRouterApiKeyKey) ?? "").isEmpty
         if hasToken && hasApiKey { return false }

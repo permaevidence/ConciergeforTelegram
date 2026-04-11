@@ -1081,7 +1081,7 @@ struct SettingsView: View {
                 Divider()
 
                 Button {
-                    UserDefaults.standard.set(false, forKey: "onboarding_completed")
+                    UserDefaults.standard.set(true, forKey: "restart_onboarding_requested")
                 } label: {
                     HStack {
                         Image(systemName: "arrow.counterclockwise")
