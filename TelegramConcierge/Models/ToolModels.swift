@@ -273,7 +273,7 @@ enum AvailableTools {
                     ),
                     "trigger_datetime": ParameterProperty(
                         type: "string",
-                        description: "Required for action='set'. ISO 8601 datetime string in the future."
+                        description: "Required for action='set'. Local datetime in the future (e.g., '2026-04-12T15:00:00'). Use the same timezone as the conversation timestamps."
                     ),
                     "prompt": ParameterProperty(
                         type: "string",
@@ -332,7 +332,7 @@ enum AvailableTools {
                     ),
                     "datetime": ParameterProperty(
                         type: "string",
-                        description: "Required for action='add'. Optional for action='edit'. ISO 8601 datetime."
+                        description: "Required for action='add'. Optional for action='edit'. Local datetime (e.g., '2026-04-12T15:00:00'). Use the same timezone as the conversation timestamps."
                     ),
                     "notes": ParameterProperty(
                         type: "string",

@@ -321,16 +321,8 @@ actor ToolExecutor {
                 return #"{"error":"For action 'set', trigger_datetime and prompt are required"}"#
             }
 
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-            var triggerDate = formatter.date(from: triggerDatetime)
-            if triggerDate == nil {
-                formatter.formatOptions = [.withInternetDateTime]
-                triggerDate = formatter.date(from: triggerDatetime)
-            }
-
-            guard let date = triggerDate else {
-                return #"{"error":"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T09:00:00+01:00')"}"#
+            guard let date = parseISO8601Date(triggerDatetime) else {
+                return #"{"error":"Invalid datetime format. Use local datetime (e.g., '2026-02-01T09:00:00') or ISO 8601 with offset."}"#
             }
 
             guard date > Date() else {
@@ -376,10 +368,14 @@ actor ToolExecutor {
             dateFormatter.dateStyle = .medium
             dateFormatter.timeStyle = .short
 
+            let localISOFormatter = DateFormatter()
+            localISOFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            localISOFormatter.timeZone = TimeZone.current
+
             var jsonEntries: [String] = []
             for reminder in reminders {
                 let idStr = reminder.id.uuidString
-                let triggerDT = ISO8601DateFormatter().string(from: reminder.triggerDate)
+                let triggerLocal = localISOFormatter.string(from: reminder.triggerDate)
                 let triggerReadable = dateFormatter.string(from: reminder.triggerDate)
                 let promptEscaped = reminder.prompt
                     .replacingOccurrences(of: "\\", with: "\\\\")
@@ -388,8 +384,8 @@ actor ToolExecutor {
 
                 var entryFields = [
                     "\"id\": \"\(idStr)\"",
-                    "\"trigger_datetime\": \"\(triggerDT)\"",
-                    "\"trigger_datetime_readable\": \"\(triggerReadable)\"",
+                    "\"trigger_datetime\": \"\(triggerLocal)\"",
+                    "\"trigger_readable\": \"\(triggerReadable)\"",
                     "\"prompt\": \"\(promptEscaped)\""
                 ]
 
@@ -498,12 +494,16 @@ actor ToolExecutor {
             formatter.dateStyle = .medium
             formatter.timeStyle = .short
 
+            let localISOFormatter = DateFormatter()
+            localISOFormatter.dateFormat = "yyyy-MM-dd'T'HH:mm:ss"
+            localISOFormatter.timeZone = TimeZone.current
+
             let eventList = events.map { event -> CalendarEventResponse in
                 CalendarEventResponse(
                     id: event.id.uuidString,
                     title: event.title,
                     datetime: formatter.string(from: event.datetime),
-                    datetimeISO: ISO8601DateFormatter().string(from: event.datetime),
+                    datetimeISO: localISOFormatter.string(from: event.datetime),
                     notes: event.notes,
                     isPast: event.datetime < Date()
                 )
@@ -529,7 +529,7 @@ actor ToolExecutor {
                 return #"{"error":"For action 'add', title and datetime are required"}"#
             }
             guard let eventDate = parseISO8601Date(datetime) else {
-                return #"{"error":"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')"}"#
+                return #"{"error":"Invalid datetime format. Use local datetime (e.g., '2026-02-01T15:00:00') or ISO 8601 with offset."}"#
             }
 
             let event = await CalendarService.shared.addEvent(
@@ -564,7 +564,7 @@ actor ToolExecutor {
             var newDatetime: Date? = nil
             if let datetimeString = args.datetime {
                 guard let parsed = parseISO8601Date(datetimeString) else {
-                    return #"{"error":"Invalid datetime format. Use ISO 8601 (e.g., '2026-02-01T15:00:00+01:00')"}"#
+                    return #"{"error":"Invalid datetime format. Use local datetime (e.g., '2026-02-01T15:00:00') or ISO 8601 with offset."}"#
                 }
                 newDatetime = parsed
             }
@@ -599,13 +599,25 @@ actor ToolExecutor {
     // MARK: - Helpers
     
     private func parseISO8601Date(_ string: String) -> Date? {
-        let formatter = ISO8601DateFormatter()
-        formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
-        if let date = formatter.date(from: string) {
-            return date
+        let trimmed = string.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        // Try full ISO 8601 with timezone offset first
+        let isoFormatter = ISO8601DateFormatter()
+        isoFormatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        if let date = isoFormatter.date(from: trimmed) { return date }
+        isoFormatter.formatOptions = [.withInternetDateTime]
+        if let date = isoFormatter.date(from: trimmed) { return date }
+
+        // Fall back to local time (no offset) — parse in system timezone
+        let localFormatter = DateFormatter()
+        localFormatter.locale = Locale(identifier: "en_US_POSIX")
+        localFormatter.timeZone = TimeZone.current
+        for format in ["yyyy-MM-dd'T'HH:mm:ss", "yyyy-MM-dd'T'HH:mm", "yyyy-MM-dd HH:mm:ss", "yyyy-MM-dd HH:mm"] {
+            localFormatter.dateFormat = format
+            if let date = localFormatter.date(from: trimmed) { return date }
         }
-        formatter.formatOptions = [.withInternetDateTime]
-        return formatter.date(from: string)
+
+        return nil
     }
 
     private func parseRecurrenceType(_ rawValue: String?) -> RecurrenceType? {
