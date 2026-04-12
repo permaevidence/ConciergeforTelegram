@@ -5088,13 +5088,51 @@ private struct GenerateProjectMCPConfigResult: Codable {
 }
 
 extension ToolExecutor {
+    static let systemProjectId = "_system"
+    static let systemProjectName = "System"
+
     private var projectsDirectory: URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let folder = appSupport.appendingPathComponent("TelegramConcierge/projects", isDirectory: true)
         try? FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
         return folder
     }
-    
+
+    /// Ensures the system project exists. Called on app startup.
+    func ensureSystemProject() {
+        let projectURL = projectsDirectory.appendingPathComponent(Self.systemProjectId, isDirectory: true)
+        let metadataURL = projectURL.appendingPathComponent(".project.json")
+
+        guard !FileManager.default.fileExists(atPath: metadataURL.path) else { return }
+
+        try? FileManager.default.createDirectory(at: projectURL, withIntermediateDirectories: true)
+
+        let metadata = ClaudeProjectMetadata(
+            id: Self.systemProjectId,
+            name: Self.systemProjectName,
+            createdAt: Date(),
+            initialNotes: "System project for general-purpose tasks: file operations, shell commands, system inspection, and anything that needs direct machine access.",
+            projectDescription: "Persistent workspace for operating on the local machine. Use this project when the user asks to read/edit files, run commands, check system status, or perform any task outside of a dedicated project.",
+            projectDescriptionSource: "built_in",
+            lastEditedAt: nil,
+            vercelProject: nil
+        )
+
+        if let data = try? JSONEncoder().encode(metadata) {
+            try? data.write(to: metadataURL)
+        }
+
+        let readme = """
+        # System Project
+
+        This is the default project for general-purpose machine operations.
+        The Code CLI uses this workspace when no specific project is needed.
+        """
+        try? readme.write(to: projectURL.appendingPathComponent("README.md"), atomically: true, encoding: .utf8)
+
+        print("[ToolExecutor] System project created at \(projectURL.path)")
+    }
+
     private var isoFormatter: ISO8601DateFormatter {
         let formatter = ISO8601DateFormatter()
         formatter.formatOptions = [.withInternetDateTime]
@@ -5313,6 +5351,9 @@ extension ToolExecutor {
             }
             
             indexedProjects.sort { lhs, rhs in
+                // System project always first
+                if lhs.item.id == Self.systemProjectId { return true }
+                if rhs.item.id == Self.systemProjectId { return false }
                 if lhs.lastModifiedAt != rhs.lastModifiedAt {
                     return lhs.lastModifiedAt > rhs.lastModifiedAt
                 }

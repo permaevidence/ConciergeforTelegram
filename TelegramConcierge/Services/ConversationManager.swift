@@ -103,6 +103,9 @@ class ConversationManager: ObservableObject {
         isPrivacyModeEnabled = UserDefaults.standard.bool(forKey: privacyModeDefaultsKey)
         loadConversation()
 
+        // Ensure the system project exists for general-purpose machine operations
+        Task { await toolExecutor.ensureSystemProject() }
+
         // Wire up archive status notifications to Telegram
         let telegramSvc = telegramService
         let archiveSvc = archiveService
